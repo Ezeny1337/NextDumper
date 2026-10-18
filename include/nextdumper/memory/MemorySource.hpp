@@ -26,7 +26,7 @@ namespace nextdumper::memory
         TargetExited,
         LimitExceeded,
         Cancelled,
-        NotAttempted,
+        AddressSpaceChanged,
     };
 
     struct ReadResult

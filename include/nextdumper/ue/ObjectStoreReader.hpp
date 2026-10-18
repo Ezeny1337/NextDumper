@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <span>
 #include <string>
 #include <optional>
 
@@ -52,6 +53,8 @@ namespace nextdumper::ue
     class ObjectStoreReader
     {
     public:
+        static constexpr size_t kReadWindowSize = 128;
+
         ObjectStoreReader(const IMemorySource &memory,
                           uintptr_t root,
                           const ObjectContainerLayout &layout,
@@ -61,11 +64,14 @@ namespace nextdumper::ue
         [[nodiscard]] bool IsInitialized() const { return initialized_; }
         [[nodiscard]] int32_t Count() const { return count_; }
         [[nodiscard]] ObjectReadResult ReadObject(int32_t index, bool fresh = false) const;
+        [[nodiscard]] bool ReadObjects(int32_t first, std::span<ObjectReadResult> objects, bool fresh = false) const;
         [[nodiscard]] ObjectStoreBoundary RefreshCount();
         [[nodiscard]] std::optional<uint32_t> ReadInternalFlags(const ObjectReadResult &object) const;
         [[nodiscard]] std::optional<int32_t> ReadSerialNumber(const ObjectReadResult &object) const;
 
     private:
+        [[nodiscard]] ObjectReadResult DecodeObject(uintptr_t raw, uintptr_t slot) const;
+
         const IMemorySource &memory_;
         uintptr_t root_ = 0;
         ObjectContainerLayout layout_;

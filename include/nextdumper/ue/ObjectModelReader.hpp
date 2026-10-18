@@ -184,6 +184,12 @@ namespace nextdumper::ue
         [[nodiscard]] ObjectStoreBoundary RefreshObjectCount() { return objects_.RefreshCount(); }
 
         [[nodiscard]] std::optional<uintptr_t> Class(uintptr_t object, bool fresh = false) const;
+        [[nodiscard]] std::optional<uintptr_t> DecodeClassPointer(uintptr_t raw, uintptr_t address) const
+        {
+            if (!raw)
+                return std::nullopt;
+            return binding_.decode.objectClass(raw, address);
+        }
         [[nodiscard]] std::optional<uintptr_t> Outer(uintptr_t object) const;
         [[nodiscard]] std::optional<int32_t> InternalIndex(uintptr_t object, bool fresh = false) const;
         [[nodiscard]] std::optional<uint32_t> Flags(uintptr_t object) const;

@@ -2,6 +2,8 @@
 
 #include <limits>
 #include <optional>
+#include <array>
+#include <stdexcept>
 
 namespace nextdumper::ue
 {
@@ -76,7 +78,9 @@ namespace nextdumper::ue
 
         int32_t rawCount = 0;
         uintptr_t rawStorage = 0;
-        if (!memory_.ReadFreshBytes(*countAddress, &rawCount, sizeof(rawCount)).Ok() || !memory_.Read(*storageAddress, rawStorage))
+        const std::array<memory::ReadRequest, 2> requests{{{*countAddress, &rawCount, sizeof(rawCount)}, {*storageAddress, &rawStorage, sizeof(rawStorage)}}};
+        std::array<memory::ReadResult, 2> reads{};
+        if (!memory_.ReadBatch(requests, reads, true) || !reads[0].Ok() || !reads[1].Ok())
             return false;
 
         count_ = decode_.objectCount(rawCount, *countAddress);
@@ -106,8 +110,9 @@ namespace nextdumper::ue
         result.countAddress = *countAddress;
         int32_t rawCount = 0;
         uintptr_t rawStorage = 0;
-        if (!memory_.ReadFreshBytes(*countAddress, &rawCount, sizeof(rawCount)).Ok() ||
-            !memory_.ReadFreshBytes(*storageAddress, &rawStorage, sizeof(rawStorage)).Ok())
+        const std::array<memory::ReadRequest, 2> requests{{{*countAddress, &rawCount, sizeof(rawCount)}, {*storageAddress, &rawStorage, sizeof(rawStorage)}}};
+        std::array<memory::ReadResult, 2> reads{};
+        if (!memory_.ReadBatch(requests, reads, true) || !reads[0].Ok() || !reads[1].Ok())
         {
             result.reason = "object-boundary-unreadable";
             return result;
@@ -198,14 +203,103 @@ namespace nextdumper::ue
                                 : memory_.ReadBytes(*objectSlot, &rawObject, sizeof(rawObject));
         if (!read.Ok())
             return {ObjectReadStatus::UnreadableObject, 0, *objectSlot, read.error};
+        return DecodeObject(rawObject, *objectSlot);
+    }
+
+    ObjectReadResult ObjectStoreReader::DecodeObject(uintptr_t rawObject, uintptr_t slot) const
+    {
         rawObject = ::nextdumper::binding::UnpackObjectItemPointer(rawObject, layout_.packedPointers);
         if (rawObject == 0)
-            return {ObjectReadStatus::Empty, 0, *objectSlot};
+            return {ObjectReadStatus::Empty, 0, slot};
 
-        const uintptr_t object = decode_.objectPointer(rawObject, *objectSlot);
+        const uintptr_t object = decode_.objectPointer(rawObject, slot);
         if (object == 0 || !memory_.IsReadable(object, sizeof(uintptr_t)))
-            return {ObjectReadStatus::InvalidObject, object, *objectSlot};
-        return {ObjectReadStatus::Valid, object, *objectSlot};
+            return {ObjectReadStatus::InvalidObject, object, slot};
+        return {ObjectReadStatus::Valid, object, slot};
+    }
+
+    bool ObjectStoreReader::ReadObjects(int32_t first, std::span<ObjectReadResult> objects, bool fresh) const
+    {
+        if (objects.size() > kReadWindowSize || first < 0)
+            return false;
+        for (auto &object : objects)
+            object = {};
+        if (!initialized_)
+            return true;
+        if (first > count_ || objects.size() > static_cast<size_t>(count_ - first))
+            return false;
+
+        std::array<uintptr_t, kReadWindowSize> chunks{}, chunkSlots{}, rawObjects{};
+        std::array<size_t, kReadWindowSize> chunkForObject{}, owners{};
+        std::array<memory::ReadRequest, kReadWindowSize> requests{};
+        std::array<memory::ReadResult, kReadWindowSize> reads{};
+        size_t chunkCount = 0;
+        int32_t previousChunk = -1;
+        if (layout_.kind == ObjectContainerKind::Chunked)
+        {
+            for (size_t index = 0; index < objects.size(); ++index)
+            {
+                const int32_t chunkIndex = (first + static_cast<int32_t>(index)) / layout_.elementsPerChunk;
+                if (chunkIndex != previousChunk)
+                {
+                    const auto slot = AddScaled(storage_, chunkIndex, static_cast<int32_t>(sizeof(uintptr_t)));
+                    if (!slot)
+                        throw std::overflow_error("Object chunk table address overflow");
+                    chunkSlots[chunkCount] = *slot;
+                    requests[chunkCount] = {*slot, &chunks[chunkCount], sizeof(uintptr_t)};
+                    previousChunk = chunkIndex;
+                    ++chunkCount;
+                }
+                chunkForObject[index] = chunkCount - 1;
+            }
+            if (!memory_.ReadBatch({requests.data(), chunkCount}, {reads.data(), chunkCount}, fresh))
+                throw std::runtime_error("Object chunk batch contract failed");
+            for (size_t index = 0; index < chunkCount; ++index)
+                if (reads[index].Ok())
+                    chunks[index] = decode_.objectChunk(chunks[index], chunkSlots[index]);
+        }
+
+        size_t count = 0;
+        for (size_t index = 0; index < objects.size(); ++index)
+        {
+            const int32_t objectIndex = first + static_cast<int32_t>(index);
+            uintptr_t base = storage_;
+            int32_t within = objectIndex;
+            if (layout_.kind == ObjectContainerKind::Chunked)
+            {
+                const size_t chunk = chunkForObject[index];
+                if (!reads[chunk].Ok())
+                {
+                    objects[index] = {ObjectReadStatus::UnreadableChunk, 0, chunkSlots[chunk], reads[chunk].error};
+                    continue;
+                }
+                base = chunks[chunk];
+                if (!base || !memory_.IsReadable(base, sizeof(uintptr_t)))
+                {
+                    objects[index] = {ObjectReadStatus::InvalidChunk, base, chunkSlots[chunk]};
+                    continue;
+                }
+                within %= layout_.elementsPerChunk;
+            }
+            const auto item = AddScaled(base, within, layout_.itemStride);
+            const auto slot = item ? AddOffset(*item, static_cast<uintptr_t>(layout_.itemObjectOffset)) : std::nullopt;
+            if (!slot)
+            {
+                objects[index] = {ObjectReadStatus::AddressOverflow};
+                continue;
+            }
+            requests[count] = {*slot, &rawObjects[index], sizeof(uintptr_t)};
+            owners[count++] = index;
+        }
+        if (!memory_.ReadBatch({requests.data(), count}, {reads.data(), count}, fresh))
+            throw std::runtime_error("Object pointer batch contract failed");
+        for (size_t index = 0; index < count; ++index)
+        {
+            const size_t owner = owners[index];
+            objects[owner] = reads[index].Ok() ? DecodeObject(rawObjects[owner], requests[index].address)
+                                               : ObjectReadResult{ObjectReadStatus::UnreadableObject, 0, requests[index].address, reads[index].error};
+        }
+        return true;
     }
 
     std::optional<uint32_t> ObjectStoreReader::ReadInternalFlags(const ObjectReadResult &object) const

@@ -1,6 +1,8 @@
 #include "nextdumper/ue/NameStoreReader.hpp"
 
 #include <limits>
+#include <algorithm>
+#include <array>
 #include <span>
 #include <vector>
 
@@ -137,9 +139,10 @@ namespace nextdumper::ue
             {
                 uint32_t current = 0;
                 uint32_t cursor = static_cast<uint32_t>(blockSize);
-                if (!memory_.ReadFreshBytes(addresses->currentBlock, &current, sizeof(current)).Ok() || current >= 8192)
-                    return std::nullopt;
-                if (!memory_.ReadFreshBytes(addresses->byteCursor, &cursor, sizeof(cursor)).Ok() || cursor > blockSize ||
+                const std::array<memory::ReadRequest, 2> requests{{{addresses->currentBlock, &current, sizeof(current)}, {addresses->byteCursor, &cursor, sizeof(cursor)}}};
+                std::array<memory::ReadResult, 2> reads{};
+                if (!memory_.ReadBatch(requests, reads, true) || !reads[0].Ok() || !reads[1].Ok() ||
+                    current >= 8192 || cursor > blockSize ||
                     cursor % static_cast<uint32_t>(pool.entryStride) != 0)
                     return std::nullopt;
                 currentBlock_ = current;
@@ -253,7 +256,9 @@ namespace nextdumper::ue
                 return std::nullopt;
             int32_t rawIndex = 0;
             uint32_t number = 0;
-            if (!memory_.Read(*indexAddress, rawIndex) || !memory_.Read(*numberAddress, number))
+            const std::array<memory::ReadRequest, 2> requests{{{*indexAddress, &rawIndex, sizeof(rawIndex)}, {*numberAddress, &number, sizeof(number)}}};
+            std::array<memory::ReadResult, 2> reads{};
+            if (!memory_.ReadBatch(requests, reads) || !reads[0].Ok() || !reads[1].Ok())
                 return std::nullopt;
             const int32_t index = decode_.nameIndex(rawIndex, *indexAddress);
             number = decode_.nameNumber(number, *numberAddress);
@@ -283,32 +288,55 @@ namespace nextdumper::ue
 
     std::optional<std::string> NameStoreReader::ReadFName(uintptr_t fnameAddress) const
     {
-        auto name = ReadComparisonName(fnameAddress);
-        if (!name)
+        if (!fnameAddress || fname_.comparisonIndex < 0)
             return std::nullopt;
-
+        std::array<uint32_t, 3> values{};
+        std::array<memory::ReadRequest, 3> requests{};
+        std::array<memory::ReadResult, 3> reads{};
+        const auto comparison = AddOffset(fnameAddress, static_cast<uintptr_t>(fname_.comparisonIndex));
+        if (!comparison)
+            return std::nullopt;
+        size_t count = 1;
+        requests[0] = {*comparison, &values[0], sizeof(uint32_t)};
+        std::optional<uintptr_t> display, number;
         if (fname_.displayIndex >= 0)
         {
-            const auto displayAddress = AddOffset(fnameAddress, static_cast<uintptr_t>(fname_.displayIndex));
-            int32_t rawDisplayIndex = 0;
-            if (!displayAddress || !memory_.Read(*displayAddress, rawDisplayIndex))
+            display = AddOffset(fnameAddress, static_cast<uintptr_t>(fname_.displayIndex));
+            if (!display)
                 return std::nullopt;
-            const int32_t displayIndex = decode_.nameIndex(rawDisplayIndex, *displayAddress);
-            const auto displayName = ReadName(displayIndex);
+            requests[count++] = {*display, &values[1], sizeof(uint32_t)};
+        }
+        if (fname_.numberLayout == FNameNumberLayout::Inline && fname_.number >= 0)
+        {
+            number = AddOffset(fnameAddress, static_cast<uintptr_t>(fname_.number));
+            if (!number)
+                return std::nullopt;
+            requests[count++] = {*number, &values[2], sizeof(uint32_t)};
+        }
+        if (!memory_.ReadBatch({requests.data(), count}, {reads.data(), count}) ||
+            std::any_of(reads.begin(), reads.begin() + static_cast<ptrdiff_t>(count),
+                        [](const auto &read)
+                        { return !read.Ok(); }))
+            return std::nullopt;
+        int32_t rawComparison = 0;
+        std::memcpy(&rawComparison, &values[0], sizeof(rawComparison));
+        auto name = ReadName(decode_.nameIndex(rawComparison, *comparison));
+        if (!name)
+            return std::nullopt;
+        if (display)
+        {
+            int32_t rawDisplay = 0;
+            std::memcpy(&rawDisplay, &values[1], sizeof(rawDisplay));
+            const auto displayName = ReadName(decode_.nameIndex(rawDisplay, *display));
             if (!displayName || displayName->empty())
                 return std::nullopt;
             *name = *displayName;
         }
-
-        if (fname_.numberLayout == FNameNumberLayout::Inline && fname_.number >= 0)
+        if (number)
         {
-            const auto numberAddress = AddOffset(fnameAddress, static_cast<uintptr_t>(fname_.number));
-            uint32_t number = 0;
-            if (!numberAddress || !memory_.Read(*numberAddress, number))
-                return std::nullopt;
-            number = decode_.nameNumber(number, *numberAddress);
-            if (number > 0)
-                *name += "_" + std::to_string(number - 1);
+            const uint32_t decoded = decode_.nameNumber(values[2], *number);
+            if (decoded > 0)
+                *name += "_" + std::to_string(decoded - 1);
         }
         return name;
     }

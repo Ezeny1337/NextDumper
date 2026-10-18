@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cstring>
 #include <limits>
+#include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -735,7 +736,7 @@ namespace nextdumper::reflection
                                                               *reference.value, types, static_cast<int32_t>(sizeof(uintptr_t)), schema_.fname.size)
                                                         : std::nullopt;
             ::nextdumper::ue::ValidateSparseLayout(*found->second, reference.kind, extent(key), extent(reference.value),
-                                                  keyAlignment.value_or(0), valueAlignment.value_or(0));
+                                                   keyAlignment.value_or(0), valueAlignment.value_or(0));
         };
         const auto validateProperties = [&](const auto &properties)
         {
@@ -770,7 +771,7 @@ namespace nextdumper::reflection
                                           storage.headerStatus != "source-model-fits-reflected-extent")
                                      ? 0
                                  : ::nextdumper::ir::HasStorageRepresentationGap(candidate.reference, declarations) ? 1
-                                                                                                                   : 2;
+                                                                                                                    : 2;
         }
         std::stable_sort(pendingContainers_.begin(), pendingContainers_.end(), [](const auto &left, const auto &right)
                          { return left.priority < right.priority; });
@@ -1330,6 +1331,12 @@ namespace nextdumper::reflection
         std::unordered_set<uintptr_t> seenTypes;
         std::unordered_map<uintptr_t, std::optional<::nextdumper::ue::DefinitionKind>> classKinds;
         std::unordered_map<std::string, size_t> failureReasons;
+        constexpr size_t windowSize = ::nextdumper::ue::ObjectStoreReader::kReadWindowSize;
+        std::array<ObjectReadResult, windowSize> objectWindow{};
+        std::array<uintptr_t, windowSize> rawClasses{};
+        std::array<std::optional<uintptr_t>, windowSize> classWindow{};
+        int32_t windowFirst = 0;
+        size_t windowCount = 0;
         auto lastProgress = std::chrono::steady_clock::now();
         const auto recordFailure = [&](const std::string &reason, int32_t index, uintptr_t address)
         {
@@ -1398,7 +1405,38 @@ namespace nextdumper::reflection
                 validation = memory_.Validate();
                 break;
             }
-            const ObjectReadResult objectResult = objects_.Objects().ReadObject(index);
+            if (index < windowFirst || static_cast<size_t>(index - windowFirst) >= windowCount)
+            {
+                windowFirst = index;
+                windowCount = std::min(objectWindow.size(), static_cast<size_t>(objects_.Count() - index));
+                if (!objects_.Objects().ReadObjects(index, {objectWindow.data(), windowCount}))
+                    throw std::runtime_error("Reflection object window contract failed");
+                classWindow.fill(std::nullopt);
+                std::array<::nextdumper::memory::ReadRequest, windowSize> requests{};
+                std::array<::nextdumper::memory::ReadResult, windowSize> reads{};
+                std::array<size_t, windowSize> owners{};
+                size_t count = 0;
+                for (size_t slot = 0; slot < windowCount; ++slot)
+                {
+                    if (!objectWindow[slot].IsValid())
+                        continue;
+                    const auto address = Add(objectWindow[slot].address, schema_.uobject.classPointer);
+                    if (!address)
+                        continue;
+                    requests[count] = {*address, &rawClasses[slot], sizeof(uintptr_t)};
+                    owners[count++] = slot;
+                }
+                // 本轮已知对象头共用批读，但每个字段仍进入 Capture 的观测和验证
+                if (!memory_.ReadBatch({requests.data(), count}, {reads.data(), count}))
+                    throw std::runtime_error("Reflection class pointer batch contract failed");
+                for (size_t slot = 0; slot < count; ++slot)
+                    if (reads[slot].Ok() && rawClasses[owners[slot]])
+                        classWindow[owners[slot]] = objects_.DecodeClassPointer(
+                            rawClasses[owners[slot]],
+                            requests[slot].address);
+            }
+            const size_t windowIndex = static_cast<size_t>(index - windowFirst);
+            const ObjectReadResult objectResult = objectWindow[windowIndex];
             if (!objectResult.IsValid())
             {
                 ++result.stats.skippedObjects;
@@ -1424,7 +1462,8 @@ namespace nextdumper::reflection
             }
             const uintptr_t object = objectResult.address;
             ++result.stats.validObjects;
-            const auto className = objects_.ClassName(object);
+            const auto classAddress = classWindow[windowIndex];
+            const auto className = classAddress ? objects_.Name(*classAddress) : std::nullopt;
             if (!className)
             {
                 ++result.stats.classNameReadFailures;
@@ -1434,7 +1473,6 @@ namespace nextdumper::reflection
                                                 " address=" + std::to_string(object); });
                 continue;
             }
-            const auto classAddress = objects_.Class(object);
             if (!classAddress)
             {
                 ++result.stats.failures;

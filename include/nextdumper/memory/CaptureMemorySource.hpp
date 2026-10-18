@@ -43,7 +43,7 @@ namespace nextdumper::memory
     public:
         explicit CaptureMemorySource(IMemorySource &source,
                                      std::function<void(const std::string &)> diagnostic = {})
-            : source_(source), diagnostic_(std::move(diagnostic)) {}
+            : source_(source), diagnostic_(std::move(diagnostic)), generation_(source.AddressSpaceGeneration()) {}
 
         void Reset() const;
         void Observe(bool enabled) const { observing_ = enabled; }
@@ -65,28 +65,18 @@ namespace nextdumper::memory
         [[nodiscard]] bool IsReadable(uintptr_t address, size_t size) const override { return source_.IsReadable(address, size); }
         [[nodiscard]] bool IsExecutable(uintptr_t address, size_t size) const override { return source_.IsExecutable(address, size); }
         [[nodiscard]] ReadResult ReadBytes(uintptr_t address, void *buffer, size_t size) const override;
-        [[nodiscard]] ReadResult ReadFreshBytes(uintptr_t address, void *buffer, size_t size) const override
-        {
-            const auto read = source_.ReadFreshBytes(address, buffer, size);
-            if (!read.Ok())
-            {
-                ++readFailures_;
-                if (readFailureSamples_.size() < 16)
-                    readFailureSamples_.push_back(read);
-                if (diagnostic_)
-                    diagnostic_("capture_read_failure address=" + std::to_string(read.address) +
-                                " error=" + std::to_string(static_cast<int32_t>(read.error)) +
-                                " requested=" + std::to_string(read.requested) +
-                                " transferred=" + std::to_string(read.transferred));
-            }
-            return read;
-        }
+        [[nodiscard]] ReadResult ReadFreshBytes(uintptr_t address, void *buffer, size_t size) const override;
+        [[nodiscard]] bool ReadBatch(std::span<const ReadRequest> requests, std::span<ReadResult> results,
+                                     bool fresh = false) const override;
         [[nodiscard]] const ReadStats &Stats() const override { return source_.Stats(); }
 
     private:
         static constexpr size_t kMaxRanges = 2 * 1024 * 1024;
         static constexpr size_t kMaxBytes = 64 * 1024 * 1024;
         static constexpr size_t kMaxReadSize = 2048;
+
+        void RecordFailure(const ReadResult &read) const;
+        void ObserveBytes(uintptr_t address, const uint8_t *bytes, size_t size) const;
 
         IMemorySource &source_;
         std::function<void(const std::string &)> diagnostic_;
