@@ -115,7 +115,7 @@ The diagnosis provides evidence-based investigation targets. It does not infer v
 ### Requirements
 
 - Android SDK with platform `android-29` or compatible.
-- Android NDK `25.2.9519653` for the repository CI configuration.
+- Android NDK r26 or newer for manual builds; repository CI pins `26.3.11579264`.
 - CMake `3.22.1` for the repository CI configuration.
 - Ninja.
 - A host environment capable of building Android `arm64-v8a` and `armeabi-v7a` code.
@@ -130,7 +130,7 @@ The diagnosis provides evidence-based investigation targets. It does not infer v
 | `release` | Release, `-Oz`, ThinLTO, without `NDEBUG`, stripped | Small distributable binary. |
 | `debug` | Debug symbols, ThinLTO, with `NDEBUG` | Debuggable binary. |
 
-Set `ANDROID_NDK_HOME` (or `ANDROID_NDK_ROOT`) before running the script. If only `ANDROID_SDK_ROOT` is set, the script discovers the newest installed NDK.
+Set `ANDROID_NDK_HOME` (or `ANDROID_NDK_ROOT`) to Android NDK r26 or newer before running the script. If only `ANDROID_SDK_ROOT` is set, the script discovers the newest installed NDK.
 
 ```bash
 chmod +x build.sh

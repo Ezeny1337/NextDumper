@@ -18,7 +18,7 @@ permissions:
 
 env:
   ANDROID_PLATFORM: android-29
-  NDK_VERSION: 25.2.9519653
+  NDK_VERSION: 26.3.11579264
   CMAKE_VERSION: 3.22.1
 
 jobs:
@@ -65,6 +65,7 @@ jobs:
           cmake_bin="$sdk_root/cmake/${CMAKE_VERSION}/bin"
           test -d "$ndk_home"
           test -x "$cmake_bin/cmake"
+          test "$(sed -n 's/^[[:space:]]*Pkg\.Revision[[:space:]]*=[[:space:]]*//p' "$ndk_home/source.properties" | head -n 1)" = "$NDK_VERSION"
 
           echo "ANDROID_NDK_HOME=$ndk_home" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_ROOT=$ndk_home" >> "$GITHUB_ENV"
@@ -137,6 +138,7 @@ jobs:
           cmake_bin="$sdk_root/cmake/${CMAKE_VERSION}/bin"
           test -d "$ndk_home"
           test -x "$cmake_bin/cmake"
+          test "$(sed -n 's/^[[:space:]]*Pkg\.Revision[[:space:]]*=[[:space:]]*//p' "$ndk_home/source.properties" | head -n 1)" = "$NDK_VERSION"
           echo "ANDROID_NDK_HOME=$ndk_home" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_ROOT=$ndk_home" >> "$GITHUB_ENV"
           echo "$cmake_bin" >> "$GITHUB_PATH"

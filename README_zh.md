@@ -115,7 +115,7 @@ public:
 ### 环境要求
 
 - Android SDK，包含 `android-29` 或兼容版本的平台组件。
-- Android NDK `25.2.9519653`，与仓库 CI 配置一致。
+- 手动构建使用 Android NDK r26 或更高版本；仓库 CI 固定使用 `26.3.11579264`。
 - CMake `3.22.1`，与仓库 CI 配置一致。
 - Ninja。
 - 能够构建 Android `arm64-v8a` 和 `armeabi-v7a` 代码的主机环境。
@@ -130,7 +130,7 @@ public:
 | `release` | Release、`-Oz`、ThinLTO、禁用 `NDEBUG`、剥离符号 | 生成较小的可分发产物。 |
 | `debug` | 保留调试信息、ThinLTO、启用 `NDEBUG` | 生成可调试产物。 |
 
-运行脚本前设置 `ANDROID_NDK_HOME` 或 `ANDROID_NDK_ROOT`。如果只设置了 `ANDROID_SDK_ROOT`，脚本会自动查找已安装的最新 NDK。
+运行脚本前将 `ANDROID_NDK_HOME` 或 `ANDROID_NDK_ROOT` 设置为 Android NDK r26 或更高版本。如果只设置了 `ANDROID_SDK_ROOT`，脚本会自动查找已安装的最新 NDK。
 
 ```bash
 chmod +x build.sh
