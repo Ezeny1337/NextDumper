@@ -112,9 +112,10 @@ namespace nextdumper::module
                         !Read(cursor, header.data(), header.size()) || U32(header.data()) != 0x02014b50)
                         return false;
                     const uint16_t nameSize = U16(header.data() + 28), extraSize = U16(header.data() + 30), comment = U16(header.data() + 32);
-                    const uint64_t next = cursor + header.size() + nameSize + extraSize + comment;
-                    if (next > start + length)
+                    const uint64_t suffix = uint64_t{nameSize} + extraSize + comment;
+                    if (suffix > start + length - cursor - header.size())
                         return false;
+                    const uint64_t next = cursor + header.size() + suffix;
                     uint64_t localOffset = U32(header.data() + 42), compressed = U32(header.data() + 20);
                     uint64_t unpacked = U32(header.data() + 24), disk = U16(header.data() + 34);
                     if (localOffset == 0xffffffff || compressed == 0xffffffff || unpacked == 0xffffffff || disk == 0xffff)
@@ -162,7 +163,7 @@ namespace nextdumper::module
                     }
                     if (disk)
                         return false;
-                    if (U16(header.data() + 10) == 0 && !(U16(header.data() + 8) & 1) && compressed == unpacked &&
+                    if (U16(header.data() + 10) == 0 && !(U16(header.data() + 8) & 0x2041) && compressed == unpacked &&
                         localOffset < start)
                     {
                         std::array<uint8_t, 30> local{};
@@ -174,9 +175,55 @@ namespace nextdumper::module
                         const uint64_t data = localOffset + prefix;
                         if (data == dataOffset)
                         {
-                            if (U16(local.data() + 8) != 0 || (U16(local.data() + 6) & 1) ||
+                            if (U16(local.data() + 8) != 0 || U16(local.data() + 6) != U16(header.data() + 8) ||
                                 U16(local.data() + 26) != nameSize || !nameSize || nameSize > 4096 || unpacked > start - data)
                                 return false;
+                            if (!(U16(local.data() + 6) & 8))
+                            {
+                                if (U32(local.data() + 14) != U32(header.data() + 16))
+                                    return false;
+                                uint64_t localCompressed = U32(local.data() + 18), localUnpacked = U32(local.data() + 22);
+                                if (localCompressed == 0xffffffff || localUnpacked == 0xffffffff)
+                                {
+                                    std::vector<uint8_t> extra(U16(local.data() + 28));
+                                    if (extra.empty() || !Read(localOffset + local.size() + nameSize, extra.data(), extra.size()))
+                                        return false;
+                                    bool found = false;
+                                    for (size_t position = 0; position < extra.size();)
+                                    {
+                                        if (extra.size() - position < 4)
+                                            return false;
+                                        const uint16_t id = U16(extra.data() + position), bytes = U16(extra.data() + position + 2);
+                                        position += 4;
+                                        if (bytes > extra.size() - position)
+                                            return false;
+                                        if (id == 1)
+                                        {
+                                            size_t used = 0;
+                                            if (localUnpacked == 0xffffffff)
+                                            {
+                                                if (bytes < 8)
+                                                    return false;
+                                                localUnpacked = U64(extra.data() + position);
+                                                used = 8;
+                                            }
+                                            if (localCompressed == 0xffffffff)
+                                            {
+                                                if (bytes - used < 8)
+                                                    return false;
+                                                localCompressed = U64(extra.data() + position + used);
+                                            }
+                                            found = true;
+                                            break;
+                                        }
+                                        position += bytes;
+                                    }
+                                    if (!found)
+                                        return false;
+                                }
+                                if (localCompressed != compressed || localUnpacked != unpacked)
+                                    return false;
+                            }
                             std::string name(nameSize, '\0'), localName(nameSize, '\0');
                             if (!Read(cursor + header.size(), name.data(), name.size()) ||
                                 !Read(localOffset + local.size(), localName.data(), localName.size()) ||

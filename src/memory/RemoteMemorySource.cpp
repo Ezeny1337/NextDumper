@@ -67,7 +67,13 @@ namespace nextdumper::memory
         const auto region = std::find_if(regions_.begin(), regions_.end(), [](const auto &item)
                                          { return item.readable; });
         uint8_t byte = 0;
-        if (region == regions_.end() || !ReadFreshBytes(region->start, &byte, sizeof(byte)).Ok())
+        if (region == regions_.end())
+        {
+            lastError_ = ENXIO;
+            initialized_ = false;
+            return false;
+        }
+        if (!ReadFreshBytes(region->start, &byte, sizeof(byte)).Ok())
         {
             initialized_ = false;
             return false;
@@ -119,8 +125,13 @@ namespace nextdumper::memory
             const size_t count = std::min(size, kCacheBlockSize - offset);
             const auto at = blocks_.find(BlockAddress(address));
             if (at != blocks_.end())
-                for (size_t index = 0; index < count; ++index)
-                    at->second.valid.reset(offset + index);
+            {
+                if (count == kCacheBlockSize)
+                    at->second.valid.reset();
+                else
+                    for (size_t index = 0; index < count; ++index)
+                        at->second.valid.reset(offset + index);
+            }
             size -= count;
             if (size)
                 address += count;
@@ -129,6 +140,8 @@ namespace nextdumper::memory
 
     bool RemoteMemorySource::GetCached(uintptr_t address, void *buffer, size_t size) const
     {
+        if (size > maxCacheSize_)
+            return false;
         const uintptr_t first = address;
         const size_t total = size;
         while (size)
@@ -138,9 +151,15 @@ namespace nextdumper::memory
             const auto at = blocks_.find(BlockAddress(address));
             if (at == blocks_.end())
                 return false;
-            for (size_t index = 0; index < count; ++index)
-                if (!at->second.valid.test(offset + index))
+            if (count == kCacheBlockSize)
+            {
+                if (!at->second.valid.all())
                     return false;
+            }
+            else
+                for (size_t index = 0; index < count; ++index)
+                    if (!at->second.valid.test(offset + index))
+                        return false;
             size -= count;
             if (size)
                 address += count;
@@ -201,8 +220,11 @@ namespace nextdumper::memory
             else
                 lru_.splice(lru_.begin(), lru_, at->second.lru);
             std::memcpy(at->second.bytes.data() + offset, data, count);
-            for (size_t index = 0; index < count; ++index)
-                at->second.valid.set(offset + index);
+            if (count == kCacheBlockSize)
+                at->second.valid.set();
+            else
+                for (size_t index = 0; index < count; ++index)
+                    at->second.valid.set(offset + index);
             data += count;
             size -= count;
             if (size)
@@ -290,6 +312,7 @@ namespace nextdumper::memory
             ClearCache();
             alive = false;
         }
+        std::array<bool, kMaxBatchRequests> cached{};
         for (size_t index = 0; index < requests.size(); ++index)
         {
             const auto &request = requests[index];
@@ -302,7 +325,10 @@ namespace nextdumper::memory
             if (cancelled_.load(std::memory_order_relaxed))
                 result.error = ReadError::Cancelled;
             else if (!alive)
-                result.error = invalidated_ ? ReadError::TargetExited : ReadError::NotInitialized;
+            {
+                result.error = invalidated_ ? SystemReadError(lastError_) : ReadError::NotInitialized;
+                result.systemError = lastError_;
+            }
             else if (overLimit)
                 result.error = ReadError::LimitExceeded;
             else if (!request.buffer || !request.address || !request.size || request.address > UINTPTR_MAX - (request.size - 1))
@@ -314,6 +340,7 @@ namespace nextdumper::memory
             else if (GetCached(request.address, request.buffer, request.size))
             {
                 result.transferred = request.size;
+                cached[index] = true;
                 ++stats_.cacheHits;
                 stats_.cacheHitBytes += request.size;
             }
@@ -338,8 +365,10 @@ namespace nextdumper::memory
                     continue;
                 if (cancelled || expired || calls >= 4096 || invalidated_)
                 {
-                    result.error = cancelled ? ReadError::Cancelled : invalidated_ ? ReadError::TargetExited
+                    result.error = cancelled ? ReadError::Cancelled : invalidated_ ? SystemReadError(lastError_)
                                                                                    : ReadError::LimitExceeded;
+                    if (invalidated_)
+                        result.systemError = lastError_;
                     continue;
                 }
                 const auto &request = requests[index];
@@ -392,7 +421,7 @@ namespace nextdumper::memory
                 stats_.maxBatchVectors = std::max<uint64_t>(stats_.maxBatchVectors, count);
                 stats_.maxBatchBytes = std::max<uint64_t>(stats_.maxBatchBytes, bytes);
                 if (error)
-                    ++stats_.errnoCounts[static_cast<size_t>(std::min(error, 133))];
+                    ++stats_.errnoCounts[std::min(static_cast<size_t>(error), stats_.errnoCounts.size() - 1)];
                 if (error != EINTR || retries == 3 || cancelled_.load(std::memory_order_relaxed) ||
                     std::chrono::steady_clock::now() >= deadline)
                     break;
@@ -415,7 +444,7 @@ namespace nextdumper::memory
                 remaining -= done;
                 if (done != remote[index].iov_len)
                 {
-                    result.error = result.transferred ? ReadError::PartialRead : SystemReadError(error);
+                    result.error = received >= 0 || result.transferred ? ReadError::PartialRead : SystemReadError(error);
                     result.systemError = error;
                     stopped = true;
                     break;
@@ -443,14 +472,18 @@ namespace nextdumper::memory
         {
             invalidated_ = true;
             ++stats_.targetInvalidations;
+            lastError_ = process_.LastError();
             ClearCache();
         }
         for (size_t index = 0; index < results.size(); ++index)
         {
             auto &result = results[index];
             if (invalidated_ && result.error == ReadError::None)
-                result.error = ReadError::TargetExited;
-            if (result.Ok() && !fresh)
+            {
+                result.error = SystemReadError(lastError_);
+                result.systemError = lastError_;
+            }
+            if (result.Ok() && !fresh && !cached[index])
                 PutCached(requests[index].address, static_cast<const uint8_t *>(requests[index].buffer), requests[index].size);
             FinishResult(result);
         }

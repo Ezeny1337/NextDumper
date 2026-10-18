@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstring>
 #include <limits>
+#include <utility>
 
 #include "ElfFile.hpp"
 #include "ElfTypes.hpp"
@@ -79,14 +80,21 @@ namespace nextdumper::module
                     candidate.dynamicSize = static_cast<size_t>(program.p_memsz);
                     continue;
                 }
+                if (!program.p_memsz)
+                    continue;
+                if (start < candidate.base)
+                    return false;
                 if (program.p_align > 1 && ((program.p_align & (program.p_align - 1)) != 0 ||
                                             program.p_vaddr % program.p_align != program.p_offset % program.p_align))
                     return false;
                 candidate.end = std::max(candidate.end, end);
-                for (const auto &region : memory.Regions())
+                const auto regions = memory.Regions();
+                const auto begin = std::lower_bound(regions.begin(), regions.end(), start,
+                                                    [](const auto &region, uintptr_t address)
+                                                    { return region.end <= address; });
+                for (auto at = begin; at != regions.end(); ++at)
                 {
-                    if (region.end <= start)
-                        continue;
+                    const auto &region = *at;
                     if (region.start >= end)
                         break;
                     if (region.inode && (region.inode != mapping.inode || region.device != mapping.device))
@@ -111,13 +119,26 @@ namespace nextdumper::module
             }
             std::sort(candidate.segments.begin(), candidate.segments.end(), [](const auto &left, const auto &right)
                       { return left.start < right.start; });
-            for (size_t index = 1; index < candidate.segments.size(); ++index)
-                if (candidate.segments[index].start < candidate.segments[index - 1].end)
-                    return false;
-            if (candidate.dynamicAddress && std::none_of(candidate.segments.begin(), candidate.segments.end(),
-                                                         [&](const auto &segment)
-                                                         { return segment.readable && candidate.dynamicAddress >= segment.start &&
-                                                                  candidate.dynamicAddress < segment.end && candidate.dynamicSize <= segment.end - candidate.dynamicAddress; }))
+            std::vector<ModuleImage::Segment> merged;
+            merged.reserve(candidate.segments.size());
+            for (auto &segment : candidate.segments)
+            {
+                if (!merged.empty() && segment.start < merged.back().end)
+                {
+                    auto &previous = merged.back();
+                    // LOAD 可以重叠，但同一字节的实际映射属性和文件位置必须一致
+                    if (previous.readable != segment.readable || previous.writable != segment.writable ||
+                        previous.executable != segment.executable || previous.privateMapping != segment.privateMapping ||
+                        previous.path != segment.path || segment.fileOffset < previous.fileOffset ||
+                        segment.fileOffset - previous.fileOffset != segment.start - previous.start)
+                        return false;
+                    previous.end = std::max(previous.end, segment.end);
+                }
+                else
+                    merged.push_back(std::move(segment));
+            }
+            candidate.segments = std::move(merged);
+            if (candidate.dynamicAddress && !candidate.IsReadable(candidate.dynamicAddress, candidate.dynamicSize))
                 return false;
             if (!candidate.IsValid() || candidate.end - candidate.base > 2ULL * 1024 * 1024 * 1024 ||
                 candidate.segments.empty() ||

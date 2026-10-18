@@ -17,6 +17,12 @@ namespace nextdumper::memory
             pattern.empty() || pattern.size() > kChunk || pattern.size() != mask.size() || !alignment || maxHits > kMaxHits)
             throw std::invalid_argument("Invalid or excessive memory scan request");
         ScanResult result;
+        if (!memory.IsInitialized() || memory.Regions().empty())
+        {
+            result.complete = false;
+            result.failure = {memory.IsInitialized() ? ReadError::UnreadableRange : ReadError::NotInitialized, start, size, 0};
+            return result;
+        }
         size_t anchor = 0;
         while (anchor < mask.size() && mask[anchor] == 0)
             ++anchor;

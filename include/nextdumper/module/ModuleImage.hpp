@@ -59,6 +59,7 @@ namespace nextdumper::module
         [[nodiscard]] bool IsValid() const { return base != 0 && end > base; }
         [[nodiscard]] bool Contains(uintptr_t address) const { return IsValid() && address >= base && address < end; }
         [[nodiscard]] uintptr_t ToRva(uintptr_t address) const { return Contains(address) ? address - base : 0; }
+        [[nodiscard]] bool IsReadable(uintptr_t address, size_t size = 1) const;
         [[nodiscard]] bool IsExecutable(uintptr_t address, size_t size = 1) const;
         [[nodiscard]] bool IsWritable(uintptr_t address, size_t size = 1) const;
     };

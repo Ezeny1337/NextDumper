@@ -68,6 +68,21 @@ namespace nextdumper::memory
     {
         if (requests.size() != results.size() || requests.size() > 1024)
             return false;
+        size_t total = 0;
+        for (const auto &request : requests)
+        {
+            if (request.size > kMaxBytes - total)
+            {
+                // 拆分内部批次不能绕过逻辑批次的总字节预算
+                for (size_t index = 0; index < requests.size(); ++index)
+                {
+                    results[index] = {ReadError::LimitExceeded, requests[index].address, requests[index].size, 0};
+                    RecordFailure(results[index]);
+                }
+                return true;
+            }
+            total += request.size;
+        }
         if (fresh || !observing_)
         {
             if (!source_.ReadBatch(requests, results, true))

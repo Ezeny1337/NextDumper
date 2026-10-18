@@ -1463,6 +1463,12 @@ namespace nextdumper::reflection
             const uintptr_t object = objectResult.address;
             ++result.stats.validObjects;
             const auto classAddress = classWindow[windowIndex];
+            if (!classAddress || !*classAddress)
+            {
+                ++result.stats.failures;
+                recordFailure("class-pointer-unreadable-or-null", index, object);
+                continue;
+            }
             const auto className = classAddress ? objects_.Name(*classAddress) : std::nullopt;
             if (!className)
             {
@@ -1471,12 +1477,6 @@ namespace nextdumper::reflection
                 recordObjectDiagnostic(result.stats.classNameReadFailures, [&]
                                        { return "object class name could not be read: index=" + std::to_string(index) +
                                                 " address=" + std::to_string(object); });
-                continue;
-            }
-            if (!classAddress)
-            {
-                ++result.stats.failures;
-                recordFailure("class-pointer-unreadable", index, object);
                 continue;
             }
             auto classification = classKinds.find(*classAddress);

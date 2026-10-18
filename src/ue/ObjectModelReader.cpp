@@ -153,9 +153,9 @@ namespace nextdumper::ue
         uintptr_t raw = 0;
         const auto read = fresh ? memory_.ReadFreshBytes(*address, &raw, sizeof(raw))
                                 : memory_.ReadBytes(*address, &raw, sizeof(raw));
-        if (!read.Ok() || raw == 0)
+        if (!read.Ok())
             return std::nullopt;
-        return binding_.decode.objectClass(raw, *address);
+        return DecodeClassPointer(raw, *address);
     }
 
     std::optional<uintptr_t> ObjectModelReader::Outer(uintptr_t object) const

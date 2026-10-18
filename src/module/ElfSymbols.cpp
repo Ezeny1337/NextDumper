@@ -87,7 +87,7 @@ namespace nextdumper::module
                         if (std::memcmp(text.data(), name.c_str(), length) != 0)
                             continue;
                         const auto address = symbol.st_shndx == SHN_ABS ? std::optional<uintptr_t>(symbol.st_value) : Add(module.loadBias, symbol.st_value);
-                        if (!address || !module.Contains(*address))
+                        if (!address || !module.IsReadable(*address))
                             return fail("debug-symbol-address-out-of-range");
                         result.debug.emplace(name, *address);
                         result.status[name] = SymbolStatus::Debug;
@@ -96,9 +96,7 @@ namespace nextdumper::module
                     }
                 }
             }
-            for (const auto &name : names)
-                if (!result.exported.contains(name) && !result.debug.contains(name))
-                    result.status[name] = SymbolStatus::Missing;
+            // debug 表中的缺失不能修复 dynamic 表的未完成查询
             return true;
         }
     }
@@ -110,10 +108,9 @@ namespace nextdumper::module
         tables.loadBias = module.loadBias;
         const auto relocate = [&](uint64_t address) -> uintptr_t
         {
-            if (address <= UINTPTR_MAX && module.Contains(static_cast<uintptr_t>(address)))
-                return static_cast<uintptr_t>(address);
+            // DT_* 指针按模块 ELF 的 load_bias + d_ptr 契约解释
             const auto value = Add(module.loadBias, address);
-            return value && module.Contains(*value) ? *value : uintptr_t{0};
+            return address && value && module.IsReadable(*value) ? *value : uintptr_t{0};
         };
         bool terminated = false;
         if (module.dynamicAddress && module.dynamicSize <= 1024 * 1024 && module.dynamicSize % sizeof(ElfDynamic) == 0)

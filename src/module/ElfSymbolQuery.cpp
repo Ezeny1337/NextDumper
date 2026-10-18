@@ -63,8 +63,7 @@ namespace nextdumper::module
         private:
             bool Range(uintptr_t address, size_t size) const
             {
-                return std::any_of(module_.segments.begin(), module_.segments.end(), [&](const auto &segment)
-                                   { return segment.readable && address >= segment.start && address < segment.end && size <= segment.end - address; });
+                return module_.IsReadable(address, size);
             }
             template <typename T>
             bool Read(uintptr_t base, uint64_t offset, T &value)
@@ -133,8 +132,8 @@ namespace nextdumper::module
                 }
                 if (std::memcmp(text.data(), name.c_str(), length) != 0)
                     return 0;
-                const uint64_t bias = section == 0xFFF1 ? 0 : tables_.loadBias; // SHN_ABS is already absolute.
-                if (value > UINTPTR_MAX || bias > UINTPTR_MAX - value || !module_.Contains(static_cast<uintptr_t>(bias + value)))
+                const uint64_t bias = section == 0xFFF1 ? 0 : tables_.loadBias; // SHN_ABS 已是绝对地址。
+                if (value > UINTPTR_MAX || bias > UINTPTR_MAX - value || !module_.IsReadable(static_cast<uintptr_t>(bias + value)))
                 {
                     error = "dynamic-symbol-address-out-of-range";
                     return 0;
@@ -267,4 +266,4 @@ namespace nextdumper::module
         }
         return result;
     }
-}
+} // namespace nextdumper::module
