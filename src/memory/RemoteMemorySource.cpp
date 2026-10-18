@@ -1,7 +1,6 @@
 #include "nextdumper/memory/RemoteMemorySource.hpp"
 
 #include <algorithm>
-#include <bit>
 #include <cerrno>
 #include <chrono>
 #include <cstring>
@@ -14,6 +13,12 @@ namespace nextdumper::memory
     {
         uintptr_t BlockAddress(uintptr_t address) { return address & ~(uintptr_t{RemoteMemorySource::kCacheBlockSize} - 1); }
         size_t BlockOffset(uintptr_t address) { return address & (RemoteMemorySource::kCacheBlockSize - 1); }
+
+        size_t LatencyBucket(uint64_t nanos)
+        {
+            // clz 的零值输入未定义，保留原有的零值桶和饱和桶，不依赖 std::bit_width
+            return nanos == 0 ? 0 : std::min<size_t>(31, 64 - __builtin_clzll(nanos));
+        }
 
         ReadError SystemReadError(int error)
         {
@@ -417,7 +422,7 @@ namespace nextdumper::memory
                 stats_.backendNanos += nanos;
                 stats_.minBackendNanos = stats_.backendOperations == 1 ? nanos : std::min(stats_.minBackendNanos, nanos);
                 stats_.maxBackendNanos = std::max(stats_.maxBackendNanos, nanos);
-                ++stats_.latencyBuckets[std::min<size_t>(31, std::bit_width(nanos))];
+                ++stats_.latencyBuckets[LatencyBucket(nanos)];
                 stats_.maxBatchVectors = std::max<uint64_t>(stats_.maxBatchVectors, count);
                 stats_.maxBatchBytes = std::max<uint64_t>(stats_.maxBatchBytes, bytes);
                 if (error)
