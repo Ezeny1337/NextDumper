@@ -72,6 +72,7 @@ target_compile_options(ue_analyzer PRIVATE -Wall -Wextra -Wno-unused-parameter -
 
 add_library(nextdumper_core STATIC
     src/app/CompatibilityDiagnosis.cpp
+    src/app/MemoryPerformanceLog.cpp
     src/app/RuntimeSession.cpp
     src/analyzer/AnalyzerMemoryAdapter.cpp
     src/binding/BindingBuilder.cpp

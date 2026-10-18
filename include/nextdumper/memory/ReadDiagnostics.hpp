@@ -6,6 +6,38 @@
 
 namespace nextdumper::memory
 {
+    [[nodiscard]] inline const char *ReadErrorName(ReadError error)
+    {
+        switch (error)
+        {
+        case ReadError::None:
+            return "none";
+        case ReadError::NotInitialized:
+            return "not-initialized";
+        case ReadError::InvalidArgument:
+            return "invalid-argument";
+        case ReadError::UnreadableRange:
+            return "unreadable-range";
+        case ReadError::PartialRead:
+            return "partial-read";
+        case ReadError::BackendFailure:
+            return "backend-failure";
+        case ReadError::ProbeLimit:
+            return "probe-limit";
+        case ReadError::AccessDenied:
+            return "access-denied";
+        case ReadError::TargetExited:
+            return "target-exited";
+        case ReadError::LimitExceeded:
+            return "limit-exceeded";
+        case ReadError::Cancelled:
+            return "cancelled";
+        case ReadError::AddressSpaceChanged:
+            return "address-space-changed";
+        }
+        return "unknown";
+    }
+
     // 计数器必须属于同一个内存源，且在各采样点之间不得发生重置
     [[nodiscard]] inline std::string DescribeReadStats(const ReadStats &after, const ReadStats &before = {})
     {

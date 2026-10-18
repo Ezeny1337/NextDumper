@@ -26,6 +26,8 @@ namespace nextdumper::memory
 
         [[nodiscard]] bool Initialize(pid_t pid);
         void Reset();
+        // 只清空内容缓存，不重置计数器，不使同一地址空间的 Capture 失效
+        void ClearReadCache() { ClearCache(); }
         // 取消标志不发布其他数据，因此 relaxed 足以通知读取线程
         void Cancel() { cancelled_.store(true, std::memory_order_relaxed); }
         [[nodiscard]] bool IsInitialized() const override { return initialized_ && !invalidated_; }
@@ -43,6 +45,8 @@ namespace nextdumper::memory
         [[nodiscard]] std::span<const MemoryRegion> Regions() const override { return regions_; }
         [[nodiscard]] const ProcessIdentity &Identity() const { return process_.Identity(); }
         [[nodiscard]] size_t PageSize() const { return pageSize_; }
+        [[nodiscard]] size_t CacheCapacity() const { return maxCacheSize_; }
+        [[nodiscard]] size_t VectorLimit() const { return vectorLimit_; }
         [[nodiscard]] int LastError() const { return lastError_; }
         [[nodiscard]] std::span<const ReadResult> ErrorSamples() const { return {errors_.data(), errorCount_}; }
 

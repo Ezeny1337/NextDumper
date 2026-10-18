@@ -85,6 +85,8 @@ try
 
     if (!session.LogPath().empty())
         std::printf("Log: %s\n", session.LogPath().c_str());
+    if (!session.MemoryPerformancePath().empty())
+        std::printf("Memory performance: %s\n", session.MemoryPerformancePath().c_str());
     if (!session.DiagnosisPath().empty())
         std::printf("Diagnosis: %s\n", session.DiagnosisPath().c_str());
 

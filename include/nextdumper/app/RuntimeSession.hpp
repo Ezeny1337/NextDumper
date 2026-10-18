@@ -4,9 +4,11 @@
 #include <chrono>
 #include <fstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "nextdumper/app/CompatibilityDiagnosis.hpp"
+#include "nextdumper/app/MemoryPerformanceLog.hpp"
 #include "nextdumper/compat/GameProfile.hpp"
 #include "nextdumper/ir/ReflectionIR.hpp"
 #include "nextdumper/app/RuntimeContext.hpp"
@@ -60,6 +62,7 @@ namespace nextdumper::app
         [[nodiscard]] const ArtifactResult &Artifacts() const { return artifacts_; }
         [[nodiscard]] const CompatibilityDiagnosis &Diagnosis() const { return diagnosis_; }
         [[nodiscard]] std::string LogPath() const;
+        [[nodiscard]] std::string MemoryPerformancePath() const;
         [[nodiscard]] std::string DiagnosisPath() const;
 
     private:
@@ -70,6 +73,9 @@ namespace nextdumper::app
         [[nodiscard]] const std::string &RunTimestamp() const;
         [[nodiscard]] bool WriteDiagnosisReport() const;
         [[nodiscard]] bool FlushDiagnostics();
+        void WriteMemoryStats(std::string_view event, std::string_view stage,
+                              std::string_view status = "running") noexcept;
+        void BeginMemoryStage(std::string_view stage);
         [[nodiscard]] RuntimeSessionStatus RunImpl();
 
         RuntimeSessionConfig config_;
@@ -81,11 +87,14 @@ namespace nextdumper::app
         CompatibilityDiagnosis diagnosis_;
         generation::ArtifactProvenance provenance_;
         std::vector<std::string> failures_;
-        std::chrono::steady_clock::time_point started_;
+        std::chrono::steady_clock::time_point started_{};
         std::ofstream liveLog_;
+        MemoryPerformanceLog memoryLog_;
         bool liveLogFailed_ = false;
+        std::string memoryStage_;
         mutable std::string runTimestamp_;
         mutable std::string logPath_;
+        std::string memoryPerformancePath_;
         mutable std::string diagnosisPath_;
     };
 } // namespace nextdumper::app

@@ -202,6 +202,30 @@ namespace nextdumper::app
         return logPath_;
     }
 
+    std::string RuntimeSession::MemoryPerformancePath() const
+    {
+        return memoryPerformancePath_;
+    }
+
+    void RuntimeSession::WriteMemoryStats(std::string_view event, std::string_view stage,
+                                          std::string_view status) noexcept
+    {
+        if (memory_)
+            memoryLog_.Write(event, stage, *memory_, module::ModuleArchitectureName(context_.Module().architecture), status);
+    }
+
+    void RuntimeSession::BeginMemoryStage(std::string_view stage)
+    {
+        if (memoryStage_ != stage)
+        {
+            if (!memoryStage_.empty())
+                WriteMemoryStats("stage_end", memoryStage_);
+            memory_->ClearReadCache();
+            memoryStage_ = stage;
+            WriteMemoryStats("stage_start", memoryStage_);
+        }
+    }
+
     std::string RuntimeSession::DiagnosisPath() const
     {
         if (config_.outputRoot.empty())
@@ -248,6 +272,7 @@ namespace nextdumper::app
 
     void RuntimeSession::Note(RuntimeLogLevel level, std::string message)
     {
+        WriteMemoryStats("snapshot", memoryStage_);
         // 将目标元数据保持在单个物理日志行中，且不隐藏控制字节
         std::string escaped;
         escaped.reserve(message.size());
@@ -285,20 +310,22 @@ namespace nextdumper::app
 
     bool RuntimeSession::FlushDiagnostics()
     {
-        if (LogPath().empty())
+        if (config_.outputRoot.empty())
             return true;
-        if (!liveLog_.is_open())
-            return false;
-        liveLog_.flush();
-        liveLog_.close();
-        liveLogFailed_ = liveLogFailed_ || liveLog_.fail();
+        if (liveLog_.is_open())
+        {
+            liveLog_.flush();
+            liveLog_.close();
+            liveLogFailed_ = liveLogFailed_ || liveLog_.fail();
+        }
+        else
+            liveLogFailed_ = true;
         return !liveLogFailed_;
     }
 
     RuntimeSessionStatus RuntimeSession::Run()
     {
         RuntimeSessionStatus status = RuntimeSessionStatus::Failed;
-        bool diagnosticsWritten = false;
         try
         {
             status = RunImpl();
@@ -344,40 +371,47 @@ namespace nextdumper::app
             {
             }
         }
-        Note(RuntimeLogLevel::Info, "compatibility_diagnosis status=" +
-                                        std::string(CompatibilityStatusName(diagnosis_.status)) +
-                                        " profile=" + diagnosis_.profileId +
-                                        " profile_status=" + diagnosis_.profileStatus +
-                                        " stage=" + diagnosis_.stage);
         try
         {
-            diagnosticsWritten = FlushDiagnostics();
-            if (!diagnosticsWritten)
-            {
-                std::fprintf(stderr, "Runtime log write or close failed\n");
-                RecordDiagnosis(DiagnosisDomain::Runtime, "RUNTIME_LOG_WRITE_FAILED", "diagnostics",
-                                "observed", "The runtime log could not be fully written or closed.",
-                                "Check output permissions and free space; compatibility status is independent of log output.");
-                status = RuntimeSessionStatus::Failed;
-            }
+            Note(RuntimeLogLevel::Info, "compatibility_diagnosis status=" +
+                                            std::string(CompatibilityStatusName(diagnosis_.status)) +
+                                            " profile=" + diagnosis_.profileId +
+                                            " profile_status=" + diagnosis_.profileStatus +
+                                            " stage=" + diagnosis_.stage);
         }
         catch (...)
         {
-            std::fprintf(stderr, "Runtime log could not be flushed\n");
+            std::fprintf(stderr, "Runtime summary could not be serialized\n");
+            status = RuntimeSessionStatus::Failed;
+        }
+        const auto reportOutputFailure = [&](const char *code, const char *summary)
+        {
+            status = RuntimeSessionStatus::Failed;
+            std::fprintf(stderr, "%s\n", summary);
             try
             {
-                RecordDiagnosis(DiagnosisDomain::Runtime, "RUNTIME_LOG_FLUSH_EXCEPTION", "diagnostics",
-                                "observed", "An exception occurred while flushing the runtime log.",
-                                "Check the output filesystem and retry; compatibility status is independent of log output.");
+                RecordDiagnosis(DiagnosisDomain::Runtime, code, "diagnostics",
+                                "observed", summary, "Check output permissions and free space; generated artifacts are preserved.");
             }
             catch (...)
             {
+                std::fprintf(stderr, "Output failure details could not be stored: %s\n", code);
             }
-            status = RuntimeSessionStatus::Failed;
-        }
-        diagnosis_.sessionStatus = SessionStatusName(status);
+        };
         try
         {
+            if (!FlushDiagnostics())
+                reportOutputFailure("RUNTIME_LOG_WRITE_FAILED", "Runtime log write or close failed");
+        }
+        catch (...)
+        {
+            reportOutputFailure("RUNTIME_LOG_FLUSH_EXCEPTION", "Runtime log could not be flushed");
+        }
+        if (memoryLog_.Failed())
+            reportOutputFailure("MEMORY_LOG_WRITE_FAILED", "Memory performance log could not be fully written");
+        try
+        {
+            diagnosis_.sessionStatus = SessionStatusName(status);
             if (!WriteDiagnosisReport())
             {
                 std::fprintf(stderr, "Compatibility diagnosis report could not be written\n");
@@ -389,7 +423,23 @@ namespace nextdumper::app
         {
             std::fprintf(stderr, "Compatibility diagnosis report could not be serialized\n");
             status = RuntimeSessionStatus::Failed;
-            diagnosis_.sessionStatus = SessionStatusName(status);
+        }
+        if (!memoryStage_.empty())
+            WriteMemoryStats("stage_end", memoryStage_, SessionStatusName(status));
+        WriteMemoryStats("session_end", diagnosis_.stage, SessionStatusName(status));
+        if (!memoryLog_.Close())
+        {
+            reportOutputFailure("MEMORY_LOG_CLOSE_FAILED", "Memory performance log write or close failed");
+            try
+            {
+                diagnosis_.sessionStatus = SessionStatusName(status);
+                if (!WriteDiagnosisReport())
+                    std::fprintf(stderr, "Final compatibility diagnosis report could not be written\n");
+            }
+            catch (...)
+            {
+                std::fprintf(stderr, "Final compatibility diagnosis report could not be serialized\n");
+            }
         }
         return status;
     }
@@ -414,8 +464,11 @@ namespace nextdumper::app
         profiles_.clear();
         started_ = std::chrono::steady_clock::now();
         liveLogFailed_ = false;
+        memory_->Reset();
+        memoryStage_.clear();
         liveLog_.clear();
         logPath_.clear();
+        memoryPerformancePath_.clear();
         diagnosisPath_.clear();
         runTimestamp_.clear();
         provenance_.runTimestamp = RunTimestamp();
@@ -426,10 +479,22 @@ namespace nextdumper::app
             if (!error)
                 liveLog_.open(LogPath(), std::ios::out | std::ios::trunc);
             liveLogFailed_ = error || !liveLog_.is_open();
+            memoryPerformancePath_ = (std::filesystem::path(config_.outputRoot) /
+                                      ("NextDumper_" + provenance_.runTimestamp + "_" + provenance_.runId + ".memory.jsonl"))
+                                         .string();
+            const bool memoryLogOpened = !error && memoryLog_.Open(memoryPerformancePath_, provenance_, started_);
+            WriteMemoryStats("session_start", "output");
             if (liveLogFailed_)
             {
                 failures_.push_back("Runtime log open failed" + (error ? ": " + error.message() : std::string{}));
                 RecordDiagnosis(DiagnosisDomain::Runtime, "RUNTIME_LOG_OPEN_FAILED", "output",
+                                "observed", failures_.back(), "Verify the output directory exists and is writable.");
+                return RuntimeSessionStatus::Failed;
+            }
+            if (!memoryLogOpened)
+            {
+                failures_.push_back("Memory performance log open failed: errno=" + std::to_string(memoryLog_.LastError()));
+                RecordDiagnosis(DiagnosisDomain::Runtime, "MEMORY_LOG_OPEN_FAILED", "output",
                                 "observed", failures_.back(), "Verify the output directory exists and is writable.");
                 return RuntimeSessionStatus::Failed;
             }
@@ -445,6 +510,7 @@ namespace nextdumper::app
             Note("stage=" + std::string(stage) + " elapsed_ms=" +
                  std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(now - stageStart).count()) +
                  ::nextdumper::memory::DescribeReadStats(stats, stageStats));
+            WriteMemoryStats("checkpoint", stage);
             stageStart = now;
             stageStats = stats;
         };
@@ -458,6 +524,7 @@ namespace nextdumper::app
         Note("Package=" + config_.packageName + " PID=auto UE=auto");
 
         diagnosis_.stage = "process-discovery";
+        BeginMemoryStage("process-discovery");
         const int pid = memory::ProcessInfo::Find(config_.packageName);
         if (pid <= 0)
         {
@@ -470,7 +537,10 @@ namespace nextdumper::app
         Note(RuntimeLogLevel::Debug, "Target PID=" + std::to_string(pid));
         provenance_.targetPid = pid;
         diagnosis_.stage = "memory-attach";
-        if (!memory_->Initialize(static_cast<pid_t>(pid)))
+        BeginMemoryStage("memory-attach");
+        const bool attached = memory_->Initialize(static_cast<pid_t>(pid));
+        WriteMemoryStats("backend_init", "memory-attach", attached ? "ready" : "failed");
+        if (!attached)
         {
             failures_.push_back("remote memory source initialization failed");
             RecordDiagnosis(DiagnosisDomain::Runtime, "REMOTE_MEMORY_INIT_FAILED", "memory-attach",
@@ -481,6 +551,7 @@ namespace nextdumper::app
         stageStats = memory_->Stats();
 
         diagnosis_.stage = "module-discovery";
+        BeginMemoryStage("module-discovery");
         module::ModuleImage module;
         if (!ModuleCatalog::Discover(*memory_, config_.moduleNames, module))
         {
@@ -516,6 +587,7 @@ namespace nextdumper::app
         std::vector<compat::IGameProfile *> matchingProfiles;
         bool profileMatcherFailed = false;
         diagnosis_.stage = "profile-selection";
+        BeginMemoryStage("profile-selection");
         for (const auto &profile : profiles_)
         {
             if (!profile || profile->Id().empty())
@@ -587,6 +659,7 @@ namespace nextdumper::app
             try
             {
                 diagnosis_.stage = "profile-configuration";
+                BeginMemoryStage("profile-configuration");
                 decode = selectedGameProfile->MakeDecodePlan(*memory_, context_.Module());
                 layoutHints = selectedGameProfile->LayoutHints();
                 if (!decode.IsValid() || !layoutHints.IsValid())
@@ -602,6 +675,7 @@ namespace nextdumper::app
                     GuardProfileDecoders(decode, profileExecutionState);
                     diagnosis_.profileStatus = "active";
                     diagnosis_.stage = "profile-root-location";
+                    BeginMemoryStage("profile-root-location");
                     profileCandidates = selectedGameProfile->LocateRoots(
                         *memory_, context_.Module(),
                         [&](const std::string &message)
@@ -635,6 +709,7 @@ namespace nextdumper::app
         }
 
         diagnosis_.stage = "root-location";
+        BeginMemoryStage("root-location");
         GlobalLocator locator(*memory_, context_.Module());
         BindingCandidates candidates = locator.LocateSymbols(
             {"GUObjectArray", "GObjects", "ObjObjects"},
@@ -651,6 +726,7 @@ namespace nextdumper::app
         const auto bindingProgress = [&](const std::string &message)
         { Note(message.starts_with("binding:") ? RuntimeLogLevel::Info : RuntimeLogLevel::Debug, message); };
         diagnosis_.stage = "binding";
+        BeginMemoryStage("binding");
         profileExecutionState->stage = "binding";
         auto binding = builder.Build(candidates, decode, bindingProgress, layoutHints);
         finishStage("symbol-binding");
@@ -672,8 +748,10 @@ namespace nextdumper::app
         if (!binding)
         {
             Note("locator_path source=analyzer reason=symbol-binding-incomplete");
+            BeginMemoryStage("analyzer-locator");
             candidates = locator.LocateAnalysis(candidates, progress);
             finishStage("analyzer-locator");
+            BeginMemoryStage("analyzer-binding");
             profileExecutionState->stage = "binding";
             binding = builder.Build(candidates, decode, bindingProgress, layoutHints);
             finishStage("analyzer-binding");
@@ -734,6 +812,8 @@ namespace nextdumper::app
         SchemaResolutionReport schemaReport;
         SchemaSelectionResult schemaSelection;
         const std::vector<EngineProfile> profiles = SchemaCatalog::Profiles();
+        diagnosis_.stage = "schema";
+        BeginMemoryStage("schema-resolution");
         Note(RuntimeLogLevel::Info, "Detecting Unreal Engine schema profile...");
         std::vector<EngineSchema> candidateSchemas;
         auto resolveProfiles = [&]()
@@ -956,6 +1036,8 @@ namespace nextdumper::app
                             "Check target process stability and memory-map refresh before changing a game profile.");
             return RuntimeSessionStatus::SchemaReady;
         }
+        diagnosis_.stage = "common-objects";
+        BeginMemoryStage("common-objects");
         Note(RuntimeLogLevel::Info, "Collecting common object classes...");
         profileExecutionState->stage = "common-objects";
         binding::CommonObjectCollector collector(*memory_, context_.Binding(), context_.Schema());
@@ -983,6 +1065,8 @@ namespace nextdumper::app
         context_.CommitBinding(std::move(updatedBinding));
         finishStage("common-objects");
 
+        diagnosis_.stage = "reflection";
+        BeginMemoryStage("reflection");
         const ReadStats beforeReflection = memory_->Stats();
         profileExecutionState->stage = "reflection";
         ReflectionReader reader(*memory_, context_.Binding(), context_.Schema(),
@@ -1080,6 +1164,8 @@ namespace nextdumper::app
                                             " profile=" + diagnosis_.profileId);
         }
 
+        diagnosis_.stage = "runtime-value-evidence";
+        BeginMemoryStage("runtime-value-evidence");
         const ReadStats beforeValues = memory_->Stats();
         try
         {
@@ -1151,6 +1237,8 @@ namespace nextdumper::app
                                          ::nextdumper::memory::DescribeReadStats(memory_->Stats(), beforeValues));
         if (!config_.outputRoot.empty())
         {
+            diagnosis_.stage = "artifact-generation";
+            BeginMemoryStage("artifact-generation");
             provenance_.addressSpaceGeneration = memory_->AddressSpaceGeneration();
             ArtifactWriter writer(context_, reflection_, config_.outputRoot, config_.packageName, provenance_,
                                   [&](const std::string &message)
