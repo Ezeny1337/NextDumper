@@ -99,6 +99,7 @@ add_library(nextdumper_core STATIC
     src/generation/CppTypeResolver.cpp
     src/generation/JsonExport.cpp
     src/memory/CaptureMemorySource.cpp
+    src/memory/ProcessInfo.cpp
     src/memory/RemoteMemorySource.cpp
     src/module/ModuleCatalog.cpp
     src/module/ModuleImage.cpp
