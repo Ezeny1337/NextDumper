@@ -210,7 +210,7 @@ namespace nextdumper::app
     void RuntimeSession::WriteMemoryStats(std::string_view event, std::string_view stage,
                                           std::string_view status) noexcept
     {
-        if (memory_)
+        if (config_.enableMemoryLog && memory_)
             memoryLog_.Write(event, stage, *memory_, module::ModuleArchitectureName(context_.Module().architecture), status);
     }
 
@@ -407,7 +407,7 @@ namespace nextdumper::app
         {
             reportOutputFailure("RUNTIME_LOG_FLUSH_EXCEPTION", "Runtime log could not be flushed");
         }
-        if (memoryLog_.Failed())
+        if (config_.enableMemoryLog && memoryLog_.Failed())
             reportOutputFailure("MEMORY_LOG_WRITE_FAILED", "Memory performance log could not be fully written");
         try
         {
@@ -427,7 +427,7 @@ namespace nextdumper::app
         if (!memoryStage_.empty())
             WriteMemoryStats("stage_end", memoryStage_, SessionStatusName(status));
         WriteMemoryStats("session_end", diagnosis_.stage, SessionStatusName(status));
-        if (!memoryLog_.Close())
+        if (config_.enableMemoryLog && !memoryLog_.Close())
         {
             reportOutputFailure("MEMORY_LOG_CLOSE_FAILED", "Memory performance log write or close failed");
             try
@@ -479,11 +479,6 @@ namespace nextdumper::app
             if (!error)
                 liveLog_.open(LogPath(), std::ios::out | std::ios::trunc);
             liveLogFailed_ = error || !liveLog_.is_open();
-            memoryPerformancePath_ = (std::filesystem::path(config_.outputRoot) /
-                                      ("NextDumper_" + provenance_.runTimestamp + "_" + provenance_.runId + ".memory.jsonl"))
-                                         .string();
-            const bool memoryLogOpened = !error && memoryLog_.Open(memoryPerformancePath_, provenance_, started_);
-            WriteMemoryStats("session_start", "output");
             if (liveLogFailed_)
             {
                 failures_.push_back("Runtime log open failed" + (error ? ": " + error.message() : std::string{}));
@@ -491,12 +486,19 @@ namespace nextdumper::app
                                 "observed", failures_.back(), "Verify the output directory exists and is writable.");
                 return RuntimeSessionStatus::Failed;
             }
-            if (!memoryLogOpened)
+            if (config_.enableMemoryLog)
             {
-                failures_.push_back("Memory performance log open failed: errno=" + std::to_string(memoryLog_.LastError()));
-                RecordDiagnosis(DiagnosisDomain::Runtime, "MEMORY_LOG_OPEN_FAILED", "output",
-                                "observed", failures_.back(), "Verify the output directory exists and is writable.");
-                return RuntimeSessionStatus::Failed;
+                memoryPerformancePath_ = (std::filesystem::path(config_.outputRoot) /
+                                          ("NextDumper_" + provenance_.runTimestamp + "_" + provenance_.runId + ".memory.jsonl"))
+                                             .string();
+                if (!memoryLog_.Open(memoryPerformancePath_, provenance_, started_))
+                {
+                    failures_.push_back("Memory performance log open failed: errno=" + std::to_string(memoryLog_.LastError()));
+                    RecordDiagnosis(DiagnosisDomain::Runtime, "MEMORY_LOG_OPEN_FAILED", "output",
+                                    "observed", failures_.back(), "Verify the output directory exists and is writable.");
+                    return RuntimeSessionStatus::Failed;
+                }
+                WriteMemoryStats("session_start", "output");
             }
         }
         const auto progress = [&](const std::string &message)

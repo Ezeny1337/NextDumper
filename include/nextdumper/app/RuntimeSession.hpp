@@ -48,6 +48,7 @@ namespace nextdumper::app
         std::string packageName;
         std::string outputRoot;
         std::vector<std::string> moduleNames = {"libUnreal.so", "libUE4.so"};
+        bool enableMemoryLog = false;
     };
 
     class RuntimeSession

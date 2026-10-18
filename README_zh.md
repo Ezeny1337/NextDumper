@@ -171,7 +171,7 @@ build/android-arm64-release/NextDumper
 ## 使用方法
 
 ```text
-NextDumper -o <输出目录> -p <包名>
+NextDumper -o <输出目录> -p <包名> [options]
 ```
 
 在 Android 设备上运行工具，并保持目标进程运行。工具需要读取目标进程内存和写入输出目录的权限，不会绕过平台访问限制。
@@ -187,6 +187,7 @@ NextDumper -o <输出目录> -p <包名>
 
 | 参数 | 说明 |
 | --- | --- |
+| `--memory-log` | 在输出目录写入 `NextDumper_*.memory.jsonl` 性能日志，默认关闭。 |
 | `-h`、`--help` | 显示命令行帮助。 |
 
 ### 示例

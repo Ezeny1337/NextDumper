@@ -15,6 +15,7 @@ namespace
         std::fprintf(stderr, "  -o, --output <dir>        Output directory for generated SDK\n");
         std::fprintf(stderr, "  -p, --package <name>      Target package name (e.g., com.example.app)\n");
         std::fprintf(stderr, "\nOptional arguments:\n");
+        std::fprintf(stderr, "      --memory-log          Write memory performance JSONL (disabled by default)\n");
         std::fprintf(stderr, "  -h, --help                Show this help message\n");
         std::fprintf(stderr, "\nExample:\n");
         std::fprintf(stderr, "  %s -o ./output -p com.YS.Nicecity\n", program);
@@ -37,6 +38,12 @@ try
         {
             PrintUsage(argv[0]);
             return 0;
+        }
+
+        if (arg == "--memory-log")
+        {
+            config.enableMemoryLog = true;
+            continue;
         }
 
         if (arg == "-o" || arg == "--output")

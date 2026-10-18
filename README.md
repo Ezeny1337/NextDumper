@@ -171,7 +171,7 @@ build/android-arm64-release/NextDumper
 ## Usage
 
 ```text
-NextDumper -o <output-dir> -p <package-name>
+NextDumper -o <output-dir> -p <package-name> [options]
 ```
 
 Run the tool on the Android device while the target process is running. It requires permission to read the target process memory and write the output directory; it does not bypass platform access restrictions.
@@ -183,10 +183,11 @@ Run the tool on the Android device while the target process is running. It requi
 | `-o`, `--output <dir>` | Writable directory for logs and the generated SDK artifact. |
 | `-p`, `--package <name>` | Android package name of the target process. |
 
-### Optional option
+### Optional options
 
 | Option | Description |
 | --- | --- |
+| `--memory-log` | Write `NextDumper_*.memory.jsonl` to the output directory (disabled by default). |
 | `-h`, `--help` | Print command-line help. |
 
 ### Example
