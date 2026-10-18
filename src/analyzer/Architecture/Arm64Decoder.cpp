@@ -85,7 +85,10 @@ namespace
                 const unsigned operation = (word >> 29) & 3, shift = ((word >> 21) & 3) * 16;
                 const bool wide = (word >> 31) != 0;
                 if (operation == 1 || (!wide && shift >= 32))
-                    return false;
+                {
+                    out.bClobbersAll = true;
+                    return true;
+                }
                 const uint64_t immediate = uint64_t{(word >> 5) & 65535} << shift;
                 out.Kind = NormalizedInsn::EKind::MoveImm;
                 out.Dest = rd;
@@ -126,7 +129,10 @@ namespace
                 if (size == 3 && operation >= 2)
                     return true; // PRFM
                 if (size == 2 && operation == 3)
-                    return false;
+                {
+                    out.bClobbersAll = true;
+                    return true;
+                }
                 out.Kind = operation == 0 ? NormalizedInsn::EKind::Store : NormalizedInsn::EKind::Load;
                 out.Dest = rd;
                 out.Base = rn;

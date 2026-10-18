@@ -121,12 +121,14 @@ namespace nextdumper::analyzer
 		std::vector<RegState> Regs(static_cast<size_t>(NumRegs));
 		// Accumulated immediates per register, for composed MOVZ/MOVK-style pairs.
 		std::vector<uint64_t> Imms(static_cast<size_t>(NumRegs), 0);
+		std::vector<bool> ImmKnown(static_cast<size_t>(NumRegs), false);
 
 		auto ClearAll = [&]
 		{
 			for (auto &R : Regs)
 				R.bKnown = false;
 			std::fill(Imms.begin(), Imms.end(), 0);
+			std::fill(ImmKnown.begin(), ImmKnown.end(), false);
 		};
 
 		// Constants and globals are correlated by instruction distance in both
@@ -227,8 +229,12 @@ namespace nextdumper::analyzer
 
 			const int Dest = (Insn.Dest >= 0 && Insn.Dest < NumRegs) ? Insn.Dest : -1;
 			const int Src = (Insn.Base >= 0 && Insn.Base < NumRegs) ? Insn.Base : -1;
-			if (Insn.Kind != NormalizedInsn::EKind::MoveImm && Dest >= 0)
+			if (Insn.Kind != NormalizedInsn::EKind::MoveImm && Insn.Kind != NormalizedInsn::EKind::MoveReg &&
+				Insn.Kind != NormalizedInsn::EKind::Store && Dest >= 0)
+			{
 				Imms[Dest] = 0;
+				ImmKnown[Dest] = false;
+			}
 
 			switch (Insn.Kind)
 			{
@@ -249,6 +255,7 @@ namespace nextdumper::analyzer
 					{
 						Regs[static_cast<size_t>(R)].bKnown = false;
 						Imms[static_cast<size_t>(R)] = 0;
+						ImmKnown[static_cast<size_t>(R)] = false;
 					}
 				break;
 
@@ -400,14 +407,25 @@ namespace nextdumper::analyzer
 				// would name addresses the program never computes, which is the exact
 				// shape of a confident wrong answer.
 				if (Insn.bWritesBackBase && Src >= 0)
+				{
 					Regs[Src].bKnown = false;
+					Imms[Src] = 0;
+					ImmKnown[Src] = false;
+				}
 				break;
 			}
 
 			case NormalizedInsn::EKind::MoveImm:
 				if (Dest >= 0)
 				{
+					// MOVK/MOVT 只替换局部位，未知的其余位不能假定为零
+					if (Insn.bComposes && !ImmKnown[Dest])
+					{
+						Regs[Dest].bKnown = false;
+						break;
+					}
 					Imms[Dest] = Insn.bComposes ? ((Imms[Dest] & ~Insn.ValueMask) | Insn.Value) : Insn.Value;
+					ImmKnown[Dest] = true;
 
 					// A composed immediate is an address on the targets that build
 					// them this way, so it wraps like one.
@@ -436,6 +454,8 @@ namespace nextdumper::analyzer
 				// A copy carries the tracked value with it.
 				if (Dest >= 0)
 				{
+					Imms[Dest] = Src >= 0 ? Imms[Src] : 0;
+					ImmKnown[Dest] = Src >= 0 && ImmKnown[Src];
 					if (Src >= 0 && Regs[Src].bKnown)
 					{
 						Regs[Dest].Value = Regs[Src].Value;

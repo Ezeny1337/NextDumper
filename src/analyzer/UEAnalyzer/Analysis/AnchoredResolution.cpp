@@ -1,6 +1,7 @@
 #include "AnchoredResolution.h"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -11,6 +12,7 @@
 
 #include "../../Architecture/IArchDecoder.h"
 #include "../../Memory/IMemory.h"
+#include "../../Utils/Utils.h"
 #include "../Strategies/IStrategy.h"
 
 #include "CallGraph.h"
@@ -23,6 +25,13 @@ namespace nextdumper::analyzer
 {
 	namespace
 	{
+		bool AddDisplacement(int64_t left, int64_t right, int64_t &value)
+		{
+			if ((right > 0 && left > INT64_MAX - right) || (right < 0 && left < INT64_MIN - right))
+				return false;
+			value = left + right;
+			return true;
+		}
 
 		bool IsWritableData(const ModuleInfo &Module, uint64_t Address)
 		{
@@ -474,6 +483,7 @@ namespace nextdumper::analyzer
 		// call that returns the block; and which global each loaded register holds.
 		std::vector<uint64_t> Bases(static_cast<size_t>(NumRegs), 0);
 		std::vector<uint64_t> Immediates(static_cast<size_t>(NumRegs), 0);
+		std::vector<bool> ImmediateKnown(static_cast<size_t>(NumRegs), false);
 		std::vector<uint64_t> HoldsGlobal(static_cast<size_t>(NumRegs), 0);
 		std::vector<uint64_t> FromAllocation(static_cast<size_t>(NumRegs), 0);
 
@@ -491,9 +501,6 @@ namespace nextdumper::analyzer
 		constexpr uint64_t kMinTableAllocation = 0x100;
 		constexpr uint64_t kMaxTableAllocation = 0x100000;
 
-		// AAPCS64 preserves X19 and above; ARM32 preserves R4 and above.
-		const int CallerSavedLast = NumRegs > 16 ? 18 : 3;
-
 		NormalizedInsn Insn;
 		// Bounded to this one function, so the window need never exceed it.
 		CodeWindow Code(Memory_, CodeWindow::ChunkForSpan(Fn.Size()));
@@ -509,6 +516,7 @@ namespace nextdumper::analyzer
 			{
 				std::fill(Bases.begin(), Bases.end(), 0);
 				std::fill(Immediates.begin(), Immediates.end(), 0);
+				std::fill(ImmediateKnown.begin(), ImmediateKnown.end(), false);
 				std::fill(HoldsGlobal.begin(), HoldsGlobal.end(), 0);
 				std::fill(FromAllocation.begin(), FromAllocation.end(), 0);
 				std::fill(Displacement.begin(), Displacement.end(), 0);
@@ -517,6 +525,14 @@ namespace nextdumper::analyzer
 
 			const int D = Insn.Dest;
 			const int B = Insn.Base;
+			if (Insn.Kind == NormalizedInsn::EKind::Return)
+				break;
+			if (D >= 0 && D < NumRegs && Insn.Kind != NormalizedInsn::EKind::MoveImm &&
+				Insn.Kind != NormalizedInsn::EKind::MoveReg && Insn.Kind != NormalizedInsn::EKind::Store)
+			{
+				Immediates[D] = 0;
+				ImmediateKnown[D] = false;
+			}
 
 			switch (Insn.Kind)
 			{
@@ -531,23 +547,23 @@ namespace nextdumper::analyzer
 				break;
 
 			case NormalizedInsn::EKind::AddImm:
-				if (D >= 0 && D < NumRegs && B >= 0 && B < NumRegs)
+				if (D >= 0 && D < NumRegs)
 				{
-					if (Bases[B])
+					const bool sourceValid = B >= 0 && B < NumRegs;
+					const uint64_t base = sourceValid ? Bases[B] : 0;
+					const uint64_t global = sourceValid ? HoldsGlobal[B] : 0;
+					const int64_t displacement = sourceValid ? Displacement[B] : 0;
+					Bases[D] = HoldsGlobal[D] = FromAllocation[D] = 0;
+					Displacement[D] = 0;
+					if (base)
 					{
-						Bases[D] = Bases[B] + Insn.Value;
-						HoldsGlobal[D] = 0;
-						Displacement[D] = 0;
-						FromAllocation[D] = 0;
+						Bases[D] = Utils::Memory::WrapAddress(base + Insn.Value);
 					}
-					else if (HoldsGlobal[B])
+					else if (global)
 					{
-						// Advancing into a global keeps naming it; the offset carried
-						// here is what a later access at +0 is really reaching.
-						HoldsGlobal[D] = HoldsGlobal[B];
-						Displacement[D] = Displacement[B] + static_cast<int64_t>(Insn.Value);
-						Bases[D] = 0;
-						FromAllocation[D] = 0;
+						// 先保存源状态以支持 D == B，未知源则必须清空旧目标值。
+						if (AddDisplacement(displacement, std::bit_cast<int64_t>(Insn.Value), Displacement[D]))
+							HoldsGlobal[D] = global;
 					}
 				}
 				break;
@@ -575,7 +591,13 @@ namespace nextdumper::analyzer
 			case NormalizedInsn::EKind::MoveImm:
 				if (D >= 0 && D < NumRegs)
 				{
-					Immediates[D] = Insn.bComposes ? ((Immediates[D] & ~Insn.ValueMask) | Insn.Value) : Insn.Value;
+					const bool known = !Insn.bComposes || ImmediateKnown[D];
+					Immediates[D] = !known ? 0 : Insn.bComposes ? ((Immediates[D] & ~Insn.ValueMask) | Insn.Value)
+																: Insn.Value;
+					ImmediateKnown[D] = known;
+					Bases[D] = 0;
+					if (known && Insn.bAddressLike && Module_.FindAddressRegion(Utils::Memory::WrapAddress(Immediates[D])))
+						Bases[D] = Utils::Memory::WrapAddress(Immediates[D]);
 					HoldsGlobal[D] = 0;
 					Displacement[D] = 0;
 					FromAllocation[D] = 0;
@@ -589,15 +611,18 @@ namespace nextdumper::analyzer
 				// allocated too, and a sticky value would credit its store with a
 				// size that belongs to something else.
 				const uint64_t Requested = Immediates[0];
-				const bool bPlausible = Requested >= kMinTableAllocation && Requested <= kMaxTableAllocation;
+				const bool bPlausible = ImmediateKnown[0] && Requested >= kMinTableAllocation && Requested <= kMaxTableAllocation;
 
 				// Only caller-saved registers are clobbered. The table is routinely
 				// parked in a callee-saved register across the memset that follows
 				// the allocation, and forgetting that loses the store entirely.
-				for (int R = 0; R < NumRegs && R <= CallerSavedLast; ++R)
+				for (int R = 0; R < NumRegs; ++R)
 				{
+					if (!Arch_.CallClobbers(R))
+						continue;
 					FromAllocation[R] = 0;
 					Immediates[R] = 0;
+					ImmediateKnown[R] = false;
 					HoldsGlobal[R] = 0;
 					Displacement[R] = 0;
 					Bases[R] = 0;
@@ -615,6 +640,13 @@ namespace nextdumper::analyzer
 					Displacement[D] = Displacement[B];
 					Bases[D] = Bases[B];
 					Immediates[D] = Immediates[B];
+					ImmediateKnown[D] = ImmediateKnown[B];
+				}
+				else if (D >= 0 && D < NumRegs)
+				{
+					Bases[D] = HoldsGlobal[D] = FromAllocation[D] = Immediates[D] = 0;
+					ImmediateKnown[D] = false;
+					Displacement[D] = 0;
 				}
 				break;
 
@@ -625,9 +657,10 @@ namespace nextdumper::analyzer
 				// The register keeps holding that global's value afterwards, and the
 				// counts are read straight through it rather than through a reload -
 				// the compiler has the pointer in hand, so it does not fetch it back.
-				if (B >= 0 && B < NumRegs && Bases[B] && D >= 0 && D < NumRegs && FromAllocation[D])
+				if (B >= 0 && B < NumRegs && Bases[B] && D >= 0 && D < NumRegs && FromAllocation[D] &&
+					Insn.AccessWidth == sizeof(uintptr_t))
 				{
-					const uint64_t Global = Bases[B] + static_cast<uint64_t>(Insn.Offset);
+					const uint64_t Global = Utils::Memory::WrapAddress(Bases[B] + static_cast<uint64_t>(Insn.Offset));
 					AllocatedSize[Global] = FromAllocation[D];
 					HoldsGlobal[D] = Global;
 					Displacement[D] = 0;
@@ -635,19 +668,27 @@ namespace nextdumper::analyzer
 				// A write through a register loaded from a global counts as a
 				// dereference of it, the same way a read does.
 				if (B >= 0 && B < NumRegs && HoldsGlobal[B])
-					DerefOffsets[HoldsGlobal[B]].insert(Displacement[B] + Insn.Offset);
+				{
+					int64_t offset = 0;
+					if (AddDisplacement(Displacement[B], Insn.Offset, offset))
+						DerefOffsets[HoldsGlobal[B]].insert(offset);
+				}
 				break;
 
 			case NormalizedInsn::EKind::Load:
 				if (B >= 0 && B < NumRegs && HoldsGlobal[B])
-					DerefOffsets[HoldsGlobal[B]].insert(Displacement[B] + Insn.Offset);
+				{
+					int64_t offset = 0;
+					if (AddDisplacement(Displacement[B], Insn.Offset, offset))
+						DerefOffsets[HoldsGlobal[B]].insert(offset);
+				}
 
 				if (D >= 0 && D < NumRegs)
 				{
 					// Loading a global's contents makes the destination that global's
 					// value, which is what later dereferences are measured against.
-					const uint64_t Global = (B >= 0 && B < NumRegs && Bases[B])
-												? Bases[B] + static_cast<uint64_t>(Insn.Offset)
+					const uint64_t Global = (B >= 0 && B < NumRegs && Bases[B] && Insn.AccessWidth == sizeof(uintptr_t))
+												? Utils::Memory::WrapAddress(Bases[B] + static_cast<uint64_t>(Insn.Offset))
 												: 0;
 					HoldsGlobal[D] = Global;
 					Displacement[D] = 0;
@@ -671,6 +712,7 @@ namespace nextdumper::analyzer
 			if (Insn.bWritesBackBase && B >= 0 && B < NumRegs)
 			{
 				Bases[B] = HoldsGlobal[B] = FromAllocation[B] = Immediates[B] = 0;
+				ImmediateKnown[B] = false;
 				Displacement[B] = 0;
 			}
 		}

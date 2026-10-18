@@ -137,6 +137,27 @@ namespace nextdumper::analyzer
 				}
 				break;
 
+			case NormalizedInsn::EKind::LoadLiteral:
+				if (Dest >= 0)
+				{
+					uint64_t value = 0;
+					Regs[Dest].bKnown = ReadLiteralValue(Memory, Insn, value);
+					Regs[Dest].Value = Utils::Memory::WrapAddress(value);
+				}
+				break;
+
+			case NormalizedInsn::EKind::MoveImm:
+				if (Dest >= 0)
+				{
+					if (Insn.bComposes && !Regs[Dest].bKnown)
+						break;
+					Regs[Dest].Value = Utils::Memory::WrapAddress(Insn.bComposes
+																	  ? ((Regs[Dest].Value & ~Insn.ValueMask) | Insn.Value)
+																	  : Insn.Value);
+					Regs[Dest].bKnown = true;
+				}
+				break;
+
 			case NormalizedInsn::EKind::Load:
 			{
 				// A load through a known base may be a pointer slot; follow it, since
@@ -177,6 +198,12 @@ namespace nextdumper::analyzer
 						Regs[Dest].bKnown = false;
 					}
 				}
+				break;
+
+			case NormalizedInsn::EKind::Store:
+				// Store 不写入数据寄存器，但 writeback 会改变基址
+				if (Insn.bWritesBackBase && Src >= 0)
+					Regs[Src].bKnown = false;
 				break;
 
 			case NormalizedInsn::EKind::Call:

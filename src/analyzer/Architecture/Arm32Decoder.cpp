@@ -58,6 +58,11 @@ namespace
             }
             if ((code & 0x0ff00000) == 0x03000000 || (code & 0x0ff00000) == 0x03400000)
             {
+                if (rd == 15)
+                {
+                    out.bClobbersAll = true;
+                    return true;
+                }
                 const bool top = (word & 0x00400000) != 0;
                 out.Kind = NormalizedInsn::EKind::MoveImm;
                 out.Dest = rd;
@@ -71,6 +76,11 @@ namespace
             {
                 const unsigned operation = (word >> 21) & 15;
                 const uint32_t immediate = Immediate(word);
+                if (rd == 15 && (operation < 8 || operation > 11))
+                {
+                    out.bClobbersAll = true;
+                    return true;
+                }
                 out.Dest = rd;
                 if (operation == 2 || operation == 4)
                 {
@@ -99,6 +109,11 @@ namespace
             }
             if ((code & 0x0fe00ff0) == 0x00800000 && rn == 15)
             {
+                if (rd == 15)
+                {
+                    out.bClobbersAll = true;
+                    return true;
+                }
                 out.Kind = NormalizedInsn::EKind::AddImm;
                 out.Dest = rd;
                 out.Base = static_cast<int>(word & 15);
@@ -107,7 +122,12 @@ namespace
             }
             if ((code & 0x0fe00ff0) == 0x01a00000)
             {
-                out.Kind = (word & 15) == 14 && rd == 15 ? NormalizedInsn::EKind::Return : NormalizedInsn::EKind::MoveReg;
+                if (rd == 15 && (word & 15) != 14)
+                {
+                    out.bClobbersAll = true;
+                    return true;
+                }
+                out.Kind = rd == 15 ? NormalizedInsn::EKind::Return : NormalizedInsn::EKind::MoveReg;
                 out.Dest = rd;
                 out.Base = static_cast<int>(word & 15);
                 return true;
@@ -138,13 +158,13 @@ namespace
                 out.AccessWidth = single ? ((word & 0x00400000) ? 1 : 4) : kind == 2 ? 1
                                                                                      : 2;
                 out.bWritesBackBase = !pre || (word & 0x00200000);
-                if (load && rn == 15 && pre && !out.bWritesBackBase && out.AccessWidth == 4)
+                if (load && rd == 15)
+                    out.Kind = NormalizedInsn::EKind::Return;
+                else if (load && rn == 15 && pre && !out.bWritesBackBase && out.AccessWidth == 4)
                 {
                     out.Kind = NormalizedInsn::EKind::LoadLiteral;
                     out.Value = Target(address, delta);
                 }
-                else if (load && rd == 15)
-                    out.Kind = NormalizedInsn::EKind::Return;
                 return true;
             }
             // ARM 模式之外的编码与未知指令均不产生猜测性地址
