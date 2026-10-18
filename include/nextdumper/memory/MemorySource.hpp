@@ -73,7 +73,7 @@ namespace nextdumper::memory
         uint64_t minBackendNanos = 0;
         uint64_t maxBackendNanos = 0;
         std::array<uint64_t, 32> latencyBuckets{};
-        std::array<uint64_t, 16> errnoCounts{};
+        std::array<uint64_t, 134> errnoCounts{};
         uint64_t cacheHitBytes = 0;
         uint64_t cacheMissBytes = 0;
         uint64_t cacheBytes = 0;

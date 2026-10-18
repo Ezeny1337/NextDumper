@@ -37,7 +37,7 @@ namespace nextdumper::memory
         }
     };
 
-    // 单线程采集视图，只冻结已消费的字节；验证稳定不等于获得原子快照。
+    // 单线程采集视图，只冻结已消费的字节，验证稳定不等于获得原子快照
     class CaptureMemorySource final : public IMemorySource
     {
     public:
@@ -58,6 +58,8 @@ namespace nextdumper::memory
         [[nodiscard]] CaptureValidation Validate() const;
         [[nodiscard]] bool IsInitialized() const override { return source_.IsInitialized(); }
         [[nodiscard]] pid_t ProcessId() const override { return source_.ProcessId(); }
+        [[nodiscard]] std::span<const MemoryRegion> Regions() const override { return source_.Regions(); }
+        [[nodiscard]] std::string ProcessName() const override { return source_.ProcessName(); }
         [[nodiscard]] uint64_t AddressSpaceGeneration() const override { return source_.AddressSpaceGeneration(); }
         [[nodiscard]] bool RefreshAddressSpace() override;
         [[nodiscard]] bool IsReadable(uintptr_t address, size_t size) const override { return source_.IsReadable(address, size); }

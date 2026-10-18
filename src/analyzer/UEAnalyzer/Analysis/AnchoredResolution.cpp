@@ -206,6 +206,12 @@ namespace nextdumper::analyzer
 			if (!Arch_.DecodeLocalBytes(P, Stride, At, Insn))
 				continue;
 
+			if (Insn.bClobbersAll)
+			{
+				std::fill(IsThis.begin(), IsThis.end(), false);
+				continue;
+			}
+
 			const int Dest = (Insn.Dest >= 0 && Insn.Dest < NumRegs) ? Insn.Dest : -1;
 			const int Src = (Insn.Base >= 0 && Insn.Base < NumRegs) ? Insn.Base : -1;
 
@@ -223,6 +229,8 @@ namespace nextdumper::analyzer
 				// A load overwrites its destination, which is then no longer `this`.
 				if (Insn.Kind == NormalizedInsn::EKind::Load && Dest >= 0)
 					IsThis[static_cast<size_t>(Dest)] = false;
+				if (Insn.bWritesBackBase && Src >= 0)
+					IsThis[static_cast<size_t>(Src)] = false;
 				break;
 
 			case NormalizedInsn::EKind::MoveReg:
@@ -497,6 +505,16 @@ namespace nextdumper::analyzer
 			if (!Arch_.DecodeLocalBytes(P, Stride, At, Insn))
 				continue;
 
+			if (Insn.bClobbersAll)
+			{
+				std::fill(Bases.begin(), Bases.end(), 0);
+				std::fill(Immediates.begin(), Immediates.end(), 0);
+				std::fill(HoldsGlobal.begin(), HoldsGlobal.end(), 0);
+				std::fill(FromAllocation.begin(), FromAllocation.end(), 0);
+				std::fill(Displacement.begin(), Displacement.end(), 0);
+				continue;
+			}
+
 			const int D = Insn.Dest;
 			const int B = Insn.Base;
 
@@ -541,10 +559,10 @@ namespace nextdumper::analyzer
 				// before the add can use it, and every global a target reaches
 				// through that idiom becomes invisible to this rule - which on a
 				// position-independent build is most of them.
-				uintptr_t Word = 0;
+				uint64_t Word = 0;
 				if (D >= 0 && D < NumRegs)
 				{
-					const bool bRead = Memory_ && Memory_->ReadBytes(static_cast<uintptr_t>(Insn.Value), &Word, sizeof(Word)) == sizeof(Word);
+					const bool bRead = ReadLiteralValue(Memory_, Insn, Word);
 					Bases[D] = bRead ? static_cast<uint64_t>(Word) : 0;
 					HoldsGlobal[D] = 0;
 					Displacement[D] = 0;
@@ -557,7 +575,7 @@ namespace nextdumper::analyzer
 			case NormalizedInsn::EKind::MoveImm:
 				if (D >= 0 && D < NumRegs)
 				{
-					Immediates[D] = Insn.bComposes ? (Immediates[D] | Insn.Value) : Insn.Value;
+					Immediates[D] = Insn.bComposes ? ((Immediates[D] & ~Insn.ValueMask) | Insn.Value) : Insn.Value;
 					HoldsGlobal[D] = 0;
 					Displacement[D] = 0;
 					FromAllocation[D] = 0;
@@ -649,6 +667,11 @@ namespace nextdumper::analyzer
 					Immediates[D] = 0;
 				}
 				break;
+			}
+			if (Insn.bWritesBackBase && B >= 0 && B < NumRegs)
+			{
+				Bases[B] = HoldsGlobal[B] = FromAllocation[B] = Immediates[B] = 0;
+				Displacement[B] = 0;
 			}
 		}
 

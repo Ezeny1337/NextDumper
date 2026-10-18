@@ -1,236 +1,459 @@
 #include "nextdumper/memory/RemoteMemorySource.hpp"
 
 #include <algorithm>
+#include <bit>
+#include <cerrno>
+#include <chrono>
 #include <cstring>
-#include <limits>
+#include <sys/uio.h>
+#include <unistd.h>
 
 namespace nextdumper::memory
 {
     namespace
     {
-        bool IsOverflow(uintptr_t address, size_t size)
-        {
-            return size == 0 || address > std::numeric_limits<uintptr_t>::max() - (size - 1);
-        }
+        uintptr_t BlockAddress(uintptr_t address) { return address & ~(uintptr_t{RemoteMemorySource::kCacheBlockSize} - 1); }
+        size_t BlockOffset(uintptr_t address) { return address & (RemoteMemorySource::kCacheBlockSize - 1); }
 
-        uintptr_t PageAddress(uintptr_t address)
+        ReadError SystemReadError(int error)
         {
-            return address & ~(RemoteMemorySource::kPageSize - 1);
+            if (error == ESRCH)
+                return ReadError::TargetExited;
+            if (error == EPERM || error == EACCES)
+                return ReadError::AccessDenied;
+            return ReadError::BackendFailure;
         }
-
-        size_t PageOffset(uintptr_t address)
-        {
-            return static_cast<size_t>(address & (RemoteMemorySource::kPageSize - 1));
-        }
-    } // namespace
+    }
 
     RemoteMemorySource::RemoteMemorySource(size_t cacheSize)
+        : maxCacheSize_((std::min(cacheSize, kMaxRequestBytes) / kCacheBlockSize) * kCacheBlockSize) {}
+
+    void RemoteMemorySource::Reset()
     {
-        // Cache pages are indivisible. A sub-page limit cannot hold a cache page
-        // and must disable caching instead of reaching an unsigned underflow in
-        // EvictIfNeeded().
-        maxCacheSize_ = (cacheSize / kPageSize) * kPageSize;
-        cacheEnabled_ = maxCacheSize_ >= kPageSize;
+        initialized_ = false;
+        invalidated_ = false;
+        process_.Close();
+        regions_.clear();
+        ClearCache();
+        stats_ = {};
+        errorCount_ = 0;
+        lastError_ = 0;
+        pageSize_ = 0;
+        vectorLimit_ = 0;
+        cancelled_.store(false, std::memory_order_relaxed);
+        ++addressSpaceGeneration_;
     }
 
     bool RemoteMemorySource::Initialize(pid_t pid)
     {
-        stats_ = {};
-        ClearCache();
-        ++addressSpaceGeneration_;
-
-        if (!manager_.initialize(pid, EK_MEM_OP_SYSCALL, false) &&
-            !manager_.initialize(pid, EK_MEM_OP_IO, false))
+        Reset();
+        const long pageSize = sysconf(_SC_PAGESIZE);
+        const long vectors = sysconf(_SC_IOV_MAX);
+        if (pageSize <= 0 || vectors <= 0)
         {
+            lastError_ = EINVAL;
             return false;
         }
-
-        validator_.setPID(pid);
-        validator_.setUseCache(true);
-        return !validator_.cachedRegions().empty();
-    }
-
-    bool RemoteMemorySource::IsInitialized() const
-    {
-        return manager_.isMemValid();
-    }
-
-    pid_t RemoteMemorySource::ProcessId() const
-    {
-        return manager_.processID();
+        pageSize_ = static_cast<size_t>(pageSize);
+        vectorLimit_ = std::min(static_cast<size_t>(vectors), kMaxVectors);
+        if (!process_.Open(pid) || !process_.ReadRegions(regions_))
+        {
+            lastError_ = process_.LastError();
+            return false;
+        }
+        initialized_ = true;
+        ++stats_.mapRefreshes;
+        // 以真实可读映射验证后端，接口存在不代表目标读取成功
+        const auto region = std::find_if(regions_.begin(), regions_.end(), [](const auto &item)
+                                         { return item.readable; });
+        uint8_t byte = 0;
+        if (region == regions_.end() || !ReadFreshBytes(region->start, &byte, sizeof(byte)).Ok())
+        {
+            initialized_ = false;
+            return false;
+        }
+        return true;
     }
 
     bool RemoteMemorySource::RefreshAddressSpace()
     {
         if (!IsInitialized())
             return false;
-
-        validator_.refreshRegionCache();
         ClearCache();
         ++addressSpaceGeneration_;
-        return !validator_.cachedRegions().empty();
+        ++stats_.mapRefreshes;
+        std::vector<MemoryRegion> updated;
+        if (!process_.ReadRegions(updated))
+        {
+            lastError_ = process_.LastError();
+            initialized_ = false;
+            regions_.clear();
+            return false;
+        }
+        regions_ = std::move(updated);
+        return true;
     }
 
     bool RemoteMemorySource::IsReadable(uintptr_t address, size_t size) const
     {
-        return IsInitialized() && address != 0 && !IsOverflow(address, size) &&
-               validator_.isPtrReadable(address, size);
+        return IsInitialized() && ContainsRange(regions_, address, size);
     }
 
     bool RemoteMemorySource::IsExecutable(uintptr_t address, size_t size) const
     {
-        return IsInitialized() && address != 0 && !IsOverflow(address, size) &&
-               validator_.isPtrExecutable(address, size);
-    }
-
-    const uint8_t *RemoteMemorySource::GetCached(uintptr_t address, size_t size) const
-    {
-        if (!cacheEnabled_ || size == 0 || size > kPageSize)
-            return nullptr;
-
-        const uintptr_t page = PageAddress(address);
-        const size_t offset = PageOffset(address);
-        if (offset > kPageSize - size)
-            return nullptr;
-
-        const auto it = pages_.find(page);
-        if (it == pages_.end())
-            return nullptr;
-
-        for (size_t index = 0; index < size; ++index)
-        {
-            if (!it->second.valid.test(offset + index))
-                return nullptr;
-        }
-
-        Touch(const_cast<CachePage &>(it->second));
-        return it->second.bytes.data() + offset;
-    }
-
-    void RemoteMemorySource::PutCached(uintptr_t address, const uint8_t *data, size_t size) const
-    {
-        if (!cacheEnabled_ || maxCacheSize_ < kPageSize || data == nullptr || size == 0 || size > kPageSize)
-            return;
-
-        const uintptr_t page = PageAddress(address);
-        const size_t offset = PageOffset(address);
-        if (offset > kPageSize - size)
-            return;
-
-        auto it = pages_.find(page);
-        if (it == pages_.end())
-        {
-            EvictIfNeeded();
-
-            CachePage entry;
-            entry.address = page;
-            lru_.push_front(page);
-            entry.lru = lru_.begin();
-            it = pages_.emplace(page, std::move(entry)).first;
-            cacheSize_ += kPageSize;
-        }
-        else
-        {
-            Touch(it->second);
-        }
-
-        std::memcpy(it->second.bytes.data() + offset, data, size);
-        for (size_t index = 0; index < size; ++index)
-            it->second.valid.set(offset + index);
-    }
-
-    void RemoteMemorySource::Touch(CachePage &page) const
-    {
-        lru_.splice(lru_.begin(), lru_, page.lru);
-        page.lru = lru_.begin();
-    }
-
-    void RemoteMemorySource::EvictIfNeeded() const
-    {
-        while (cacheSize_ > maxCacheSize_ - kPageSize && !lru_.empty())
-        {
-            const uintptr_t page = lru_.back();
-            lru_.pop_back();
-            pages_.erase(page);
-            cacheSize_ -= kPageSize;
-        }
+        return IsInitialized() && ContainsRange(regions_, address, size, true);
     }
 
     void RemoteMemorySource::ClearCache() const
     {
-        pages_.clear();
+        blocks_.clear();
         lru_.clear();
-        cacheSize_ = 0;
+        stats_.cacheBytes = 0;
+    }
+
+    void RemoteMemorySource::InvalidateCache(uintptr_t address, size_t size) const
+    {
+        while (size)
+        {
+            const size_t offset = BlockOffset(address);
+            const size_t count = std::min(size, kCacheBlockSize - offset);
+            const auto at = blocks_.find(BlockAddress(address));
+            if (at != blocks_.end())
+                for (size_t index = 0; index < count; ++index)
+                    at->second.valid.reset(offset + index);
+            size -= count;
+            if (size)
+                address += count;
+        }
+    }
+
+    bool RemoteMemorySource::GetCached(uintptr_t address, void *buffer, size_t size) const
+    {
+        const uintptr_t first = address;
+        const size_t total = size;
+        while (size)
+        {
+            const size_t offset = BlockOffset(address);
+            const size_t count = std::min(size, kCacheBlockSize - offset);
+            const auto at = blocks_.find(BlockAddress(address));
+            if (at == blocks_.end())
+                return false;
+            for (size_t index = 0; index < count; ++index)
+                if (!at->second.valid.test(offset + index))
+                    return false;
+            size -= count;
+            if (size)
+                address += count;
+        }
+        address = first;
+        size = total;
+        auto *output = static_cast<uint8_t *>(buffer);
+        while (size)
+        {
+            const size_t offset = BlockOffset(address);
+            const size_t count = std::min(size, kCacheBlockSize - offset);
+            auto &block = blocks_.at(BlockAddress(address));
+            std::memcpy(output, block.bytes.data() + offset, count);
+            lru_.splice(lru_.begin(), lru_, block.lru);
+            output += count;
+            size -= count;
+            if (size)
+                address += count;
+        }
+        return true;
+    }
+
+    void RemoteMemorySource::PutCached(uintptr_t address, const uint8_t *data, size_t size) const
+    {
+        if (!maxCacheSize_ || size > maxCacheSize_)
+            return;
+        while (size)
+        {
+            const uintptr_t base = BlockAddress(address);
+            const size_t offset = BlockOffset(address);
+            const size_t count = std::min(size, kCacheBlockSize - offset);
+            auto at = blocks_.find(base);
+            if (at == blocks_.end())
+            {
+                while (stats_.cacheBytes >= maxCacheSize_)
+                {
+                    blocks_.erase(lru_.back());
+                    lru_.pop_back();
+                    stats_.cacheBytes -= kCacheBlockSize;
+                    ++stats_.evictions;
+                }
+                auto [entry, inserted] = blocks_.try_emplace(base);
+                (void)inserted;
+                try
+                {
+                    lru_.push_front(base);
+                }
+                catch (...)
+                {
+                    blocks_.erase(entry);
+                    throw;
+                }
+                entry->second.lru = lru_.begin();
+                at = entry;
+                stats_.cacheBytes += kCacheBlockSize;
+                stats_.peakCacheBytes = std::max(stats_.peakCacheBytes, stats_.cacheBytes);
+            }
+            else
+                lru_.splice(lru_.begin(), lru_, at->second.lru);
+            std::memcpy(at->second.bytes.data() + offset, data, count);
+            for (size_t index = 0; index < count; ++index)
+                at->second.valid.set(offset + index);
+            data += count;
+            size -= count;
+            if (size)
+                address += count;
+        }
+    }
+
+    void RemoteMemorySource::FinishResult(const ReadResult &result) const
+    {
+        stats_.transferredBytes += result.transferred;
+        if (result.Ok())
+            return;
+        ++stats_.failures;
+        switch (result.error)
+        {
+        case ReadError::NotInitialized:
+            ++stats_.notInitialized;
+            break;
+        case ReadError::InvalidArgument:
+        case ReadError::LimitExceeded:
+            ++stats_.invalidArguments;
+            break;
+        case ReadError::UnreadableRange:
+            ++stats_.unreadableRanges;
+            break;
+        case ReadError::PartialRead:
+            ++stats_.partialReads;
+            break;
+        case ReadError::Cancelled:
+            ++stats_.cancellations;
+            break;
+        default:
+            ++stats_.backendFailures;
+            break;
+        }
+        if (errorCount_ < errors_.size())
+            errors_[errorCount_++] = result;
     }
 
     ReadResult RemoteMemorySource::ReadBytes(uintptr_t address, void *buffer, size_t size) const
     {
-        return ReadImpl(address, buffer, size, true);
+        const ReadRequest request{address, buffer, size};
+        ReadResult result;
+        (void)Transfer({&request, 1}, {&result, 1}, false);
+        return result;
     }
 
     ReadResult RemoteMemorySource::ReadFreshBytes(uintptr_t address, void *buffer, size_t size) const
     {
-        return ReadImpl(address, buffer, size, false);
+        const ReadRequest request{address, buffer, size};
+        ReadResult result;
+        (void)Transfer({&request, 1}, {&result, 1}, true);
+        return result;
     }
 
-    ReadResult RemoteMemorySource::ReadImpl(uintptr_t address, void *buffer, size_t size, bool useCache) const
+    bool RemoteMemorySource::ReadBatch(std::span<const ReadRequest> requests, std::span<ReadResult> results, bool fresh) const
     {
-        ReadResult result{ReadError::None, address, size, 0};
-        ++stats_.operations;
-        stats_.requestedBytes += size;
+        ++stats_.batchOperations;
+        stats_.batchRequests += requests.size();
+        return Transfer(requests, results, fresh);
+    }
 
-        if (!IsInitialized())
+    bool RemoteMemorySource::Transfer(std::span<const ReadRequest> requests, std::span<ReadResult> results, bool fresh) const
+    {
+        if (requests.size() != results.size() || requests.size() > kMaxBatchRequests)
+            return false;
+        size_t total = 0;
+        bool overLimit = false;
+        for (const auto &request : requests)
         {
-            result.error = ReadError::NotInitialized;
-            ++stats_.failures;
-            ++stats_.notInitialized;
-            return result;
+            if (request.size > kMaxRequestBytes - total)
+            {
+                overLimit = true;
+                break;
+            }
+            total += request.size;
         }
-        if (buffer == nullptr || address == 0 || IsOverflow(address, size))
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        bool alive = IsInitialized();
+        if (alive && !process_.Alive())
         {
-            result.error = ReadError::InvalidArgument;
-            ++stats_.failures;
-            ++stats_.invalidArguments;
-            return result;
+            invalidated_ = true;
+            ++stats_.targetInvalidations;
+            lastError_ = process_.LastError();
+            ClearCache();
+            alive = false;
         }
-        if (!IsReadable(address, size))
+        for (size_t index = 0; index < requests.size(); ++index)
         {
-            result.error = ReadError::UnreadableRange;
-            ++stats_.failures;
-            ++stats_.unreadableRanges;
-            return result;
-        }
-
-        if (const uint8_t *cached = useCache ? GetCached(address, size) : nullptr)
-        {
-            ++stats_.cacheHits;
-            std::memcpy(buffer, cached, size);
-            result.transferred = size;
-            stats_.transferredBytes += size;
-            return result;
-        }
-
-        if (useCache)
-            ++stats_.cacheMisses;
-
-        ++stats_.backendOperations;
-        stats_.backendRequestedBytes += size;
-        result.transferred = manager_.readMem(address, buffer, size);
-        stats_.backendTransferredBytes += result.transferred;
-        stats_.transferredBytes += result.transferred;
-        if (result.transferred != size)
-        {
-            result.error = result.transferred == 0 ? ReadError::BackendFailure : ReadError::PartialRead;
-            ++stats_.failures;
-            if (result.error == ReadError::PartialRead)
-                ++stats_.partialReads;
+            const auto &request = requests[index];
+            auto &result = results[index];
+            result = {ReadError::None, request.address, request.size, 0};
+            ++stats_.operations;
+            stats_.requestedBytes += request.size;
+            if (fresh)
+                ++stats_.freshOperations;
+            if (cancelled_.load(std::memory_order_relaxed))
+                result.error = ReadError::Cancelled;
+            else if (!alive)
+                result.error = invalidated_ ? ReadError::TargetExited : ReadError::NotInitialized;
+            else if (overLimit)
+                result.error = ReadError::LimitExceeded;
+            else if (!request.buffer || !request.address || !request.size || request.address > UINTPTR_MAX - (request.size - 1))
+                result.error = ReadError::InvalidArgument;
+            else if (!IsReadable(request.address, request.size))
+                result.error = ReadError::UnreadableRange;
+            else if (fresh)
+                InvalidateCache(request.address, request.size);
+            else if (GetCached(request.address, request.buffer, request.size))
+            {
+                result.transferred = request.size;
+                ++stats_.cacheHits;
+                stats_.cacheHitBytes += request.size;
+            }
             else
-                ++stats_.backendFailures;
-            return result;
+            {
+                ++stats_.cacheMisses;
+                stats_.cacheMissBytes += request.size;
+            }
         }
-
-        if (useCache)
-            PutCached(address, static_cast<const uint8_t *>(buffer), size);
-        return result;
+        std::array<iovec, kMaxVectors> local{}, remote{};
+        std::array<size_t, kMaxVectors> owners{};
+        size_t calls = 0;
+        for (;;)
+        {
+            const bool cancelled = cancelled_.load(std::memory_order_relaxed);
+            const bool expired = std::chrono::steady_clock::now() >= deadline;
+            size_t count = 0, bytes = 0;
+            for (size_t index = 0; index < requests.size(); ++index)
+            {
+                auto &result = results[index];
+                if (result.error != ReadError::None || result.transferred == result.requested)
+                    continue;
+                if (cancelled || expired || calls >= 4096 || invalidated_)
+                {
+                    result.error = cancelled ? ReadError::Cancelled : invalidated_ ? ReadError::TargetExited
+                                                                                   : ReadError::LimitExceeded;
+                    continue;
+                }
+                const auto &request = requests[index];
+                size_t offset = result.transferred;
+                while (offset < request.size && count < vectorLimit_ && bytes < kMaxTransferBytes)
+                {
+                    const uintptr_t address = request.address + offset;
+                    const size_t size = std::min({request.size - offset, pageSize_ - address % pageSize_, kMaxTransferBytes - bytes});
+                    local[count] = {static_cast<uint8_t *>(request.buffer) + offset, size};
+                    remote[count] = {reinterpret_cast<void *>(address), size};
+                    owners[count++] = index;
+                    offset += size;
+                    bytes += size;
+                    if (offset < request.size)
+                        ++stats_.pageSplits;
+                }
+                if (count == vectorLimit_ || bytes == kMaxTransferBytes)
+                    break;
+            }
+            if (!count)
+                break;
+            if (!process_.Alive())
+            {
+                invalidated_ = true;
+                ++stats_.targetInvalidations;
+                lastError_ = process_.LastError();
+                ClearCache();
+                continue;
+            }
+            ssize_t received = -1;
+            int error = 0;
+            unsigned retries = 0;
+            do
+            {
+                const auto start = std::chrono::steady_clock::now();
+                received = process_vm_readv(ProcessId(), local.data(), count, remote.data(), count, 0);
+                error = received < 0 ? errno : 0;
+                const auto nanos = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                             std::chrono::steady_clock::now() - start)
+                                                             .count());
+                ++calls;
+                ++stats_.backendOperations;
+                stats_.backendVectors += count;
+                stats_.backendRequestedBytes += bytes;
+                stats_.backendTransferredBytes += received > 0 ? static_cast<size_t>(received) : 0;
+                stats_.backendNanos += nanos;
+                stats_.minBackendNanos = stats_.backendOperations == 1 ? nanos : std::min(stats_.minBackendNanos, nanos);
+                stats_.maxBackendNanos = std::max(stats_.maxBackendNanos, nanos);
+                ++stats_.latencyBuckets[std::min<size_t>(31, std::bit_width(nanos))];
+                stats_.maxBatchVectors = std::max<uint64_t>(stats_.maxBatchVectors, count);
+                stats_.maxBatchBytes = std::max<uint64_t>(stats_.maxBatchBytes, bytes);
+                if (error)
+                    ++stats_.errnoCounts[static_cast<size_t>(std::min(error, 133))];
+                if (error != EINTR || retries == 3 || cancelled_.load(std::memory_order_relaxed) ||
+                    std::chrono::steady_clock::now() >= deadline)
+                    break;
+                ++retries;
+                ++stats_.retries;
+            } while (calls < 4096);
+            if (received > static_cast<ssize_t>(bytes))
+            {
+                received = -1;
+                error = EIO;
+            }
+            lastError_ = error;
+            size_t remaining = received > 0 ? static_cast<size_t>(received) : 0;
+            bool stopped = false;
+            for (size_t index = 0; index < count; ++index)
+            {
+                auto &result = results[owners[index]];
+                const size_t done = std::min(remaining, remote[index].iov_len);
+                result.transferred += done;
+                remaining -= done;
+                if (done != remote[index].iov_len)
+                {
+                    result.error = result.transferred ? ReadError::PartialRead : SystemReadError(error);
+                    result.systemError = error;
+                    stopped = true;
+                    break;
+                }
+            }
+            if (error == ESRCH)
+            {
+                invalidated_ = true;
+                ++stats_.targetInvalidations;
+                ClearCache();
+            }
+            if (stopped && (error == EPERM || error == EACCES || error == ENOSYS || error == EINVAL))
+            {
+                for (auto &result : results)
+                    if (result.error == ReadError::None && result.transferred != result.requested)
+                    {
+                        result.error = result.transferred ? ReadError::PartialRead : SystemReadError(error);
+                        result.systemError = error;
+                    }
+                break;
+            }
+        }
+        // 生命周期复核失败时，已复制的字节也不能冒充可靠结果
+        if (alive && !invalidated_ && !process_.Alive())
+        {
+            invalidated_ = true;
+            ++stats_.targetInvalidations;
+            ClearCache();
+        }
+        for (size_t index = 0; index < results.size(); ++index)
+        {
+            auto &result = results[index];
+            if (invalidated_ && result.error == ReadError::None)
+                result.error = ReadError::TargetExited;
+            if (result.Ok() && !fresh)
+                PutCached(requests[index].address, static_cast<const uint8_t *>(requests[index].buffer), requests[index].size);
+            FinishResult(result);
+        }
+        return true;
     }
 } // namespace nextdumper::memory

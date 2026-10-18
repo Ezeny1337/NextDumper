@@ -102,6 +102,13 @@ namespace nextdumper::analyzer
 			if (!Arch.DecodeLocalBytes(P, Stride, At, Insn))
 				continue;
 
+			if (Insn.bClobbersAll)
+			{
+				for (auto &Reg : Regs)
+					Reg.bKnown = false;
+				continue;
+			}
+
 			const int Dest = (Insn.Dest >= 0 && Insn.Dest < NumRegs) ? Insn.Dest : -1;
 			const int Src = (Insn.Base >= 0 && Insn.Base < NumRegs) ? Insn.Base : -1;
 
@@ -152,6 +159,8 @@ namespace nextdumper::analyzer
 				}
 				if (Dest >= 0 && !bResolved)
 					Regs[Dest].bKnown = false;
+				if (Insn.bWritesBackBase && Src >= 0)
+					Regs[Src].bKnown = false;
 				break;
 			}
 

@@ -49,7 +49,7 @@ struct NormalizedInsn
 
 		Load,	  ///< Dest = *(Base + Offset).
 		Store,	  ///< *(Base + Offset) = Dest.
-		MoveImm,  ///< Dest = Value, or Dest |= Value when bComposes.
+		MoveImm,  ///< 立即数赋值，bComposes 时仅替换 ValueMask 覆盖的位
 		MoveReg,  ///< Dest = Base. Register-to-register copy.
 		Call,	  ///< Clobbers the caller-saved set.
 		Branch,	  ///< Control transfer; does not invalidate tracked bases.
@@ -62,17 +62,19 @@ struct NormalizedInsn
 	int Dest = -1; ///< Normalized destination register index, -1 when absent.
 	int Base = -1; ///< Normalized source/base register index, -1 when absent.
 
-	uint64_t Value = 0; ///< SetBase target / AddImm addend / MoveImm immediate.
-	int64_t Offset = 0; ///< Load/Store displacement.
+	uint64_t Value = 0;				 ///< SetBase 地址、AddImm 加数或 MoveImm 立即数
+	uint64_t ValueMask = UINT64_MAX; ///< MOVK/MOVT 的替换位掩码
+	bool bClobbersAll = false;		 ///< 无法可靠判断写寄存器时清空数据流状态
+	int64_t Offset = 0;				 ///< Load/Store displacement.
 
-	uint8_t AccessWidth = 0; ///< Load/Store size in bytes (4, 8, ...), 0 if n/a.
-	uint8_t Length = 4;		 ///< Encoded length, for variable-width targets.
+	bool bSignExtends = false; ///< literal 窄值需符号扩展时置位
+	uint8_t AccessWidth = 0;   ///< Load/Store size in bytes (4, 8, ...), 0 if n/a.
+	uint8_t Length = 4;		   ///< Encoded length, for variable-width targets.
 
 	/// SetBase: Value is the complete address (ADR), not just a page (ADRP).
 	bool bExactAddress = false;
 
-	/// MoveImm: ORs into the register's accumulated immediate rather than
-	/// replacing it (AArch64 MOVK, ARM32 MOVT).
+	/// MoveImm：按 ValueMask 替换已累计立即数的对应位（MOVK/MOVT）
 	bool bComposes = false;
 
 	/// MoveImm: the composed immediate is meant to be an address, not a scalar.
@@ -91,6 +93,24 @@ struct NormalizedInsn
 	 */
 	bool bWritesBackBase = false;
 };
+
+// 按编码中的访问宽度读取 literal，避免 ARM64 的 32 位 literal 越界或拼入邻接数据
+template <typename Memory>
+[[nodiscard]] bool ReadLiteralValue(const Memory *memory, const NormalizedInsn &instruction, uint64_t &value)
+{
+	if (!memory || !instruction.AccessWidth || instruction.AccessWidth > sizeof(value) || instruction.Value > UINTPTR_MAX)
+		return false;
+	value = 0;
+	if (memory->ReadBytes(static_cast<uintptr_t>(instruction.Value), &value, instruction.AccessWidth) != instruction.AccessWidth)
+		return false;
+	if (instruction.bSignExtends && instruction.AccessWidth < sizeof(value))
+	{
+		const unsigned bits = instruction.AccessWidth * 8;
+		if (value & (uint64_t{1} << (bits - 1)))
+			value |= UINT64_MAX << bits;
+	}
+	return true;
+}
 
 /**
  * @brief Global arch decoder layer interface.

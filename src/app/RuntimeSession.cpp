@@ -1,7 +1,7 @@
 #include "nextdumper/app/RuntimeSession.hpp"
 #include "nextdumper/BuildInfo.hpp"
 
-#include <KittyMemoryEx.hpp>
+#include "nextdumper/memory/ProcessInfo.hpp"
 
 #include <filesystem>
 #include <fstream>
@@ -458,7 +458,7 @@ namespace nextdumper::app
         Note("Package=" + config_.packageName + " PID=auto UE=auto");
 
         diagnosis_.stage = "process-discovery";
-        const int pid = KittyMemoryEx::getProcessID(config_.packageName);
+        const int pid = memory::ProcessInfo::Find(config_.packageName);
         if (pid <= 0)
         {
             failures_.push_back("target process was not found");
@@ -1084,10 +1084,9 @@ namespace nextdumper::app
         try
         {
             ir::SparseRootEvidence sparseRoot;
-            const auto elf = memory_->Manager().elfScanner.findElf(context_.Module().name);
-            if (elf.isValid())
+            if (context_.Module().IsValid())
             {
-                const auto symbols = module::QueryElfSymbols(*memory_, context_.Module(), elf, {sparseRoot.symbol});
+                const auto symbols = module::QueryElfSymbols(*memory_, context_.Module(), {sparseRoot.symbol});
                 sparseRoot.diagnostics = symbols.diagnostics;
                 const auto status = symbols.status.find(sparseRoot.symbol);
                 sparseRoot.status = status == symbols.status.end() ? "symbol-query-incomplete" : module::SymbolStatusName(status->second);

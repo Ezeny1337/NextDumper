@@ -1,178 +1,16 @@
 #include "IArchDecoder.h"
 
-#include <KittyAsm.hpp>
-
 #include <cstring>
 #include <memory>
-#include <string>
 
 namespace
 {
-    int RegIndex(const std::string &name)
-    {
-        if (name.size() < 2 || (name[0] != 'X' && name[0] != 'W'))
-            return -1;
-        if (name == "XZR" || name == "WZR" || name == "SP")
-            return -1;
+    int Register(uint32_t value) { return value == 31 ? -1 : static_cast<int>(value); }
 
-        int value = 0;
-        for (size_t index = 1; index < name.size(); ++index)
-        {
-            if (name[index] < '0' || name[index] > '9')
-                return -1;
-            value = value * 10 + (name[index] - '0');
-        }
-        return value <= 30 ? value : -1;
-    }
-
-    bool IsLiteral(EKittyInsnTypeArm64 type)
+    int64_t Signed(uint64_t value, unsigned bits)
     {
-        return type == EKittyInsnTypeArm64::LDR_LITERAL || type == EKittyInsnTypeArm64::LDRW_LITERAL ||
-               type == EKittyInsnTypeArm64::LDRSW_LITERAL;
-    }
-
-    bool IsLoad(EKittyInsnTypeArm64 type)
-    {
-        switch (type)
-        {
-        case EKittyInsnTypeArm64::LDR:
-        case EKittyInsnTypeArm64::LDRW:
-        case EKittyInsnTypeArm64::LDRB:
-        case EKittyInsnTypeArm64::LDRH:
-        case EKittyInsnTypeArm64::LDRSB:
-        case EKittyInsnTypeArm64::LDRSH:
-        case EKittyInsnTypeArm64::LDRSW:
-        case EKittyInsnTypeArm64::LDR_PRE:
-        case EKittyInsnTypeArm64::LDRB_PRE:
-        case EKittyInsnTypeArm64::LDRH_PRE:
-        case EKittyInsnTypeArm64::LDRSB_PRE:
-        case EKittyInsnTypeArm64::LDRSH_PRE:
-        case EKittyInsnTypeArm64::LDRSW_PRE:
-        case EKittyInsnTypeArm64::LDR_POST:
-        case EKittyInsnTypeArm64::LDRB_POST:
-        case EKittyInsnTypeArm64::LDRH_POST:
-        case EKittyInsnTypeArm64::LDRSB_POST:
-        case EKittyInsnTypeArm64::LDRSH_POST:
-        case EKittyInsnTypeArm64::LDRSW_POST:
-        case EKittyInsnTypeArm64::LDUR:
-        case EKittyInsnTypeArm64::LDURW:
-        case EKittyInsnTypeArm64::LDURB:
-        case EKittyInsnTypeArm64::LDURH:
-        case EKittyInsnTypeArm64::LDURSB:
-        case EKittyInsnTypeArm64::LDURSH:
-        case EKittyInsnTypeArm64::LDURSW:
-            return true;
-        default:
-            return false;
-        }
-    }
-
-    bool IsStore(EKittyInsnTypeArm64 type)
-    {
-        switch (type)
-        {
-        case EKittyInsnTypeArm64::STR:
-        case EKittyInsnTypeArm64::STRW:
-        case EKittyInsnTypeArm64::STRB:
-        case EKittyInsnTypeArm64::STRH:
-        case EKittyInsnTypeArm64::STR_PRE:
-        case EKittyInsnTypeArm64::STRB_PRE:
-        case EKittyInsnTypeArm64::STRH_PRE:
-        case EKittyInsnTypeArm64::STR_POST:
-        case EKittyInsnTypeArm64::STRB_POST:
-        case EKittyInsnTypeArm64::STRH_POST:
-        case EKittyInsnTypeArm64::STUR:
-        case EKittyInsnTypeArm64::STURW:
-        case EKittyInsnTypeArm64::STURB:
-        case EKittyInsnTypeArm64::STURH:
-            return true;
-        default:
-            return false;
-        }
-    }
-
-    bool IsPostIndex(EKittyInsnTypeArm64 type)
-    {
-        switch (type)
-        {
-        case EKittyInsnTypeArm64::LDR_POST:
-        case EKittyInsnTypeArm64::LDRB_POST:
-        case EKittyInsnTypeArm64::LDRH_POST:
-        case EKittyInsnTypeArm64::LDRSB_POST:
-        case EKittyInsnTypeArm64::LDRSH_POST:
-        case EKittyInsnTypeArm64::LDRSW_POST:
-        case EKittyInsnTypeArm64::STR_POST:
-        case EKittyInsnTypeArm64::STRB_POST:
-        case EKittyInsnTypeArm64::STRH_POST:
-            return true;
-        default:
-            return false;
-        }
-    }
-
-    bool IsPreIndex(EKittyInsnTypeArm64 type)
-    {
-        switch (type)
-        {
-        case EKittyInsnTypeArm64::LDR_PRE:
-        case EKittyInsnTypeArm64::LDRB_PRE:
-        case EKittyInsnTypeArm64::LDRH_PRE:
-        case EKittyInsnTypeArm64::LDRSB_PRE:
-        case EKittyInsnTypeArm64::LDRSH_PRE:
-        case EKittyInsnTypeArm64::LDRSW_PRE:
-        case EKittyInsnTypeArm64::STR_PRE:
-        case EKittyInsnTypeArm64::STRB_PRE:
-        case EKittyInsnTypeArm64::STRH_PRE:
-            return true;
-        default:
-            return false;
-        }
-    }
-
-    uint8_t AccessWidth(EKittyInsnTypeArm64 type)
-    {
-        switch (type)
-        {
-        case EKittyInsnTypeArm64::LDRB:
-        case EKittyInsnTypeArm64::STRB:
-        case EKittyInsnTypeArm64::LDRSB:
-        case EKittyInsnTypeArm64::LDRB_PRE:
-        case EKittyInsnTypeArm64::STRB_PRE:
-        case EKittyInsnTypeArm64::LDRSB_PRE:
-        case EKittyInsnTypeArm64::LDRB_POST:
-        case EKittyInsnTypeArm64::STRB_POST:
-        case EKittyInsnTypeArm64::LDRSB_POST:
-        case EKittyInsnTypeArm64::LDURB:
-        case EKittyInsnTypeArm64::STURB:
-        case EKittyInsnTypeArm64::LDURSB:
-            return 1;
-        case EKittyInsnTypeArm64::LDRH:
-        case EKittyInsnTypeArm64::STRH:
-        case EKittyInsnTypeArm64::LDRSH:
-        case EKittyInsnTypeArm64::LDRH_PRE:
-        case EKittyInsnTypeArm64::STRH_PRE:
-        case EKittyInsnTypeArm64::LDRSH_PRE:
-        case EKittyInsnTypeArm64::LDRH_POST:
-        case EKittyInsnTypeArm64::STRH_POST:
-        case EKittyInsnTypeArm64::LDRSH_POST:
-        case EKittyInsnTypeArm64::LDURH:
-        case EKittyInsnTypeArm64::STURH:
-        case EKittyInsnTypeArm64::LDURSH:
-            return 2;
-        case EKittyInsnTypeArm64::LDRW:
-        case EKittyInsnTypeArm64::STRW:
-        case EKittyInsnTypeArm64::LDRSW:
-        case EKittyInsnTypeArm64::LDRSW_PRE:
-        case EKittyInsnTypeArm64::LDRSW_POST:
-        case EKittyInsnTypeArm64::LDURW:
-        case EKittyInsnTypeArm64::STURW:
-        case EKittyInsnTypeArm64::LDURSW:
-        case EKittyInsnTypeArm64::LDRW_LITERAL:
-        case EKittyInsnTypeArm64::LDRSW_LITERAL:
-            return 4;
-        default:
-            return 8;
-        }
+        const uint64_t sign = uint64_t{1} << (bits - 1);
+        return (value & sign) ? -static_cast<int64_t>((uint64_t{1} << bits) - value) : static_cast<int64_t>(value);
     }
 
     class Arm64Decoder final : public IArchDecoder
@@ -181,128 +19,140 @@ namespace
         EArch Arch() const override { return EArch::Arm64; }
         uint32_t InstructionStride() const override { return 4; }
         int RegisterCount() const override { return 31; }
-
         bool CallClobbers(int reg) const override { return (reg >= 0 && reg <= 18) || reg == 30; }
 
-        bool DecodeLocalBytes(const uint8_t *at, size_t avail, uint64_t addr, NormalizedInsn &out) const override
+        bool DecodeLocalBytes(const uint8_t *at, size_t available, uint64_t address, NormalizedInsn &out) const override
         {
             out = {};
             out.Length = 4;
-            if (!at || avail < 4)
+            if (!at || available < 4)
                 return false;
-
-            uint32_t word = 0;
+            uint32_t word;
             std::memcpy(&word, at, sizeof(word));
-
-            if ((word & 0xFFFFFC1Fu) == 0xD65F0000u)
+            const int rd = Register(word & 31), rn = Register((word >> 5) & 31);
+            if ((word & 0xfffffc1f) == 0xd65f0000)
             {
                 out.Kind = NormalizedInsn::EKind::Return;
                 return true;
             }
-
-            if ((word & 0xFFE0FFE0u) == 0xAA0003E0u || (word & 0xFFE0FFE0u) == 0x2A0003E0u)
+            if ((word & 0xfffffc1f) == 0xd63f0000 || (word & 0xfffffc1f) == 0xd61f0000)
             {
-                const int dest = static_cast<int>(word & 31u);
-                const int source = static_cast<int>((word >> 16) & 31u);
-                out.Kind = NormalizedInsn::EKind::MoveReg;
-                out.Dest = dest == 31 ? -1 : dest;
-                out.Base = source == 31 ? -1 : source;
+                out.Kind = (word & 0x00200000) ? NormalizedInsn::EKind::Call : NormalizedInsn::EKind::Branch;
+                out.Base = rn;
                 return true;
             }
-
-            if (((word >> 23) & 0x1FFu) == 0x153u && ((word >> 5) & 31u) == 31u)
+            if ((word & 0x7c000000) == 0x14000000)
             {
-                out.Kind = NormalizedInsn::EKind::Prologue;
+                out.Kind = (word >> 31) ? NormalizedInsn::EKind::Call : NormalizedInsn::EKind::Branch;
+                out.Value = address + static_cast<uint64_t>(Signed(word & 0x03ffffff, 26) * 4);
                 return true;
             }
-
-            if ((word & 0xFFC003FFu) == 0xD10003FFu)
+            if ((word & 0xff000010) == 0x54000000 || (word & 0x7e000000) == 0x34000000 ||
+                (word & 0x7e000000) == 0x36000000)
             {
-                out.Kind = NormalizedInsn::EKind::Prologue;
+                out.Kind = NormalizedInsn::EKind::Branch;
                 return true;
             }
-
-            const KittyInsnArm64 insn = KittyArm64::decodeInsn(word, addr);
-            if (!insn.isValid())
-                return false;
-
-            const int rd = RegIndex(insn.rd);
-            const int rn = RegIndex(insn.rn);
-            const int rt = RegIndex(insn.rt);
-
-            switch (insn.type)
+            if ((word & 0x1f000000) == 0x10000000)
             {
-            case EKittyInsnTypeArm64::ADR:
-            case EKittyInsnTypeArm64::ADRP:
+                const uint64_t immediate = ((word >> 29) & 3) | (uint64_t{(word >> 5) & 0x7ffff} << 2);
+                const bool page = (word >> 31) != 0;
                 out.Kind = NormalizedInsn::EKind::SetBase;
                 out.Dest = rd;
-                out.Value = insn.target;
-                out.bExactAddress = insn.type == EKittyInsnTypeArm64::ADR;
+                out.Value = (page ? address & ~uint64_t{4095} : address) +
+                            static_cast<uint64_t>(Signed(immediate, 21) * (page ? 4096 : 1));
+                out.bExactAddress = !page;
                 return true;
-            case EKittyInsnTypeArm64::ADD:
-                out.Kind = NormalizedInsn::EKind::AddImm;
+            }
+            if ((word & 0x1f800000) == 0x11000000)
+            {
+                if (word == 0xd10003ff || ((word & 0xffc003ff) == 0xd10003ff))
+                {
+                    out.Kind = NormalizedInsn::EKind::Prologue;
+                    return true;
+                }
                 out.Dest = rd;
-                out.Base = rn;
-                out.Value = static_cast<uint64_t>(insn.immediate);
+                if ((word >> 31) && !(word & 0x40000000) && rn >= 0)
+                {
+                    out.Kind = NormalizedInsn::EKind::AddImm;
+                    out.Base = rn;
+                    out.Value = uint64_t{(word >> 10) & 4095} << ((word & 0x00400000) ? 12 : 0);
+                }
                 return true;
-            case EKittyInsnTypeArm64::MOVZ:
-            case EKittyInsnTypeArm64::MOVK:
-            case EKittyInsnTypeArm64::MOVN:
+            }
+            if ((word & 0x1f800000) == 0x12800000)
+            {
+                const unsigned operation = (word >> 29) & 3, shift = ((word >> 21) & 3) * 16;
+                const bool wide = (word >> 31) != 0;
+                if (operation == 1 || (!wide && shift >= 32))
+                    return false;
+                const uint64_t immediate = uint64_t{(word >> 5) & 65535} << shift;
                 out.Kind = NormalizedInsn::EKind::MoveImm;
                 out.Dest = rd;
-                out.Value = static_cast<uint64_t>(insn.immediate);
-                out.bComposes = insn.type == EKittyInsnTypeArm64::MOVK;
-                out.bAddressLike = false;
+                out.Value = operation == 0 ? ~immediate : immediate;
+                if (!wide)
+                    out.Value &= UINT32_MAX;
+                out.bComposes = operation == 3;
+                out.ValueMask = (uint64_t{65535} << shift) | (wide ? 0 : uint64_t{UINT32_MAX} << 32);
                 return true;
-            case EKittyInsnTypeArm64::SUB:
-                out.Kind = NormalizedInsn::EKind::Other;
+            }
+            if ((word & 0xffe0ffe0) == 0xaa0003e0 || (word & 0xffe0ffe0) == 0x2a0003e0)
+            {
                 out.Dest = rd;
+                if (word >> 31)
+                {
+                    out.Kind = NormalizedInsn::EKind::MoveReg;
+                    out.Base = Register((word >> 16) & 31);
+                }
                 return true;
-            case EKittyInsnTypeArm64::BL:
-                out.Kind = NormalizedInsn::EKind::Call;
-                out.Value = insn.target;
-                return true;
-            case EKittyInsnTypeArm64::B:
-                out.Kind = NormalizedInsn::EKind::Branch;
-                out.Value = insn.target;
-                return true;
-            case EKittyInsnTypeArm64::B_COND:
-            case EKittyInsnTypeArm64::CBZ:
-            case EKittyInsnTypeArm64::CBNZ:
-            case EKittyInsnTypeArm64::TBZ:
-            case EKittyInsnTypeArm64::TBNZ:
-                out.Kind = NormalizedInsn::EKind::Branch;
-                return true;
-            default:
-                break;
             }
-
-            if (IsLiteral(insn.type))
+            if ((word & 0x3b000000) == 0x18000000 && !(word & 0x04000000))
             {
+                const unsigned operation = word >> 30;
+                if (operation == 3)
+                    return true; // PRFM 不写入通用寄存器
+                out.Dest = rd;
+                out.AccessWidth = operation == 1 ? 8 : 4;
+                out.bSignExtends = operation == 2;
                 out.Kind = NormalizedInsn::EKind::LoadLiteral;
-                out.Dest = rt;
-                out.Value = insn.target;
-                out.AccessWidth = AccessWidth(insn.type);
+                out.Value = address + static_cast<uint64_t>(Signed((word >> 5) & 0x7ffff, 19) * 4);
                 return true;
             }
-
-            if (IsLoad(insn.type) || IsStore(insn.type))
+            const bool scaled = (word & 0x3b000000) == 0x39000000;
+            const bool unscaled = (word & 0x3b200000) == 0x38000000;
+            if (!(word & 0x04000000) && (scaled || unscaled))
             {
-                out.Kind = IsLoad(insn.type) ? NormalizedInsn::EKind::Load : NormalizedInsn::EKind::Store;
-                out.Dest = rt;
+                const unsigned size = word >> 30, operation = (word >> 22) & 3;
+                if (size == 3 && operation >= 2)
+                    return true; // PRFM
+                if (size == 2 && operation == 3)
+                    return false;
+                out.Kind = operation == 0 ? NormalizedInsn::EKind::Store : NormalizedInsn::EKind::Load;
+                out.Dest = rd;
                 out.Base = rn;
-                out.Offset = IsPostIndex(insn.type) ? 0 : static_cast<int64_t>(insn.immediate);
-                out.AccessWidth = AccessWidth(insn.type);
-                out.bWritesBackBase = IsPreIndex(insn.type) || IsPostIndex(insn.type);
+                out.AccessWidth = static_cast<uint8_t>(1u << size);
+                if (scaled)
+                    out.Offset = static_cast<int64_t>((word >> 10) & 4095) << size;
+                else
+                {
+                    const unsigned mode = (word >> 10) & 3;
+                    out.Offset = mode == 1 ? 0 : Signed((word >> 12) & 511, 9);
+                    out.bWritesBackBase = mode == 1 || mode == 3;
+                }
                 return true;
             }
-
-            return false;
+            if ((word & 0xffc003e0) == 0xa98003e0)
+            {
+                out.Kind = NormalizedInsn::EKind::Prologue;
+                return true;
+            }
+            if (word == 0xd503201f || (word & 0xfffffc1f) == 0xd503241f)
+                return true; // NOP、BTI。
+            // 未建模指令不能保留可能已经失效的地址数据流
+            out.bClobbersAll = true;
+            return true;
         }
     };
 } // namespace
 
-std::unique_ptr<IArchDecoder> CreateArm64Decoder()
-{
-    return std::make_unique<Arm64Decoder>();
-}
+std::unique_ptr<IArchDecoder> CreateArm64Decoder() { return std::make_unique<Arm64Decoder>(); }

@@ -35,6 +35,8 @@ namespace nextdumper::ue::schema_probe
             [[nodiscard]] bool Exhausted() const { return exhausted_; }
             [[nodiscard]] bool IsInitialized() const override { return source_.IsInitialized(); }
             [[nodiscard]] pid_t ProcessId() const override { return source_.ProcessId(); }
+            [[nodiscard]] std::span<const memory::MemoryRegion> Regions() const override { return source_.Regions(); }
+            [[nodiscard]] std::string ProcessName() const override { return source_.ProcessName(); }
             [[nodiscard]] uint64_t AddressSpaceGeneration() const override { return source_.AddressSpaceGeneration(); }
             [[nodiscard]] bool RefreshAddressSpace() override { return false; }
             [[nodiscard]] bool IsReadable(uintptr_t address, size_t size) const override { return source_.IsReadable(address, size); }

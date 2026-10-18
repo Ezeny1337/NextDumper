@@ -53,10 +53,11 @@ namespace nextdumper::memory
         }
         std::array<char, 8192> buffer{};
         bool ok = true;
+        unsigned interruptions = 0;
         for (;;)
         {
             const ssize_t count = read(fd, buffer.data(), buffer.size());
-            if (count < 0 && errno == EINTR)
+            if (count < 0 && errno == EINTR && interruptions++ < 3)
                 continue;
             if (count < 0)
             {
@@ -180,10 +181,11 @@ namespace nextdumper::memory
         {
             pollfd descriptor{lifetime_, POLLIN, 0};
             int result;
+            unsigned interruptions = 0;
             do
             {
                 result = poll(&descriptor, 1, 0);
-            } while (result < 0 && errno == EINTR);
+            } while (result < 0 && errno == EINTR && interruptions++ < 3);
             if (result == 0)
                 return true;
             error_ = result < 0 ? errno : ESRCH;
@@ -328,4 +330,4 @@ namespace nextdumper::memory
             ++at;
         }
     }
-}
+} // namespace nextdumper::memory

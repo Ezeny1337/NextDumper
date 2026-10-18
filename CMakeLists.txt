@@ -57,15 +57,6 @@ if(NEXTDUMPER_FORCE_NDEBUG AND NEXTDUMPER_DISABLE_NDEBUG)
     message(FATAL_ERROR "NEXTDUMPER_FORCE_NDEBUG and NEXTDUMPER_DISABLE_NDEBUG are mutually exclusive")
 endif()
 
-set(KITTY_MEMORY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/KittyMemoryEx")
-file(GLOB KITTY_MEMORY_SOURCES CONFIGURE_DEPENDS "${KITTY_MEMORY_DIR}/*.cpp")
-
-add_library(kitty_memory_ex STATIC ${KITTY_MEMORY_SOURCES})
-target_include_directories(kitty_memory_ex SYSTEM PUBLIC "${KITTY_MEMORY_DIR}")
-target_compile_definitions(kitty_memory_ex PUBLIC kNO_KEYSTONE)
-target_compile_options(kitty_memory_ex PRIVATE -fexceptions)
-target_link_libraries(kitty_memory_ex PUBLIC log)
-
 file(GLOB UE_ANALYZER_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/analyzer/Architecture/*.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/analyzer/UEAnalyzer/*.cpp"
@@ -76,10 +67,8 @@ file(GLOB UE_ANALYZER_SOURCES CONFIGURE_DEPENDS
 
 add_library(ue_analyzer STATIC ${UE_ANALYZER_SOURCES})
 target_include_directories(ue_analyzer PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src/analyzer")
-target_include_directories(ue_analyzer SYSTEM PUBLIC "${KITTY_MEMORY_DIR}")
 target_compile_features(ue_analyzer PUBLIC cxx_std_20)
 target_compile_options(ue_analyzer PRIVATE -Wall -Wextra -Wno-unused-parameter -fexceptions)
-target_link_libraries(ue_analyzer PUBLIC kitty_memory_ex)
 
 add_library(nextdumper_core STATIC
     src/app/CompatibilityDiagnosis.cpp
@@ -99,8 +88,10 @@ add_library(nextdumper_core STATIC
     src/generation/CppTypeResolver.cpp
     src/generation/JsonExport.cpp
     src/memory/CaptureMemorySource.cpp
+    src/memory/MemoryScanner.cpp
     src/memory/ProcessInfo.cpp
     src/memory/RemoteMemorySource.cpp
+    src/module/ElfFile.cpp
     src/module/ModuleCatalog.cpp
     src/module/ModuleImage.cpp
     src/module/ElfSymbols.cpp
@@ -139,9 +130,10 @@ target_include_directories(nextdumper_core
         "${CMAKE_CURRENT_BINARY_DIR}/generated"
 )
 target_include_directories(nextdumper_core SYSTEM PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/third_party"
         "${CMAKE_CURRENT_SOURCE_DIR}/src/analyzer"
 )
+
+target_compile_definitions(nextdumper_core PUBLIC _FILE_OFFSET_BITS=64)
 
 target_compile_options(nextdumper_core PRIVATE
     -Wall
@@ -150,13 +142,13 @@ target_compile_options(nextdumper_core PRIVATE
     -Werror
     -fexceptions
 )
-target_link_libraries(nextdumper_core PUBLIC kitty_memory_ex ue_analyzer)
+target_link_libraries(nextdumper_core PUBLIC ue_analyzer)
 
 add_executable(NextDumper src/app/main.cpp)
 target_link_libraries(NextDumper PRIVATE nextdumper_core)
 target_compile_options(NextDumper PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
-set(NEXTDUMPER_NATIVE_TARGETS kitty_memory_ex ue_analyzer nextdumper_core NextDumper)
+set(NEXTDUMPER_NATIVE_TARGETS ue_analyzer nextdumper_core NextDumper)
 foreach(target IN LISTS NEXTDUMPER_NATIVE_TARGETS)
     target_compile_options(${target} PRIVATE
         -ffunction-sections

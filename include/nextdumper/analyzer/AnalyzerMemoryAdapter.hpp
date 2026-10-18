@@ -7,17 +7,17 @@
 #include "Architecture/IArchDecoder.h"
 #include "Memory/IMemory.h"
 
-#include "nextdumper/memory/RemoteMemorySource.hpp"
+#include "nextdumper/memory/MemorySource.hpp"
 #include "nextdumper/module/ModuleImage.hpp"
 
 namespace nextdumper::analyzer
 {
-    using ::nextdumper::memory::RemoteMemorySource;
+    using ::nextdumper::memory::IMemorySource;
 
     class AnalyzerMemoryAdapter final : public IMemory
     {
     public:
-        AnalyzerMemoryAdapter(RemoteMemorySource &memory, const module::ModuleImage &module);
+        AnalyzerMemoryAdapter(IMemorySource &memory, const module::ModuleImage &module);
 
         bool Initialize() override;
         std::string GetProcessName() const override;
@@ -30,7 +30,6 @@ namespace nextdumper::analyzer
         bool IsAddressExecutable(uintptr_t address, size_t size = sizeof(void *)) const override;
         MemRegionInfo GetAddressRegionInfo(uintptr_t address) const override;
         size_t ReadBytes(uintptr_t address, void *buffer, size_t size) const override;
-        bool WriteBytes(uintptr_t address, const void *buffer, size_t size) const override;
         bool ReadRelocationPointer(uintptr_t slot, uintptr_t &out) const override;
         ModuleInfo GetModuleInfo(const std::string &moduleName) override;
         uintptr_t FindModuleSymbol(const std::string &moduleName, const std::string &symbolName) override;
@@ -56,7 +55,7 @@ namespace nextdumper::analyzer
         void RebuildMaps();
         [[nodiscard]] bool RangeEnd(uintptr_t start, size_t range, uintptr_t &end) const;
 
-        RemoteMemorySource *memory_ = nullptr;
+        IMemorySource *memory_ = nullptr;
         module::ModuleImage module_;
         ModuleInfo unreal_;
         std::vector<MemRegionInfo> regions_;

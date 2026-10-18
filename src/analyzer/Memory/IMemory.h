@@ -10,7 +10,6 @@
 #include <sstream>
 #include <string>
 #include <type_traits>
-#include <unistd.h>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -24,7 +23,7 @@ public:
 	MemRegionInfo() = default;
 
 	/// @brief Builds a region from known bounds and permissions.
-	MemRegionInfo(std::string PathName, uintptr_t Start, uintptr_t End, uintptr_t Offset, bool bReadable = false, bool bWriteable = false, bool bExecutable = false)
+	MemRegionInfo(std::string PathName, uintptr_t Start, uintptr_t End, uint64_t Offset, bool bReadable = false, bool bWriteable = false, bool bExecutable = false)
 		: PathName_(std::move(PathName)),
 		  Start_(Start),
 		  End_(End),
@@ -40,7 +39,7 @@ public:
 	/// @brief end address of region.
 	inline uintptr_t GetEnd() const { return End_; }
 	/// @brief offset of the region.
-	inline uintptr_t GetOffset() const { return Offset_; }
+	inline uint64_t GetOffset() const { return Offset_; }
 	/// @brief Byte length `End - Start`
 	inline size_t GetSize() const { return End_ > Start_ ? static_cast<size_t>(End_ - Start_) : 0; }
 	/// @brief Backing path, or the segment name for an image.
@@ -64,7 +63,7 @@ public:
 	/// @brief Sets the end address.
 	inline void SetEnd(uintptr_t End) { End_ = End; }
 	/// @brief Sets the offset.
-	inline void SetOffset(uintptr_t Offset) { Offset_ = Offset; }
+	inline void SetOffset(uint64_t Offset) { Offset_ = Offset; }
 	/// @brief Sets the name.
 	inline void SetPathName(std::string PathName) { PathName_ = std::move(PathName); }
 
@@ -140,7 +139,7 @@ private:
 	std::string PathName_;
 	uintptr_t Start_ = 0;
 	uintptr_t End_ = 0;
-	uintptr_t Offset_ = 0;
+	uint64_t Offset_ = 0;
 	bool bReadable_ = false;
 	bool bWriteable_ = false;
 	bool bExecutable_ = false;
@@ -384,17 +383,6 @@ public:
 	/// @brief Refresh process memory backend.
 	virtual bool RefreshMemory() = 0;
 
-	/// @brief Returns the memory page size.
-	inline virtual size_t GetPageSize() const
-	{
-		static long pageSize = 0;
-
-		if (pageSize <= 0)
-			pageSize = sysconf(_SC_PAGESIZE);
-
-		return pageSize > 0 ? static_cast<size_t>(pageSize) : 4096;
-	}
-
 	/// @brief True when the backend is ready to serve reads.
 	virtual bool IsMemoryAccessOk() const = 0;
 
@@ -429,16 +417,6 @@ public:
 	virtual size_t ReadBytes(uintptr_t Address, void *Buffer, size_t Size) const = 0;
 
 	/**
-	 * @brief Writes a range of memory.
-	 *
-	 * @param Address Start address to write to.
-	 * @param Buffer Source buffer.
-	 * @param Size Number of bytes to write.
-	 * @return true if all bytes were written successfully.
-	 */
-	virtual bool WriteBytes(uintptr_t Address, const void *Buffer, size_t Size) const = 0;
-
-	/**
 	 * @brief Reads one trivially copyable value.
 	 *
 	 * @tparam T Value type.
@@ -453,21 +431,6 @@ public:
 		if (ReadBytes(Address, &Result, sizeof(T)) != sizeof(T))
 			return T{};
 		return Result;
-	}
-
-	/**
-	 * @brief Writes one trivially copyable value.
-	 *
-	 * @tparam T Value type.
-	 * @param Address Address to write to.
-	 * @param Value Value to write.
-	 * @return true if the value was written successfully.
-	 */
-	template <typename T>
-		requires std::is_trivially_copyable_v<T>
-	bool Write(uintptr_t Address, const T &Value) const
-	{
-		return WriteBytes(Address, &Value, sizeof(T));
 	}
 
 	/**

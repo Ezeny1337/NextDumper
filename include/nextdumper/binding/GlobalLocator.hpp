@@ -10,17 +10,17 @@
 
 namespace nextdumper::memory
 {
-    class RemoteMemorySource;
+    class IMemorySource;
 }
 
 namespace nextdumper::binding
 {
-    using ::nextdumper::memory::RemoteMemorySource;
+    using ::nextdumper::memory::IMemorySource;
 
     class GlobalLocator
     {
     public:
-        GlobalLocator(RemoteMemorySource &memory, const module::ModuleImage &module) : memory_(memory), module_(module) {}
+        GlobalLocator(IMemorySource &memory, const module::ModuleImage &module) : memory_(memory), module_(module) {}
 
         [[nodiscard]] BindingCandidates LocateSymbols(const std::vector<std::string> &objectSymbols,
                                                       const std::vector<std::string> &nameSymbols,
@@ -32,7 +32,7 @@ namespace nextdumper::binding
         [[nodiscard]] std::vector<LocatedAddress> SymbolCandidates(uintptr_t address,
                                                                    const std::string &symbol) const;
 
-        RemoteMemorySource &memory_;
+        IMemorySource &memory_;
         const module::ModuleImage &module_;
     };
 } // namespace nextdumper::binding

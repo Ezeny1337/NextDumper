@@ -126,6 +126,7 @@ namespace nextdumper::analyzer
 		{
 			for (auto &R : Regs)
 				R.bKnown = false;
+			std::fill(Imms.begin(), Imms.end(), 0);
 		};
 
 		// Constants and globals are correlated by instruction distance in both
@@ -216,8 +217,18 @@ namespace nextdumper::analyzer
 				continue;
 			}
 
+			if (Insn.bClobbersAll)
+			{
+				ClearAll();
+				Cursor += Advance;
+				++Index;
+				continue;
+			}
+
 			const int Dest = (Insn.Dest >= 0 && Insn.Dest < NumRegs) ? Insn.Dest : -1;
 			const int Src = (Insn.Base >= 0 && Insn.Base < NumRegs) ? Insn.Base : -1;
+			if (Insn.Kind != NormalizedInsn::EKind::MoveImm && Dest >= 0)
+				Imms[Dest] = 0;
 
 			switch (Insn.Kind)
 			{
@@ -235,7 +246,10 @@ namespace nextdumper::analyzer
 
 				for (int R = 0; R < NumRegs; ++R)
 					if (Arch.CallClobbers(R))
+					{
 						Regs[static_cast<size_t>(R)].bKnown = false;
+						Imms[static_cast<size_t>(R)] = 0;
+					}
 				break;
 
 			case NormalizedInsn::EKind::Branch:
@@ -270,8 +284,8 @@ namespace nextdumper::analyzer
 				// target that is one instruction in seven.
 				if (Dest >= 0)
 				{
-					uintptr_t Word = 0;
-					if (Memory->ReadBytes(static_cast<uintptr_t>(Insn.Value), &Word, sizeof(Word)) == sizeof(Word))
+					uint64_t Word = 0;
+					if (ReadLiteralValue(Memory, Insn, Word))
 					{
 						Regs[Dest].Value = static_cast<uint64_t>(Word);
 						Regs[Dest].bKnown = true;
@@ -393,7 +407,7 @@ namespace nextdumper::analyzer
 			case NormalizedInsn::EKind::MoveImm:
 				if (Dest >= 0)
 				{
-					Imms[Dest] = Insn.bComposes ? (Imms[Dest] | Insn.Value) : Insn.Value;
+					Imms[Dest] = Insn.bComposes ? ((Imms[Dest] & ~Insn.ValueMask) | Insn.Value) : Insn.Value;
 
 					// A composed immediate is an address on the targets that build
 					// them this way, so it wraps like one.

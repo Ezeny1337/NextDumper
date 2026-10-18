@@ -4,12 +4,15 @@
 #include <cstring>
 #include <limits>
 
-#include <KittyMemoryEx.hpp>
+#include <stdexcept>
+#include <sstream>
+
+#include "nextdumper/memory/MemoryScanner.hpp"
 #include "nextdumper/module/ElfSymbols.hpp"
 
 namespace nextdumper::analyzer
 {
-    AnalyzerMemoryAdapter::AnalyzerMemoryAdapter(RemoteMemorySource &memory, const module::ModuleImage &module)
+    AnalyzerMemoryAdapter::AnalyzerMemoryAdapter(IMemorySource &memory, const module::ModuleImage &module)
         : memory_(&memory), module_(module)
     {
         RebuildMaps();
@@ -20,11 +23,11 @@ namespace nextdumper::analyzer
         regions_.clear();
         if (memory_ == nullptr || !memory_->IsInitialized())
             return;
-        const auto maps = KittyMemoryEx::getAllMaps(memory_->ProcessId());
+        const auto maps = memory_->Regions();
         regions_.reserve(maps.size());
         for (const auto &map : maps)
-            regions_.emplace_back(map.pathname, map.startAddress, map.endAddress, map.offset,
-                                  map.readable, map.writeable, map.executable);
+            regions_.emplace_back(map.path, map.start, map.end, map.fileOffset,
+                                  map.readable, map.writable, map.executable);
         std::sort(regions_.begin(), regions_.end(), [](const MemRegionInfo &left, const MemRegionInfo &right)
                   { return left.GetStart() < right.GetStart(); });
 
@@ -42,7 +45,7 @@ namespace nextdumper::analyzer
 
     std::string AnalyzerMemoryAdapter::GetProcessName() const
     {
-        return memory_ ? memory_->Manager().processName() : std::string();
+        return memory_ ? memory_->ProcessName() : std::string();
     }
 
     int AnalyzerMemoryAdapter::GetProcessID() const
@@ -89,25 +92,21 @@ namespace nextdumper::analyzer
 
     MemRegionInfo AnalyzerMemoryAdapter::GetAddressRegionInfo(uintptr_t address) const
     {
-        for (const MemRegionInfo &region : regions_)
-            if (region.Contains(address))
-                return region;
-        return {};
+        auto at = std::upper_bound(regions_.begin(), regions_.end(), address,
+                                   [](uintptr_t value, const MemRegionInfo &region)
+                                   { return value < region.GetStart(); });
+        if (at == regions_.begin())
+            return {};
+        --at;
+        return at->Contains(address) ? *at : MemRegionInfo{};
     }
 
     size_t AnalyzerMemoryAdapter::ReadBytes(uintptr_t address, void *buffer, size_t size) const
     {
         if (!memory_)
             return 0;
-        return memory_->ReadBytes(address, buffer, size).transferred;
-    }
-
-    bool AnalyzerMemoryAdapter::WriteBytes(uintptr_t address, const void *buffer, size_t size) const
-    {
-        (void)address;
-        (void)buffer;
-        (void)size;
-        return false;
+        const auto read = memory_->ReadBytes(address, buffer, size);
+        return read.Ok() || read.error == memory::ReadError::PartialRead ? read.transferred : 0;
     }
 
     bool AnalyzerMemoryAdapter::ReadRelocationPointer(uintptr_t slot, uintptr_t &out) const
@@ -128,10 +127,7 @@ namespace nextdumper::analyzer
     {
         if (!memory_ || moduleName != module_.name)
             return 0;
-        auto elf = memory_->Manager().elfScanner.findElf(moduleName);
-        if (!elf.isValid())
-            return 0;
-        const auto result = module::QueryElfSymbols(*memory_, module_, elf, {symbolName});
+        const auto result = module::QueryElfSymbols(*memory_, module_, {symbolName});
         if (const auto found = result.exported.find(symbolName); found != result.exported.end())
             return found->second;
         const auto found = result.debug.find(symbolName);
@@ -160,14 +156,66 @@ namespace nextdumper::analyzer
                                                                         const std::string &pattern, int step,
                                                                         size_t maxHits) const
     {
-        (void)step;
         uintptr_t end = 0;
         if (!memory_ || pattern.empty() || !RangeEnd(start, range, end))
             return {};
-        auto hits = memory_->Manager().memScanner.findIdaPatternAll(start, end, pattern);
-        if (maxHits != 0 && hits.size() > maxHits)
-            hits.resize(maxHits);
-        return hits;
+        std::vector<uint8_t> values, masks;
+        std::istringstream input(pattern);
+        std::string token;
+        const auto hex = [](char value) -> int
+        {
+            if (value >= '0' && value <= '9')
+                return value - '0';
+            if (value >= 'a' && value <= 'f')
+                return value - 'a' + 10;
+            if (value >= 'A' && value <= 'F')
+                return value - 'A' + 10;
+            return -1;
+        };
+        while (input >> token)
+        {
+            if (values.size() >= 4096)
+                throw std::length_error("Pattern length limit exceeded");
+            if (token == "?")
+                token = "??";
+            if (token.size() != 2)
+                throw std::invalid_argument("Invalid IDA pattern token");
+            uint8_t value = 0, mask = 0;
+            for (char digit : token)
+            {
+                value = static_cast<uint8_t>(value << 4);
+                mask = static_cast<uint8_t>(mask << 4);
+                if (digit == '?')
+                    continue;
+                const int number = hex(digit);
+                if (number < 0)
+                    throw std::invalid_argument("Invalid IDA pattern digit");
+                value |= static_cast<uint8_t>(number);
+                mask |= 15;
+            }
+            values.push_back(value);
+            masks.push_back(mask);
+        }
+        auto result = memory::ScanMemory(*memory_, start, range, values, masks, 1, maxHits);
+        if (!result.complete)
+            throw std::runtime_error("Pattern scan encountered unreadable memory");
+        for (auto &hit : result.hits)
+        {
+            if (step >= 0)
+            {
+                if (static_cast<uintptr_t>(step) > UINTPTR_MAX - hit)
+                    throw std::overflow_error("Pattern result overflow");
+                hit += static_cast<uintptr_t>(step);
+            }
+            else
+            {
+                const uint64_t delta = static_cast<uint64_t>(-static_cast<int64_t>(step));
+                if (delta > hit)
+                    throw std::overflow_error("Pattern result underflow");
+                hit -= static_cast<uintptr_t>(delta);
+            }
+        }
+        return result.hits;
     }
 
     uintptr_t AnalyzerMemoryAdapter::FindPatternInRange(uintptr_t start, size_t range,
@@ -184,23 +232,16 @@ namespace nextdumper::analyzer
                                                                               size_t range,
                                                                               size_t maxHits) const
     {
-        std::vector<uintptr_t> hits;
-        uintptr_t end = 0;
-        if (alignment <= 0 || !RangeEnd(start, range, end))
-            return hits;
-        const uintptr_t step = static_cast<uintptr_t>(alignment);
-        if (start % step != 0)
-            start += step - (start % step);
-        for (uintptr_t cursor = start; cursor + sizeof(uintptr_t) <= end; cursor += step)
-        {
-            uintptr_t stored = 0;
-            if (!memory_->Read(cursor, stored) || stored != value)
-                continue;
-            hits.push_back(cursor);
-            if (maxHits != 0 && hits.size() >= maxHits)
-                break;
-        }
-        return hits;
+        if (!memory_ || alignment <= 0)
+            return {};
+        const auto *bytes = reinterpret_cast<const uint8_t *>(&value);
+        std::array<uint8_t, sizeof(value)> mask;
+        mask.fill(255);
+        auto result = memory::ScanMemory(*memory_, start, range, {bytes, sizeof(value)}, mask,
+                                         static_cast<size_t>(alignment), maxHits);
+        if (!result.complete)
+            throw std::runtime_error("Aligned scan encountered unreadable memory");
+        return result.hits;
     }
 
     uintptr_t AnalyzerMemoryAdapter::FindAlignedValueInRange(uintptr_t value, int32_t alignment,
@@ -216,32 +257,16 @@ namespace nextdumper::analyzer
                                                                         size_t range,
                                                                         size_t maxHits) const
     {
-        std::vector<uintptr_t> hits;
-        uintptr_t end = 0;
-        if (!memory_ || !data || dataSize == 0 || !RangeEnd(start, range, end) || end < start + dataSize)
-            return hits;
-
-        constexpr size_t chunkSize = 1024 * 1024;
-        std::vector<uint8_t> buffer;
-        uintptr_t cursor = start;
-        while (cursor + dataSize <= end)
-        {
-            const size_t wanted = std::min(chunkSize, static_cast<size_t>(end - cursor));
-            buffer.resize(wanted);
-            const size_t received = ReadBytes(cursor, buffer.data(), wanted);
-            if (received < dataSize)
-                break;
-            for (size_t offset = 0; offset + dataSize <= received; ++offset)
-            {
-                if (std::memcmp(buffer.data() + offset, data, dataSize) != 0)
-                    continue;
-                hits.push_back(cursor + offset);
-                if (maxHits != 0 && hits.size() >= maxHits)
-                    return hits;
-            }
-            cursor += received - dataSize + 1;
-        }
-        return hits;
+        if (!memory_ || !data || !dataSize)
+            return {};
+        if (dataSize > 4096)
+            throw std::length_error("Raw scan pattern length limit exceeded");
+        std::vector<uint8_t> mask(dataSize, 255);
+        auto result = memory::ScanMemory(*memory_, start, range,
+                                         {static_cast<const uint8_t *>(data), dataSize}, mask, 1, maxHits);
+        if (!result.complete)
+            throw std::runtime_error("Raw scan encountered unreadable memory");
+        return result.hits;
     }
 
     uintptr_t AnalyzerMemoryAdapter::FindRawDataInRange(const void *data, size_t dataSize,

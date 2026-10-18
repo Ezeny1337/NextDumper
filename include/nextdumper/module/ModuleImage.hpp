@@ -34,7 +34,7 @@ namespace nextdumper::module
         {
             uintptr_t start = 0;
             uintptr_t end = 0;
-            uintptr_t fileOffset = 0;
+            uint64_t fileOffset = 0;
             bool readable = false;
             bool writable = false;
             bool executable = false;
@@ -48,6 +48,13 @@ namespace nextdumper::module
         ModuleArchitecture architecture = ModuleArchitecture::Unknown;
         uint8_t pointerWidth = 0;
         std::vector<Segment> segments;
+        uintptr_t loadBias = 0;
+        uintptr_t dynamicAddress = 0;
+        size_t dynamicSize = 0;
+        std::string filePath;
+        std::string fileDevice;
+        uint64_t fileInode = 0;
+        uint64_t imageFileOffset = 0;
 
         [[nodiscard]] bool IsValid() const { return base != 0 && end > base; }
         [[nodiscard]] bool Contains(uintptr_t address) const { return IsValid() && address >= base && address < end; }

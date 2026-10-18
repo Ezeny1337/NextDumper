@@ -7,8 +7,6 @@
 #include "nextdumper/module/ModuleImage.hpp"
 #include "nextdumper/memory/MemorySource.hpp"
 
-class ElfScanner;
-
 namespace nextdumper::module
 {
     enum class SymbolStatus
@@ -58,5 +56,5 @@ namespace nextdumper::module
     // 仅读取被请求的动态符号，缺失的名称可选择性地使用已映射的调试符号表
     // 解析结果中每个被请求的名称最多包含一个条目；不会生成或保留完整的符号映射表
     [[nodiscard]] SymbolQueryResult QueryElfSymbols(const memory::IMemorySource &memory, const module::ModuleImage &module,
-                                                    const ElfScanner &elf, const std::vector<std::string> &names);
+                                                    const std::vector<std::string> &names);
 } // namespace nextdumper::module

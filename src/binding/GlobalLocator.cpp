@@ -32,7 +32,7 @@ namespace nextdumper::binding
         class LocatorPhases
         {
         public:
-            LocatorPhases(const RemoteMemorySource &memory, const std::function<void(const std::string &)> &progress)
+            LocatorPhases(const IMemorySource &memory, const std::function<void(const std::string &)> &progress)
                 : memory_(memory), progress_(progress), stats_(memory.Stats()) {}
             void Finish(const char *id)
             {
@@ -47,7 +47,7 @@ namespace nextdumper::binding
             }
 
         private:
-            const RemoteMemorySource &memory_;
+            const IMemorySource &memory_;
             const std::function<void(const std::string &)> &progress_;
             memory::ReadStats stats_;
             std::chrono::steady_clock::time_point start_ = std::chrono::steady_clock::now();
@@ -71,13 +71,12 @@ namespace nextdumper::binding
         BindingCandidates result;
         LocatorPhases phases(memory_, progress);
         {
-            const auto elf = memory_.Manager().elfScanner.findElf(module_.name);
             phases.Finish("find-elf");
-            if (elf.isValid())
+            if (module_.IsValid())
             {
                 std::vector<std::string> names = objectSymbols;
                 names.insert(names.end(), nameSymbols.begin(), nameSymbols.end());
-                const auto symbols = module::QueryElfSymbols(memory_, module_, elf, names);
+                const auto symbols = module::QueryElfSymbols(memory_, module_, names);
                 const auto append = [&](const auto &requested, auto &out)
                 {
                     for (const auto &name : requested)
