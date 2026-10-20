@@ -321,7 +321,9 @@ namespace nextdumper::memory
             ClearCache();
             alive = false;
         }
-        std::array<bool, kMaxBatchRequests> cached{};
+        std::bitset<kMaxBatchRequests> cached;
+        size_t cachedCount = 0;
+        bool pending = false;
         for (size_t index = 0; index < requests.size(); ++index)
         {
             const auto &request = requests[index];
@@ -349,7 +351,8 @@ namespace nextdumper::memory
             else if (GetCached(request.address, request.buffer, request.size))
             {
                 result.transferred = request.size;
-                cached[index] = true;
+                cached.set(index);
+                ++cachedCount;
                 ++stats_.cacheHits;
                 stats_.cacheHitBytes += request.size;
             }
@@ -358,10 +361,44 @@ namespace nextdumper::memory
                 ++stats_.cacheMisses;
                 stats_.cacheMissBytes += request.size;
             }
+            pending = pending || (result.error == ReadError::None && result.transferred != result.requested);
         }
-        std::array<iovec, kMaxVectors> local{}, remote{};
-        std::array<size_t, kMaxVectors> owners{};
         size_t calls = 0;
+        const auto finish = [&]()
+        {
+            // 包括纯缓存路径在内，交付前仍完整复核生命周期
+            if (alive && !invalidated_ && !process_.Alive())
+            {
+                invalidated_ = true;
+                ++stats_.targetInvalidations;
+                lastError_ = process_.LastError();
+                ClearCache();
+            }
+            for (size_t index = 0; index < results.size(); ++index)
+            {
+                auto &result = results[index];
+                if (invalidated_ && result.error == ReadError::None)
+                {
+                    result.error = SystemReadError(lastError_);
+                    result.systemError = lastError_;
+                }
+                if (result.Ok() && !fresh && !cached.test(index))
+                    PutCached(requests[index].address, static_cast<const uint8_t *>(requests[index].buffer), requests[index].size);
+                FinishResult(result);
+            }
+            if (performanceEnabled_ && calls == 0)
+            {
+                ++performance_.transferWithoutBackend;
+                if (!requests.empty() && cachedCount == requests.size())
+                    ++performance_.transferAllCacheHits;
+            }
+            return true;
+        };
+        if (!pending)
+            return finish();
+        // 只访问 [0,count)，每个槽均在 syscall 和结果分发之前完整赋值
+        std::array<iovec, kMaxVectors> local, remote;
+        std::array<size_t, kMaxVectors> owners;
         for (;;)
         {
             const bool cancelled = cancelled_.load(std::memory_order_relaxed);
@@ -399,7 +436,8 @@ namespace nextdumper::memory
             }
             if (!count)
                 break;
-            if (!process_.Alive())
+            // 入口检查覆盖首轮，后续轮次继续检查，出口检查不可省略
+            if (calls != 0 && !process_.Alive())
             {
                 invalidated_ = true;
                 ++stats_.targetInvalidations;
@@ -478,33 +516,6 @@ namespace nextdumper::memory
                 break;
             }
         }
-        // 生命周期复核失败时，已复制的字节也不能冒充可靠结果
-        if (alive && !invalidated_ && !process_.Alive())
-        {
-            invalidated_ = true;
-            ++stats_.targetInvalidations;
-            lastError_ = process_.LastError();
-            ClearCache();
-        }
-        for (size_t index = 0; index < results.size(); ++index)
-        {
-            auto &result = results[index];
-            if (invalidated_ && result.error == ReadError::None)
-            {
-                result.error = SystemReadError(lastError_);
-                result.systemError = lastError_;
-            }
-            if (result.Ok() && !fresh && !cached[index])
-                PutCached(requests[index].address, static_cast<const uint8_t *>(requests[index].buffer), requests[index].size);
-            FinishResult(result);
-        }
-        if (performanceEnabled_ && calls == 0)
-        {
-            ++performance_.transferWithoutBackend;
-            if (!requests.empty() && std::all_of(cached.begin(), cached.begin() + requests.size(), [](bool hit)
-                                                 { return hit; }))
-                ++performance_.transferAllCacheHits;
-        }
-        return true;
+        return finish();
     }
 } // namespace nextdumper::memory
