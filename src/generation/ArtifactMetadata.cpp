@@ -1,7 +1,7 @@
 #include "ArtifactMetadata.hpp"
 #include "Formatting.hpp"
 
-#include <sstream>
+#include <ostream>
 
 #include "nextdumper/generation/JsonExport.hpp"
 
@@ -18,12 +18,11 @@ namespace nextdumper::generation::detail
     using ::nextdumper::ue::FNameNumberLayout;
     using ::nextdumper::ue::SchemaLayoutVariantName;
 
-    std::string ManifestJson(const RuntimeContext &context, const ReflectionIR &reflection,
-                             const std::string &packageName, const ArtifactProvenance &provenance,
-                             const GenerationReport &report, ParseStatus status)
+    void ManifestJson(std::ostream &stream, const RuntimeContext &context, const ReflectionIR &reflection,
+                      const std::string &packageName, const ArtifactProvenance &provenance,
+                      const GenerationReport &report, ParseStatus status)
     {
         const ReflectionStats &stats = reflection.stats;
-        std::ostringstream stream;
         stream << "{\n";
         stream << "  \"schema_version\": 9,\n";
         stream << "  \"package\": \"" << EscapeJson(packageName) << "\",\n";
@@ -82,13 +81,11 @@ namespace nextdumper::generation::detail
         WriteRuntimeEvidenceJson(stream, reflection.runtimeEvidence, false);
         stream << '\n';
         stream << "}\n";
-        return stream.str();
     }
 
-    std::string DiagnosticsJson(const RuntimeContext &context, const ReflectionIR &reflection,
-                                const GenerationReport &report, ParseStatus status)
+    void DiagnosticsJson(std::ostream &stream, const RuntimeContext &context, const ReflectionIR &reflection,
+                         const GenerationReport &report, ParseStatus status)
     {
-        std::ostringstream stream;
         stream << "{\n  \"schema_version\": 9,\n  \"status\": \""
                << ParseStatusName(status) << "\",\n";
         stream << "  \"reflection_status\":\"" << ParseStatusName(reflection.status) << "\",\n";
@@ -277,14 +274,12 @@ namespace nextdumper::generation::detail
             }
         }
         stream << "\n  ]\n}\n";
-        return stream.str();
     }
 
-    std::string RuntimeJson(const RuntimeContext &context)
+    void RuntimeJson(std::ostream &stream, const RuntimeContext &context)
     {
         const RuntimeBinding &binding = context.Binding();
         const EngineSchema &schema = context.Schema();
-        std::ostringstream stream;
         stream << "{\n  \"schema_version\": 5,\n";
         stream << "  \"engine\": \"" << EscapeJson(schema.identity.canonicalVersionRange.empty() ? schema.validation.familyEvidence : schema.identity.canonicalVersionRange) << "\",\n";
         stream << "  \"profile\": {\"id\":\"" << EscapeJson(schema.validation.profileId)
@@ -409,8 +404,8 @@ namespace nextdumper::generation::detail
                << ",\"base_size\":" << schema.property.baseSize << "},\n";
         stream << "    \"property_tail\": {\"layout\":\""
                << (schema.features.propertyTailLayout == ::nextdumper::ue::PropertyTailLayout::UProperty ? "uproperty" : schema.features.propertyTailLayout == ::nextdumper::ue::PropertyTailLayout::RepNotifyBeforeLinks ? "repnotify-before-links"
-                                                                                                                    : schema.features.propertyTailLayout == ::nextdumper::ue::PropertyTailLayout::LinksBeforeRepNotify   ? "links-before-repnotify"
-                                                                                                                                                                                                                        : "unknown")
+                                                                                                                     : schema.features.propertyTailLayout == ::nextdumper::ue::PropertyTailLayout::LinksBeforeRepNotify   ? "links-before-repnotify"
+                                                                                                                                                                                                                          : "unknown")
                << "\",\"rep_notify\":" << schema.property.repNotify
                << ",\"property_links\":" << schema.property.propertyLinks
                << ",\"property_links_end\":" << schema.property.propertyLinksEnd
@@ -465,7 +460,6 @@ namespace nextdumper::generation::detail
         }
 
         stream << "\n}\n";
-        return stream.str();
     }
 
     void ReflectionJson(std::ostream &stream, const RuntimeContext &context, const ReflectionIR &reflection,

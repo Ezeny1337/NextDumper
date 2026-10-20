@@ -4,11 +4,9 @@
 #include "nextdumper/ir/ReflectionLayout.hpp"
 
 #include <algorithm>
-#include <iomanip>
 #include <iterator>
 #include <map>
 #include <ostream>
-#include <sstream>
 
 namespace nextdumper::generation
 {
@@ -18,8 +16,14 @@ namespace nextdumper::generation
     {
         static constexpr char hex[] = "0123456789ABCDEF";
         std::string result;
-        for (unsigned char character : value)
+        result.reserve(value.size());
+        size_t first = 0;
+        for (size_t index = 0; index < value.size(); ++index)
         {
+            const auto character = static_cast<unsigned char>(value[index]);
+            if (character >= 0x20 && character != '\\' && character != '"')
+                continue;
+            result.append(value.substr(first, index - first));
             switch (character)
             {
             case '\\':
@@ -38,17 +42,14 @@ namespace nextdumper::generation
                 result += "\\t";
                 break;
             default:
-                if (character < 0x20)
-                {
-                    result += "\\u00";
-                    result += hex[character >> 4];
-                    result += hex[character & 0xF];
-                }
-                else
-                    result += static_cast<char>(character);
+                result += "\\u00";
+                result += hex[character >> 4];
+                result += hex[character & 0xF];
                 break;
             }
+            first = index + 1;
         }
+        result.append(value.substr(first));
         return result;
     }
 
@@ -754,10 +755,6 @@ namespace nextdumper::generation
             if (index != 0)
                 stream << ',';
             const auto &observation = reflection.containerStorageObservations[index];
-            std::ostringstream bytes;
-            bytes << std::hex << std::setfill('0');
-            for (uint8_t byte : observation.bytes)
-                bytes << std::setw(2) << static_cast<unsigned int>(byte);
             stream << "{\"property\":\"" << Hex(observation.propertyAddress)
                    << "\",\"owner\":\"" << Hex(observation.ownerAddress)
                    << "\",\"owner_is_uobject\":" << (observation.ownerIsUObject ? "true" : "false")
@@ -774,7 +771,8 @@ namespace nextdumper::generation
                    << ",\"read_error\":" << observation.readError << ",\"requested\":" << observation.requested
                    << ",\"transferred\":" << observation.transferred
                    << ",\"status\":\"" << EscapeJson(observation.status)
-                   << "\",\"sample_reason\":\"" << EscapeJson(observation.sampleReason) << "\",\"bytes\":\"" << bytes.str() << '"';
+                   << "\",\"sample_reason\":\"" << EscapeJson(observation.sampleReason) << "\",\"bytes\":";
+            Bytes(stream, observation.bytes);
             stream << ",\"flag_candidates\":[";
             for (size_t candidate = 0; candidate < observation.flagCandidates.size(); ++candidate)
             {

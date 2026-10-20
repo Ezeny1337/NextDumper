@@ -5,6 +5,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -64,7 +65,8 @@ namespace nextdumper::generation::detail
         std::vector<OpaqueField> opaqueDetails;
         std::vector<LayoutEvent> events;
         FieldDescriptions fields;
-        std::map<std::string, size_t> typeIds;
+        using TypeKey = std::tuple<std::string, std::string, std::string, std::string, PropertyStorageKind, bool>;
+        std::map<TypeKey, size_t, std::less<>> typeIds;
         std::set<size_t> loggedTypeIds;
         mutable std::set<uintptr_t> loggedOwners;
         std::map<std::string, size_t> opaqueLogSamples;

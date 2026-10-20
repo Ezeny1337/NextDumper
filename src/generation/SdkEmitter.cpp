@@ -2,9 +2,8 @@
 #include "Formatting.hpp"
 
 #include <algorithm>
-#include <iomanip>
 #include <initializer_list>
-#include <sstream>
+#include <ostream>
 #include <string_view>
 #include <unordered_map>
 #include <utility>
@@ -218,11 +217,12 @@ namespace nextdumper::generation::detail
         for (const auto &entry : plan.fields)
         {
             auto description = entry;
-            std::ostringstream typeKey;
-            typeKey << std::quoted(entry.type.name) << std::quoted(entry.type.semanticName)
-                    << std::quoted(entry.type.failureReason) << std::quoted(entry.type.failurePath)
-                    << PropertyStorageKindName(entry.type.storage) << ':' << entry.type.semanticsResolved;
-            description.typeId = report.typeIds.emplace(typeKey.str(), report.typeIds.size()).first->second;
+            const auto typeKey = std::tie(entry.type.name, entry.type.semanticName, entry.type.failureReason,
+                                          entry.type.failurePath, entry.type.storage, entry.type.semanticsResolved);
+            auto type = report.typeIds.find(typeKey);
+            if (type == report.typeIds.end())
+                type = report.typeIds.emplace(typeKey, report.typeIds.size()).first;
+            description.typeId = type->second;
             if (!report.fields.contains(entry.property->address))
                 ++report.storageKinds[entry.type.storage];
             report.fields.insert_or_assign(entry.property->address, std::move(description));

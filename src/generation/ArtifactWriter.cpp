@@ -3,6 +3,7 @@
 #include "SdkEmitter.hpp"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdio>
 #include <fstream>
@@ -107,7 +108,10 @@ namespace nextdumper::generation
         }
         const auto writeFile = [&](const char *name, const auto &emit)
         {
-            std::ofstream stream(transaction.path / name, std::ios::binary | std::ios::trunc);
+            std::array<char, 64 * 1024> buffer;
+            std::ofstream stream;
+            stream.rdbuf()->pubsetbuf(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+            stream.open(transaction.path / name, std::ios::binary | std::ios::trunc);
             if (!stream.is_open())
             {
                 result.error = "output file open failed: " + std::string(name);
@@ -171,11 +175,11 @@ namespace nextdumper::generation
             return result;
         }
         if (!writeFile("manifest.json", [&](std::ostream &stream)
-                       { stream << detail::ManifestJson(context_, reflection_, packageName_, provenance_, report, status); }) ||
+                       { detail::ManifestJson(stream, context_, reflection_, packageName_, provenance_, report, status); }) ||
             !writeFile("diagnostics.json", [&](std::ostream &stream)
-                       { stream << detail::DiagnosticsJson(context_, reflection_, report, status); }) ||
+                       { detail::DiagnosticsJson(stream, context_, reflection_, report, status); }) ||
             !writeFile("runtime.json", [&](std::ostream &stream)
-                       { stream << detail::RuntimeJson(context_); }))
+                       { detail::RuntimeJson(stream, context_); }))
             return result;
         std::filesystem::rename(transaction.path, finalPath, error);
         if (error)
