@@ -12,6 +12,7 @@ namespace nextdumper::memory
         auto *performance = Performance();
         ScopedReadTiming timing(performance ? &performance->captureReset : nullptr, 1);
         observations_.clear();
+        observationsDisjoint_ = true;
         observedBytes_ = 0;
         observing_ = false;
         limitExceeded_ = false;
@@ -164,7 +165,8 @@ namespace nextdumper::memory
     {
         auto *performance = Performance();
         ScopedReadTiming timing(performance ? &performance->captureObserve : nullptr);
-        const auto previous = observations_.find(address);
+        const auto position = observations_.lower_bound(address);
+        const auto previous = position != observations_.end() && position->first == address ? position : observations_.end();
         const size_t previousSize = previous == observations_.end() ? 0 : previous->second.size();
         // 同一批内的重叠请求也逐项验证，不能冻结从未同时成立的字节
         if (size > kMaxReadSize || (size > previousSize && size - previousSize > kMaxBytes - observedBytes_) ||
@@ -173,8 +175,25 @@ namespace nextdumper::memory
             limitExceeded_ = true;
             return;
         }
-        const uintptr_t first = address >= kMaxReadSize ? address - kMaxReadSize : 0;
-        for (auto overlap = observations_.lower_bound(first); overlap != observations_.end(); ++overlap)
+        auto overlap = position;
+        if (observationsDisjoint_)
+        {
+            // 互不重叠时，起点之前最多只有直接前驱可能覆盖本次读取
+            if (overlap != observations_.begin())
+            {
+                const auto preceding = std::prev(overlap);
+                if (address - preceding->first < preceding->second.size())
+                    overlap = preceding;
+            }
+        }
+        else
+        {
+            // 存在嵌套范围后不能只看前驱，继续使用由最大读取长度限定的完整扫描
+            const uintptr_t first = address >= kMaxReadSize ? address - kMaxReadSize : 0;
+            overlap = observations_.lower_bound(first);
+        }
+        bool crossOverlap = false;
+        for (; overlap != observations_.end(); ++overlap)
         {
             if (overlap->first >= address && overlap->first - address >= size)
                 break;
@@ -185,6 +204,7 @@ namespace nextdumper::memory
             if (oldOffset >= overlap->second.size() || newOffset >= size)
                 continue;
             const size_t length = std::min(overlap->second.size() - oldOffset, size - newOffset);
+            crossOverlap = crossOverlap || overlap->first != address;
             if (performance)
             {
                 ++performance->captureOverlapComparisons;
@@ -210,7 +230,11 @@ namespace nextdumper::memory
         // 已观测的较长范围不能被同批中的较短请求截断
         if (size >= previousSize)
         {
-            observations_[address] = std::vector<uint8_t>(bytes, bytes + size);
+            if (previous == observations_.end())
+                observations_.emplace_hint(position, address, std::vector<uint8_t>(bytes, bytes + size));
+            else
+                previous->second.assign(bytes, bytes + size);
+            observationsDisjoint_ = observationsDisjoint_ && !crossOverlap;
             if (performance)
             {
                 if (previousSize == 0)
@@ -247,6 +271,8 @@ namespace nextdumper::memory
         result.changes = changesDuringRead_;
         result.readFailures = readFailures_;
         result.readFailureSamples = readFailureSamples_;
+        if (observations_.empty())
+            return result;
         constexpr size_t maxBatchSize = 64 * 1024;
         constexpr size_t maxGap = 64;
         std::vector<uint8_t> current;

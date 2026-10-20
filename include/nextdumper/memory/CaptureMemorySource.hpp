@@ -82,6 +82,7 @@ namespace nextdumper::memory
         IMemorySource &source_;
         std::function<void(const std::string &)> diagnostic_;
         mutable std::map<uintptr_t, std::vector<uint8_t>> observations_;
+        mutable bool observationsDisjoint_ = true;
         mutable size_t observedBytes_ = 0;
         mutable bool observing_ = false;
         mutable bool limitExceeded_ = false;
