@@ -60,7 +60,7 @@ namespace nextdumper::ue::schema_probe
             {
                 if (requests.size() != results.size() || requests.size() > 1024)
                     return false;
-                // 预算按逻辑请求扣除，批读不能绕过限制，也不能退化为逐项 syscall
+                // 预算按逻辑请求扣除，批读不能绕过限制，也不能退化为逐项 syscall。
                 const size_t allowed = std::min(remaining_, requests.size());
                 remaining_ -= allowed;
                 if (allowed != requests.size())
@@ -549,19 +549,26 @@ namespace nextdumper::ue::schema_probe
                 ((payload == Payload::Class || payload == Payload::Map || payload == Payload::Enum) &&
                  second != 0 && !budget.memory.IsReadable(second, sizeof(uintptr_t))))
                 return Observation::Mismatch;
-            // 双引用中一个 NULL 不能掩盖另一个非零引用的结构错误。
+            // 双引用中一个 NULL 不能掩盖另一个非零引用的结构错误
             if (payload == Payload::Class &&
                 ((first != 0 && !ObjectKind(model, first, DefinitionKind::Class)) ||
                  (second != 0 && (!ObjectKind(model, second, DefinitionKind::Class) || !ClassDerivesFrom(model, second, "Class")))))
                 return Observation::Mismatch;
-            if (payload == Payload::Map &&
-                ((first != 0 && !Child(model, schema, first, sample.metadata.address)) ||
-                 (second != 0 && !Child(model, schema, second, sample.metadata.address))))
-                return Observation::Mismatch;
-            if (payload == Payload::Enum &&
-                ((first != 0 && !Child(model, schema, first, sample.metadata.address)) ||
-                 (second != 0 && !ObjectKind(model, second, DefinitionKind::Enum))))
-                return Observation::Mismatch;
+            std::optional<PropertyMetadata> firstChild;
+            if (payload == Payload::Map || payload == Payload::Enum)
+            {
+                // 双引用先逐项验证，再判断 NULL，后续语义检查复用本轮结果
+                if (first != 0)
+                {
+                    firstChild = Child(model, schema, first, sample.metadata.address);
+                    if (!firstChild)
+                        return Observation::Mismatch;
+                }
+                if (second != 0 &&
+                    (payload == Payload::Map ? !Child(model, schema, second, sample.metadata.address)
+                                             : !ObjectKind(model, second, DefinitionKind::Enum)))
+                    return Observation::Mismatch;
+            }
             if (first == 0 || ((payload == Payload::Class || payload == Payload::Map || payload == Payload::Enum) && second == 0))
                 return Observation::Null;
             bool valid = false;
@@ -577,8 +584,7 @@ namespace nextdumper::ue::schema_probe
                 valid = ObjectKind(model, first, DefinitionKind::Class) && ClassDerivesFrom(model, first, "Interface");
                 break;
             case Payload::Class:
-                valid = ObjectKind(model, first, DefinitionKind::Class) &&
-                        ObjectKind(model, second, DefinitionKind::Class) && ClassDerivesFrom(model, second, "Class");
+                valid = true;
                 break;
             case Payload::Struct:
                 valid = ObjectKind(model, first, DefinitionKind::Struct);
@@ -595,16 +601,11 @@ namespace nextdumper::ue::schema_probe
                 valid = Child(model, schema, first, sample.metadata.address).has_value();
                 break;
             case Payload::Map:
-                valid = first != second && Child(model, schema, first, sample.metadata.address) &&
-                        Child(model, schema, second, sample.metadata.address);
+                valid = first != second;
                 break;
             case Payload::Enum:
-            {
-                const auto underlying = Child(model, schema, first, sample.metadata.address);
-                valid = underlying && IntegerProperty(*underlying) && underlying->elementSize == sample.metadata.elementSize &&
-                        ObjectKind(model, second, DefinitionKind::Enum);
+                valid = firstChild && IntegerProperty(*firstChild) && firstChild->elementSize == sample.metadata.elementSize;
                 break;
-            }
             case Payload::Bool:
                 break;
             }
