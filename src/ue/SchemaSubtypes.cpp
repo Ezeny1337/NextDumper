@@ -42,6 +42,7 @@ namespace nextdumper::ue::schema_probe
             [[nodiscard]] bool IsReadable(uintptr_t address, size_t size) const override { return source_.IsReadable(address, size); }
             [[nodiscard]] bool IsExecutable(uintptr_t address, size_t size) const override { return source_.IsExecutable(address, size); }
             [[nodiscard]] const ::nextdumper::memory::ReadStats &Stats() const override { return source_.Stats(); }
+            [[nodiscard]] ::nextdumper::memory::ReadPerformance *Performance() const override { return source_.Performance(); }
             [[nodiscard]] ::nextdumper::memory::ReadResult ReadBytes(uintptr_t address, void *buffer, size_t size) const override
             {
                 if (!Consume())

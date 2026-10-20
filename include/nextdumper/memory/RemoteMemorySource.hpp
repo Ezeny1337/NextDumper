@@ -26,6 +26,18 @@ namespace nextdumper::memory
 
         [[nodiscard]] bool Initialize(pid_t pid);
         void Reset();
+        // 仅在会话开始且没有活动读取或计时作用域时启用并清零调查指标
+        void EnablePerformance(bool enabled)
+        {
+            performance_ = {};
+            performanceEnabled_ = enabled;
+            process_.SetPerformance(Performance());
+        }
+        [[nodiscard]] ReadPerformance *Performance() const override
+        {
+            return performanceEnabled_ ? &performance_ : nullptr;
+        }
+        [[nodiscard]] bool HasPidfd() const { return process_.HasPidfd(); }
         // 只清空内容缓存，不重置计数器，不使同一地址空间的 Capture 失效
         void ClearReadCache() { ClearCache(); }
         // 取消标志不发布其他数据，因此 relaxed 足以通知读取线程
@@ -79,5 +91,7 @@ namespace nextdumper::memory
         bool initialized_ = false;
         mutable bool invalidated_ = false;
         mutable int lastError_ = 0;
+        bool performanceEnabled_ = false;
+        mutable ReadPerformance performance_;
     };
 } // namespace nextdumper::memory

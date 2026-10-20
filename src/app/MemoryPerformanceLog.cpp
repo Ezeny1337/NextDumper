@@ -69,6 +69,114 @@ namespace nextdumper::app
             }
             out << "null";
         }
+
+        void Timing(std::ostream &out, std::string_view name, const memory::ReadTiming &timing, uint64_t interval)
+        {
+            String(out, name);
+            out << ":{\"calls\":" << timing.calls << ",\"completed_samples\":" << timing.samples
+                << ",\"sample_interval\":" << interval << ",\"sampled_ns\":" << timing.nanos << '}';
+        }
+
+        void Investigation(std::ostream &out, const memory::RemoteMemorySource &source)
+        {
+            const auto *performance = source.Performance();
+            out << ",\"investigation\":{\"enabled\":" << (performance ? "true" : "false");
+            if (!performance)
+            {
+                out << '}';
+                return;
+            }
+            const auto &p = *performance;
+            out << ",\"lifecycle\":{\"calls\":" << p.lifecycleCalls
+                << ",\"invalid_descriptor_calls\":" << p.lifecycleInvalidDescriptor
+                << ",\"poll_syscalls\":" << p.lifecyclePollSyscalls
+                << ",\"proc_metadata_open_calls\":" << p.procOpenCalls
+                << ",\"proc_metadata_read_calls\":" << p.procReadCalls
+                << ",\"proc_metadata_close_calls\":" << p.procCloseCalls
+                << ",\"pidfd_compiled\":" << (p.pidfdCompiled ? "true" : "false")
+                << ",\"pidfd_active\":" << (source.HasPidfd() ? "true" : "false")
+                << ",\"pidfd_open_calls\":" << p.pidfdOpenCalls
+                << ",\"pidfd_open_errno\":" << p.pidfdOpenError << '}'
+                << ",\"transfer_without_backend\":" << p.transferWithoutBackend
+                << ",\"transfer_all_cache_hits\":" << p.transferAllCacheHits
+                << ",\"transfer_request_counts\":[";
+            for (size_t index = 0; index < p.transferRequestCounts.size(); ++index)
+                out << (index ? "," : "") << p.transferRequestCounts[index];
+            out << "],\"backend_vector_counts\":[";
+            for (size_t index = 0; index < p.backendVectorCounts.size(); ++index)
+                out << (index ? "," : "") << p.backendVectorCounts[index];
+            out << "],\"capture\":{\"lookups\":" << p.captureLookups
+                << ",\"hits\":" << p.captureHits << ",\"hit_bytes\":" << p.captureHitBytes
+                << ",\"inserted_ranges\":" << p.captureInsertedRanges
+                << ",\"grown_ranges\":" << p.captureGrownRanges
+                << ",\"overlap_candidates\":" << p.captureOverlapCandidates
+                << ",\"overlap_comparisons\":" << p.captureOverlapComparisons
+                << ",\"overlap_bytes\":" << p.captureOverlapBytes
+                << ",\"validation_ranges\":" << p.captureValidationRanges
+                << ",\"validation_observed_bytes\":" << p.captureValidationBytes
+                << ",\"validation_batches\":" << p.captureValidationBatches
+                << ",\"validation_fallback_reads\":" << p.captureValidationFallbacks << '}'
+                << ",\"timings\":{";
+            constexpr auto interval = memory::ReadPerformance::kSampleInterval;
+            Timing(out, "transfer", p.transfer, interval);
+            out << ',';
+            Timing(out, "lifecycle_poll", p.lifecyclePoll, interval);
+            out << ',';
+            Timing(out, "lifecycle_stat", p.lifecycleStat, interval);
+            out << ',';
+            Timing(out, "mapping_check", p.mappingCheck, interval);
+            out << ',';
+            Timing(out, "cache_lookup", p.cacheLookup, interval);
+            out << ',';
+            Timing(out, "cache_store", p.cacheStore, interval);
+            out << ',';
+            Timing(out, "cache_invalidate", p.cacheInvalidate, interval);
+            out << ',';
+            Timing(out, "cache_clear", p.cacheClear, 1);
+            out << ',';
+            Timing(out, "capture_read", p.captureRead, interval);
+            out << ',';
+            Timing(out, "capture_batch", p.captureBatch, interval);
+            out << ',';
+            Timing(out, "capture_observe", p.captureObserve, interval);
+            out << ',';
+            Timing(out, "capture_validate", p.captureValidate, 1);
+            out << ',';
+            Timing(out, "capture_reset", p.captureReset, 1);
+            out << ',';
+            Timing(out, "reflection_read", p.reflectionRead, 1);
+            out << ',';
+            Timing(out, "reflection_attempt", p.reflectionAttempt, 1);
+            out << ',';
+            Timing(out, "reflection_enumeration", p.reflectionEnumeration, 1);
+            out << ',';
+            Timing(out, "reflection_finalize", p.reflectionFinalize, 1);
+            out << ',';
+            Timing(out, "delegate_closure", p.delegateClosure, 1);
+            out << ',';
+            Timing(out, "reflection_evidence", p.reflectionEvidence, 1);
+            out << ',';
+            Timing(out, "artifact_generation", p.artifactGeneration, 1);
+            out << ',';
+            Timing(out, "runtime_log_format", p.runtimeLogFormat, 1);
+            out << ',';
+            Timing(out, "runtime_log_write", p.runtimeLogWrite, 1);
+            out << ',';
+            Timing(out, "runtime_log_flush", p.runtimeLogFlush, 1);
+            out << ',';
+            Timing(out, "runtime_log_close", p.runtimeLogClose, 1);
+            out << ',';
+            Timing(out, "console_output", p.consoleOutput, 1);
+            out << ',';
+            Timing(out, "performance_log_format", p.performanceLogFormat, 1);
+            out << ',';
+            Timing(out, "performance_log_write", p.performanceLogWrite, 1);
+            out << ',';
+            Timing(out, "performance_log_flush", p.performanceLogFlush, 1);
+            out << ',';
+            Timing(out, "diagnosis_output", p.diagnosisOutput, 1);
+            out << "}}";
+        }
     }
 
     MemoryPerformanceLog::~MemoryPerformanceLog()
@@ -139,6 +247,8 @@ namespace nextdumper::app
         if (event == "snapshot" && now - lastSnapshot_ < std::chrono::seconds(1))
             return;
         lastSnapshot_ = now;
+        auto *performance = memory.Performance();
+        memory::ScopedReadTiming formatTiming(performance ? &performance->performanceLogFormat : nullptr, 1);
         try
         {
             const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(now - started_).count();
@@ -146,7 +256,7 @@ namespace nextdumper::app
             std::ostringstream out;
             out.imbue(std::locale::classic());
             out.exceptions(std::ios::badbit | std::ios::failbit);
-            out << std::setprecision(10) << "{\"format_version\":1,\"event\":";
+            out << std::setprecision(10) << "{\"format_version\":2,\"event\":";
             String(out, event);
             out << ",\"stage\":";
             String(out, stage);
@@ -251,21 +361,44 @@ namespace nextdumper::app
                     << ",\"transferred_bytes\":" << sample.transferred << '}';
                 first = false;
             }
+            out << ']';
+            Investigation(out, memory);
             if (event == "session_start")
-                out << "],\"metric_notes\":{\"scope\":\"cumulative per initialization; snapshots are cooperative\""
+                out << ",\"metric_notes\":{\"scope\":\"read counters per initialization; investigation counters since session profiling enabled\""
                        ",\"transferred_bytes\":\"logical delivered bytes, including partial results and cache hits\""
                        ",\"read_amplification\":\"backend requested bytes / logical requested bytes; includes retries\""
                        ",\"latency_buckets\":\"0: zero ns; i=1..30: [2^(i-1), 2^i-1] ns; 31: >=2^30 ns\""
                        ",\"errno_counts\":\"index is errno; last index includes all greater errno values\""
                        ",\"ratios\":\"null when denominator is zero\""
                        ",\"quantiles\":\"histogram upper bounds; null for no samples or saturated bucket\""
+                       ",\"investigation_timing\":\"sampled_ns is measured sample sum, not estimated total; interval=1 measures every call\""
+                       ",\"investigation_sampling\":\"interval=1024 measures calls 1,1025,... separately per timer; deterministic samples can be biased\""
+                       ",\"investigation_nesting\":\"inclusive wall time including nested work and scheduling; do not add nested timers\""
+                       ",\"investigation_completion\":\"calls count entries; active timers have no completed sample yet\""
+                       ",\"investigation_histograms\":\"request/vector bins: 0,1,2-4,5-16,17-64,65-128,129-1024\""
+                       ",\"investigation_capture\":\"aggregated across reflection/runtime captures and retries; Reset does not reset investigation counters\""
+                       ",\"investigation_proc\":\"source-owned ProcessInfo only, excludes Find enumeration; metadata I/O includes stat, cmdline and maps; lifecycle_poll counts logical Alive paths, poll_syscalls includes retries\""
+                       ",\"investigation_logging\":\"format counters include this record entry but not its completion; write/flush counters cover preceding records only\""
+                       ",\"investigation_runtime_format\":\"includes escaping and prefix, not caller-side message construction\""
+                       ",\"investigation_reflection\":\"enumeration excludes terminal delegate/validation boundaries; finalize includes container evidence\""
+                       ",\"investigation_observer\":\"instrumentation has overhead; sampled timers include clock cost; no overhead subtraction\""
                        ",\"session_end\":\"status before final performance-log write/close; close failure is reported by CLI\"}}";
             else
-                out << "]}";
+                out << '}';
             out << '\n';
             const std::string line = out.str();
+            formatTiming.Stop();
             errno = 0;
-            if (std::fwrite(line.data(), 1, line.size(), file_) != line.size() || std::fflush(file_) != 0)
+            memory::ScopedReadTiming writeTiming(performance ? &performance->performanceLogWrite : nullptr, 1);
+            const bool written = std::fwrite(line.data(), 1, line.size(), file_) == line.size();
+            writeTiming.Stop();
+            bool flushed = false;
+            if (written)
+            {
+                memory::ScopedReadTiming flushTiming(performance ? &performance->performanceLogFlush : nullptr, 1);
+                flushed = std::fflush(file_) == 0;
+            }
+            if (!written || !flushed)
             {
                 error_ = errno ? errno : EIO;
                 failed_ = true;

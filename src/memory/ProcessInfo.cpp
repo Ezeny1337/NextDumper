@@ -1,4 +1,5 @@
 #include "nextdumper/memory/ProcessInfo.hpp"
+#include "nextdumper/memory/ReadPerformance.hpp"
 
 #include <algorithm>
 #include <array>
@@ -35,6 +36,15 @@ namespace nextdumper::memory
 
     ProcessInfo::~ProcessInfo() { Close(); }
 
+    void ProcessInfo::SetPerformance(ReadPerformance *performance)
+    {
+        performance_ = performance;
+#if defined(SYS_pidfd_open)
+        if (performance_)
+            performance_->pidfdCompiled = true;
+#endif
+    }
+
     void ProcessInfo::Close()
     {
         CloseDescriptor(lifetime_);
@@ -45,6 +55,8 @@ namespace nextdumper::memory
     bool ProcessInfo::ReadFile(const char *name, size_t limit, std::string &text) const
     {
         text.clear();
+        if (performance_)
+            ++performance_->procOpenCalls;
         const int fd = openat(directory_, name, O_RDONLY | O_CLOEXEC);
         if (fd < 0)
         {
@@ -56,6 +68,8 @@ namespace nextdumper::memory
         unsigned interruptions = 0;
         for (;;)
         {
+            if (performance_)
+                ++performance_->procReadCalls;
             const ssize_t count = read(fd, buffer.data(), buffer.size());
             if (count < 0 && errno == EINTR && interruptions++ < 3)
                 continue;
@@ -80,10 +94,14 @@ namespace nextdumper::memory
             catch (...)
             {
                 int owned = fd;
+                if (performance_)
+                    ++performance_->procCloseCalls;
                 CloseDescriptor(owned);
                 throw;
             }
         }
+        if (performance_)
+            ++performance_->procCloseCalls;
         if (close(fd) != 0)
         {
             error_ = errno;
@@ -150,7 +168,11 @@ namespace nextdumper::memory
         }
 #if defined(SYS_pidfd_open)
         // pidfd 仅用于生命周期观察，不改变 process_vm_readv 的 PID 契约
+        if (performance_)
+            ++performance_->pidfdOpenCalls;
         lifetime_ = static_cast<int>(syscall(SYS_pidfd_open, pid, 0));
+        if (performance_)
+            performance_->pidfdOpenError = lifetime_ < 0 ? errno : 0;
 #endif
         std::string name;
         if (!ReadFile("cmdline", 64 * 1024, name))
@@ -172,18 +194,25 @@ namespace nextdumper::memory
 
     bool ProcessInfo::Alive() const
     {
+        if (performance_)
+            ++performance_->lifecycleCalls;
         if (directory_ < 0)
         {
+            if (performance_)
+                ++performance_->lifecycleInvalidDescriptor;
             error_ = ESRCH;
             return false;
         }
         if (lifetime_ >= 0)
         {
+            ScopedReadTiming timing(performance_ ? &performance_->lifecyclePoll : nullptr);
             pollfd descriptor{lifetime_, POLLIN, 0};
             int result;
             unsigned interruptions = 0;
             do
             {
+                if (performance_)
+                    ++performance_->lifecyclePollSyscalls;
                 result = poll(&descriptor, 1, 0);
             } while (result < 0 && errno == EINTR && interruptions++ < 3);
             if (result == 0)
@@ -191,6 +220,7 @@ namespace nextdumper::memory
             error_ = result < 0 ? errno : ESRCH;
             return false;
         }
+        ScopedReadTiming timing(performance_ ? &performance_->lifecycleStat : nullptr);
         uint64_t startTime = 0;
         if (!ReadStartTime(startTime) || startTime != identity_.startTime)
         {

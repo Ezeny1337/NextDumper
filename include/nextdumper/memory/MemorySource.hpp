@@ -10,6 +10,7 @@
 #include <sys/types.h>
 
 #include "nextdumper/memory/ProcessInfo.hpp"
+#include "nextdumper/memory/ReadPerformance.hpp"
 
 namespace nextdumper::memory
 {
@@ -102,6 +103,7 @@ namespace nextdumper::memory
         [[nodiscard]] virtual const ReadStats &Stats() const = 0;
         [[nodiscard]] virtual std::span<const MemoryRegion> Regions() const { return {}; }
         [[nodiscard]] virtual std::string ProcessName() const { return {}; }
+        [[nodiscard]] virtual ReadPerformance *Performance() const { return nullptr; }
         [[nodiscard]] virtual bool ReadBatch(std::span<const ReadRequest> requests, std::span<ReadResult> results,
                                              bool fresh = false) const
         {

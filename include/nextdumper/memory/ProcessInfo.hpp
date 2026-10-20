@@ -8,6 +8,7 @@
 
 namespace nextdumper::memory
 {
+    struct ReadPerformance;
     struct MemoryRegion
     {
         uintptr_t start = 0;
@@ -44,6 +45,8 @@ namespace nextdumper::memory
         [[nodiscard]] bool ReadRegions(std::vector<MemoryRegion> &regions) const;
         [[nodiscard]] const ProcessIdentity &Identity() const { return identity_; }
         [[nodiscard]] int LastError() const { return error_; }
+        void SetPerformance(ReadPerformance *performance);
+        [[nodiscard]] bool HasPidfd() const { return lifetime_ >= 0; }
         [[nodiscard]] static pid_t Find(const std::string &name);
 
     private:
@@ -53,8 +56,10 @@ namespace nextdumper::memory
         int lifetime_ = -1;
         ProcessIdentity identity_;
         mutable int error_ = 0;
+        // 非拥有指针，读取会话负责生命周期，且只在所属线程访问
+        ReadPerformance *performance_ = nullptr;
     };
 
     [[nodiscard]] bool ContainsRange(std::span<const MemoryRegion> regions, uintptr_t address, size_t size,
                                      bool executable = false);
-}
+} // namespace nextdumper::memory

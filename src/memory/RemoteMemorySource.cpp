@@ -102,16 +102,19 @@ namespace nextdumper::memory
 
     bool RemoteMemorySource::IsReadable(uintptr_t address, size_t size) const
     {
+        ScopedReadTiming timing(performanceEnabled_ ? &performance_.mappingCheck : nullptr);
         return IsInitialized() && ContainsRange(regions_, address, size);
     }
 
     bool RemoteMemorySource::IsExecutable(uintptr_t address, size_t size) const
     {
+        ScopedReadTiming timing(performanceEnabled_ ? &performance_.mappingCheck : nullptr);
         return IsInitialized() && ContainsRange(regions_, address, size, true);
     }
 
     void RemoteMemorySource::ClearCache() const
     {
+        ScopedReadTiming timing(performanceEnabled_ ? &performance_.cacheClear : nullptr, 1);
         blocks_.clear();
         lru_.clear();
         stats_.cacheBytes = 0;
@@ -119,6 +122,7 @@ namespace nextdumper::memory
 
     void RemoteMemorySource::InvalidateCache(uintptr_t address, size_t size) const
     {
+        ScopedReadTiming timing(performanceEnabled_ ? &performance_.cacheInvalidate : nullptr);
         while (size)
         {
             const size_t offset = BlockOffset(address);
@@ -140,6 +144,7 @@ namespace nextdumper::memory
 
     bool RemoteMemorySource::GetCached(uintptr_t address, void *buffer, size_t size) const
     {
+        ScopedReadTiming timing(performanceEnabled_ ? &performance_.cacheLookup : nullptr);
         if (size > maxCacheSize_)
             return false;
         const uintptr_t first = address;
@@ -184,6 +189,7 @@ namespace nextdumper::memory
 
     void RemoteMemorySource::PutCached(uintptr_t address, const uint8_t *data, size_t size) const
     {
+        ScopedReadTiming timing(performanceEnabled_ ? &performance_.cacheStore : nullptr);
         if (!maxCacheSize_ || size > maxCacheSize_)
             return;
         while (size)
@@ -289,8 +295,11 @@ namespace nextdumper::memory
 
     bool RemoteMemorySource::Transfer(std::span<const ReadRequest> requests, std::span<ReadResult> results, bool fresh) const
     {
+        ScopedReadTiming timing(performanceEnabled_ ? &performance_.transfer : nullptr);
         if (requests.size() != results.size() || requests.size() > kMaxBatchRequests)
             return false;
+        if (performanceEnabled_)
+            ++performance_.transferRequestCounts[ReadCountBucket(requests.size())];
         size_t total = 0;
         bool overLimit = false;
         for (const auto &request : requests)
@@ -411,6 +420,8 @@ namespace nextdumper::memory
                                                              .count());
                 ++calls;
                 ++stats_.backendOperations;
+                if (performanceEnabled_)
+                    ++performance_.backendVectorCounts[ReadCountBucket(count)];
                 stats_.backendVectors += count;
                 stats_.backendRequestedBytes += bytes;
                 stats_.backendTransferredBytes += received > 0 ? static_cast<size_t>(received) : 0;
@@ -486,6 +497,13 @@ namespace nextdumper::memory
             if (result.Ok() && !fresh && !cached[index])
                 PutCached(requests[index].address, static_cast<const uint8_t *>(requests[index].buffer), requests[index].size);
             FinishResult(result);
+        }
+        if (performanceEnabled_ && calls == 0)
+        {
+            ++performance_.transferWithoutBackend;
+            if (!requests.empty() && std::all_of(cached.begin(), cached.begin() + requests.size(), [](bool hit)
+                                                 { return hit; }))
+                ++performance_.transferAllCacheHits;
         }
         return true;
     }

@@ -241,6 +241,8 @@ namespace nextdumper::app
 
     bool RuntimeSession::WriteDiagnosisReport() const
     {
+        auto *performance = memory_->Performance();
+        memory::ScopedReadTiming timing(performance ? &performance->diagnosisOutput : nullptr, 1);
         const std::string path = DiagnosisPath();
         if (path.empty())
             return true;
@@ -273,6 +275,8 @@ namespace nextdumper::app
     void RuntimeSession::Note(RuntimeLogLevel level, std::string message)
     {
         WriteMemoryStats("snapshot", memoryStage_);
+        auto *performance = memory_->Performance();
+        memory::ScopedReadTiming formatTiming(performance ? &performance->runtimeLogFormat : nullptr, 1);
         // 将目标元数据保持在单个物理日志行中，且不隐藏控制字节
         std::string escaped;
         escaped.reserve(message.size());
@@ -291,11 +295,17 @@ namespace nextdumper::app
         message = std::move(escaped);
         const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started_).count();
         message = "[" + std::to_string(elapsedMs) + "] " + message;
+        formatTiming.Stop();
         if (liveLog_.is_open())
         {
+            memory::ScopedReadTiming writeTiming(performance ? &performance->runtimeLogWrite : nullptr, 1);
             liveLog_ << '[' << LevelName(level) << "] " << message << '\n';
+            writeTiming.Stop();
             if (level != RuntimeLogLevel::Debug)
+            {
+                memory::ScopedReadTiming flushTiming(performance ? &performance->runtimeLogFlush : nullptr, 1);
                 liveLog_.flush();
+            }
             if (!liveLog_.good())
                 liveLogFailed_ = true;
         }
@@ -303,6 +313,7 @@ namespace nextdumper::app
         // 非 debug 消息立即输出到控制台
         if (level != RuntimeLogLevel::Debug)
         {
+            memory::ScopedReadTiming consoleTiming(performance ? &performance->consoleOutput : nullptr, 1);
             std::printf("[%s] %s\n", LevelName(level), message.c_str());
             std::fflush(stdout);
         }
@@ -314,7 +325,11 @@ namespace nextdumper::app
             return true;
         if (liveLog_.is_open())
         {
+            auto *performance = memory_->Performance();
+            memory::ScopedReadTiming flushTiming(performance ? &performance->runtimeLogFlush : nullptr, 1);
             liveLog_.flush();
+            flushTiming.Stop();
+            memory::ScopedReadTiming closeTiming(performance ? &performance->runtimeLogClose : nullptr, 1);
             liveLog_.close();
             liveLogFailed_ = liveLogFailed_ || liveLog_.fail();
         }
@@ -465,6 +480,7 @@ namespace nextdumper::app
         started_ = std::chrono::steady_clock::now();
         liveLogFailed_ = false;
         memory_->Reset();
+        memory_->EnablePerformance(config_.enableMemoryLog);
         memoryStage_.clear();
         liveLog_.clear();
         logPath_.clear();
@@ -1245,7 +1261,11 @@ namespace nextdumper::app
             ArtifactWriter writer(context_, reflection_, config_.outputRoot, config_.packageName, provenance_,
                                   [&](const std::string &message)
                                   { Note(RuntimeLogLevel::Debug, message); });
-            artifacts_ = writer.Write();
+            {
+                auto *performance = memory_->Performance();
+                memory::ScopedReadTiming timing(performance ? &performance->artifactGeneration : nullptr, 1);
+                artifacts_ = writer.Write();
+            }
             finishStage("artifact-generation");
             for (const auto &diagnostic : artifacts_.generationDiagnostics)
                 Note(RuntimeLogLevel::Debug, diagnostic);

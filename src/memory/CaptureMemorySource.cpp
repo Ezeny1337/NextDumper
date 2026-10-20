@@ -9,6 +9,8 @@ namespace nextdumper::memory
 {
     void CaptureMemorySource::Reset() const
     {
+        auto *performance = Performance();
+        ScopedReadTiming timing(performance ? &performance->captureReset : nullptr, 1);
         observations_.clear();
         observedBytes_ = 0;
         observing_ = false;
@@ -43,6 +45,8 @@ namespace nextdumper::memory
 
     ReadResult CaptureMemorySource::ReadBytes(uintptr_t address, void *buffer, size_t size) const
     {
+        auto *performance = Performance();
+        ScopedReadTiming timing(performance ? &performance->captureRead : nullptr);
         if (!observing_ || !buffer || !size)
             return ReadFreshBytes(address, buffer, size);
         if (generation_ != source_.AddressSpaceGeneration())
@@ -52,9 +56,16 @@ namespace nextdumper::memory
             RecordFailure(read);
             return read;
         }
+        if (performance)
+            ++performance->captureLookups;
         const auto previous = observations_.find(address);
         if (source_.IsInitialized() && previous != observations_.end() && previous->second.size() >= size)
         {
+            if (performance)
+            {
+                ++performance->captureHits;
+                performance->captureHitBytes += size;
+            }
             std::memcpy(buffer, previous->second.data(), size);
             return {ReadError::None, address, size, size};
         }
@@ -66,6 +77,8 @@ namespace nextdumper::memory
 
     bool CaptureMemorySource::ReadBatch(std::span<const ReadRequest> requests, std::span<ReadResult> results, bool fresh) const
     {
+        auto *performance = Performance();
+        ScopedReadTiming timing(performance ? &performance->captureBatch : nullptr);
         if (requests.size() != results.size() || requests.size() > 1024)
             return false;
         size_t total = 0;
@@ -124,9 +137,16 @@ namespace nextdumper::memory
                 RecordFailure(results[index]);
                 continue;
             }
+            if (performance)
+                ++performance->captureLookups;
             const auto previous = observations_.find(request.address);
             if (request.buffer && request.size && previous != observations_.end() && previous->second.size() >= request.size)
             {
+                if (performance)
+                {
+                    ++performance->captureHits;
+                    performance->captureHitBytes += request.size;
+                }
                 std::memcpy(request.buffer, previous->second.data(), request.size);
                 results[index].transferred = request.size;
                 continue;
@@ -142,6 +162,8 @@ namespace nextdumper::memory
 
     void CaptureMemorySource::ObserveBytes(uintptr_t address, const uint8_t *bytes, size_t size) const
     {
+        auto *performance = Performance();
+        ScopedReadTiming timing(performance ? &performance->captureObserve : nullptr);
         const auto previous = observations_.find(address);
         const size_t previousSize = previous == observations_.end() ? 0 : previous->second.size();
         // 同一批内的重叠请求也逐项验证，不能冻结从未同时成立的字节
@@ -156,11 +178,18 @@ namespace nextdumper::memory
         {
             if (overlap->first >= address && overlap->first - address >= size)
                 break;
+            if (performance)
+                ++performance->captureOverlapCandidates;
             const uintptr_t start = std::max(address, overlap->first);
             const size_t oldOffset = static_cast<size_t>(start - overlap->first), newOffset = static_cast<size_t>(start - address);
             if (oldOffset >= overlap->second.size() || newOffset >= size)
                 continue;
             const size_t length = std::min(overlap->second.size() - oldOffset, size - newOffset);
+            if (performance)
+            {
+                ++performance->captureOverlapComparisons;
+                performance->captureOverlapBytes += length;
+            }
             if (std::memcmp(bytes + newOffset, overlap->second.data() + oldOffset, length) == 0)
                 continue;
             changedDuringRead_ = true;
@@ -182,6 +211,13 @@ namespace nextdumper::memory
         if (size >= previousSize)
         {
             observations_[address] = std::vector<uint8_t>(bytes, bytes + size);
+            if (performance)
+            {
+                if (previousSize == 0)
+                    ++performance->captureInsertedRanges;
+                else if (size > previousSize)
+                    ++performance->captureGrownRanges;
+            }
             observedBytes_ += size - previousSize;
         }
     }
@@ -195,6 +231,13 @@ namespace nextdumper::memory
 
     CaptureValidation CaptureMemorySource::Validate() const
     {
+        auto *performance = Performance();
+        ScopedReadTiming timing(performance ? &performance->captureValidate : nullptr, 1);
+        if (performance)
+        {
+            performance->captureValidationRanges += observations_.size();
+            performance->captureValidationBytes += observedBytes_;
+        }
         CaptureValidation result;
         result.observedRanges = observations_.size();
         result.observedBytes = observedBytes_;
@@ -271,6 +314,8 @@ namespace nextdumper::memory
                 ++count;
                 first = last;
             }
+            if (performance)
+                ++performance->captureValidationBatches;
             if (!source_.ReadBatch({requests.data(), count}, {reads.data(), count}, true))
                 throw std::runtime_error("Capture validation batch contract failed");
             for (size_t index = 0; index < count; ++index)
@@ -287,6 +332,8 @@ namespace nextdumper::memory
                     }
                     else
                     {
+                        if (performance)
+                            ++performance->captureValidationFallbacks;
                         std::vector<uint8_t> exact(bytes.size());
                         const auto read = source_.ReadFreshBytes(address, exact.data(), bytes.size());
                         compare(address, bytes, exact.data(), read);

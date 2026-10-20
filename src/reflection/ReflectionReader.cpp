@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cstring>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
@@ -694,6 +695,8 @@ namespace nextdumper::reflection
 
     void ReflectionReader::CloseDelegateSignatures(ReflectionIR &ir) const
     {
+        auto *performance = memory_.Performance();
+        memory::ScopedReadTiming timing(performance ? &performance->delegateClosure : nullptr, 1);
         // 读取一个签名可以在其参数中发现更多签名
         // 应当处理并清空一个有界的待办工作列表，而不是进行递归的函数读取或依赖映射顺序的扫描
         while (nextSignature_ < pendingSignatures_.size())
@@ -1157,10 +1160,13 @@ namespace nextdumper::reflection
 
     ReflectionIR ReflectionReader::Read()
     {
+        auto *performance = memory_.Performance();
+        memory::ScopedReadTiming timing(performance ? &performance->reflectionRead : nullptr, 1);
         ReflectionIR result;
         std::vector<::nextdumper::ir::CaptureInfo::Attempt> history;
         for (uint32_t attempt = 1; attempt <= 2; ++attempt)
         {
+            memory::ScopedReadTiming attemptTiming(performance ? &performance->reflectionAttempt : nullptr, 1);
             const auto started = std::chrono::steady_clock::now();
             if (progress_)
                 progress_("capture attempt=" + std::to_string(attempt) + " started");
@@ -1199,6 +1205,7 @@ namespace nextdumper::reflection
             result.containerStorageNotObserved = containerNotObserved_;
             if (diagnostic_)
             {
+                memory::ScopedReadTiming evidenceTiming(performance ? &performance->reflectionEvidence : nullptr, 1);
                 diagnostic_("reflection_evidence attempt=" + std::to_string(attempt) + " begin");
                 detail::LogReflectionEvidence(result, moduleBase_, diagnostic_);
                 for (const auto &message : result.diagnostics)
@@ -1348,15 +1355,32 @@ namespace nextdumper::reflection
                 result.diagnostics.push_back("reflection object failure: reason=" + reason +
                                              " index=" + std::to_string(index) + " address=" + std::to_string(address));
         };
+        auto *performance = memory_.Performance();
+        const auto validate = [&]()
+        {
+            const uint64_t before = performance ? performance->captureValidate.nanos : 0;
+            auto checked = memory_.Validate();
+            if (performance && diagnostic_)
+                diagnostic_("memory_investigation phase=capture-validation round=" +
+                            std::to_string(performance->captureValidate.calls) +
+                            " elapsed_ns=" + std::to_string(performance->captureValidate.nanos - before) +
+                            " observed_ranges=" + std::to_string(checked.observedRanges) +
+                            " observed_bytes=" + std::to_string(checked.observedBytes));
+            return checked;
+        };
+        std::optional<memory::ScopedReadTiming> enumerationTiming;
+        if (performance)
+            enumerationTiming.emplace(&performance->reflectionEnumeration, 1);
         for (int32_t index = 0;; ++index)
         {
             if (index == objects_.Count())
             {
+                enumerationTiming.reset();
                 details.enumeratedCount = index;
                 if (progress_)
                     progress_("capture: validating observed bytes; enumerated=" + std::to_string(index));
                 CloseDelegateSignatures(result);
-                validation = memory_.Validate();
+                validation = validate();
                 const auto boundary = objects_.RefreshObjectCount();
                 details.countAddress = boundary.countAddress;
                 details.finalCount = boundary.count;
@@ -1389,6 +1413,8 @@ namespace nextdumper::reflection
                 if (progress_)
                     progress_("capture: count grew from=" + std::to_string(index) + " to=" + std::to_string(boundary.count) +
                               "; reading tail round=" + std::to_string(details.tailRounds));
+                if (performance)
+                    enumerationTiming.emplace(&performance->reflectionEnumeration, 1);
             }
             if (progress_ && index % 256 == 0 && std::chrono::steady_clock::now() - lastProgress >= std::chrono::seconds(1))
             {
@@ -1398,11 +1424,12 @@ namespace nextdumper::reflection
             }
             if (memory_.LimitExceeded())
             {
+                enumerationTiming.reset();
                 result.stats.unvisitedObjects = objects_.Count() - index;
                 ++result.stats.failures;
                 result.diagnostics.push_back("capture observation limit reached; remaining objects were not visited");
                 details.reason = "observation-budget-exceeded";
-                validation = memory_.Validate();
+                validation = validate();
                 break;
             }
             if (index < windowFirst || static_cast<size_t>(index - windowFirst) >= windowCount)
@@ -1579,6 +1606,8 @@ namespace nextdumper::reflection
             if (index >= details.initialCount)
                 ++details.additionalTypes;
         }
+        enumerationTiming.reset();
+        memory::ScopedReadTiming finalizeTiming(performance ? &performance->reflectionFinalize : nullptr, 1);
         if (!details.coverageComplete && details.reason.empty())
             details.reason = "enumeration-coverage-incomplete";
         result.diagnostics.push_back("object enumeration: initial_count=" + std::to_string(details.initialCount) +

@@ -69,6 +69,7 @@ namespace nextdumper::memory
         [[nodiscard]] bool ReadBatch(std::span<const ReadRequest> requests, std::span<ReadResult> results,
                                      bool fresh = false) const override;
         [[nodiscard]] const ReadStats &Stats() const override { return source_.Stats(); }
+        [[nodiscard]] ReadPerformance *Performance() const override { return source_.Performance(); }
 
     private:
         static constexpr size_t kMaxRanges = 2 * 1024 * 1024;
