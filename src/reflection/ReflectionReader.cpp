@@ -392,13 +392,13 @@ namespace nextdumper::reflection
         return result;
     }
 
-    std::optional<PropertyIR> ReflectionReader::ReadProperty(uintptr_t field, ReflectionStats &stats) const
+    std::optional<PropertyIR> ReflectionReader::ReadProperty(const FieldMetadata &field, ReflectionStats &stats) const
     {
         const auto metadata = objects_.Property(field);
         if (!metadata)
             return std::nullopt;
         PropertyIR result;
-        result.address = field;
+        result.address = field.address;
         result.name = metadata->name;
         result.reflectedClass = metadata->className;
         result.offset = metadata->offset;
@@ -471,7 +471,7 @@ namespace nextdumper::reflection
                                       " actual_owner=" + std::to_string(field.ownerAddress));
                 continue;
             }
-            const auto property = ReadProperty(field.address, stats);
+            const auto property = ReadProperty(field, stats);
             if (property)
                 result.properties.push_back(*property);
             else

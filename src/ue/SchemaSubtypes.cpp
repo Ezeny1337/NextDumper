@@ -55,6 +55,22 @@ namespace nextdumper::ue::schema_probe
                     return {::nextdumper::memory::ReadError::ProbeLimit, address, size, 0};
                 return source_.ReadFreshBytes(address, buffer, size);
             }
+            [[nodiscard]] bool ReadBatch(std::span<const memory::ReadRequest> requests, std::span<memory::ReadResult> results,
+                                         bool fresh = false) const override
+            {
+                if (requests.size() != results.size() || requests.size() > 1024)
+                    return false;
+                // 预算按逻辑请求扣除，批读不能绕过限制，也不能退化为逐项 syscall
+                const size_t allowed = std::min(remaining_, requests.size());
+                remaining_ -= allowed;
+                if (allowed != requests.size())
+                {
+                    exhausted_ = true;
+                    for (size_t index = allowed; index < requests.size(); ++index)
+                        results[index] = {memory::ReadError::ProbeLimit, requests[index].address, requests[index].size, 0};
+                }
+                return allowed == 0 || source_.ReadBatch(requests.first(allowed), results.first(allowed), fresh);
+            }
 
         private:
             bool Consume() const
@@ -279,7 +295,7 @@ namespace nextdumper::ue::schema_probe
                     if (!IsPropertyFieldKind(field.kind) ||
                         (schema.features.useFProperty && (!field.ownerIsUObject || field.ownerAddress != object.address)))
                         continue;
-                    const auto property = model.Property(field.address);
+                    const auto property = model.Property(field);
                     if (!property || !ValidHeader(*property))
                     {
                         ++result.unreadable;

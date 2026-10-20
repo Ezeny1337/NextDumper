@@ -57,7 +57,7 @@ namespace nextdumper::reflection
         [[nodiscard]] PropertyKind PropertyKindFromName(const std::string &name) const;
         void RecordPropertyDetail(const PropertyMetadata &metadata, PropertyIR &property,
                                   const std::string &reason, bool headerAvailable = true) const;
-        [[nodiscard]] std::optional<PropertyIR> ReadProperty(uintptr_t field, ReflectionStats &stats) const;
+        [[nodiscard]] std::optional<PropertyIR> ReadProperty(const FieldMetadata &field, ReflectionStats &stats) const;
         [[nodiscard]] TypeReferenceIR ReadTypeReference(const PropertyMetadata &metadata, PropertyIR &property,
                                                         ReflectionStats &stats, std::unordered_set<uintptr_t> &path,
                                                         size_t depth, size_t &remaining) const;

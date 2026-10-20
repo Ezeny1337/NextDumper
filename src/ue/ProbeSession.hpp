@@ -3,6 +3,8 @@
 #include "nextdumper/ue/SchemaResolver.hpp"
 
 #include <algorithm>
+#include <array>
+#include <stdexcept>
 #include <tuple>
 #include <unordered_map>
 #include <variant>
@@ -195,9 +197,19 @@ namespace nextdumper::ue
             const int32_t count = std::min(model.Count(), limit);
             result.limited = count != model.Count();
             std::unordered_map<uintptr_t, std::optional<std::string>> classes;
+            std::array<ObjectReadResult, ObjectStoreReader::kReadWindowSize> window{};
+            size_t windowCount = 0;
+            int32_t windowFirst = 0;
             for (int32_t index = 0; index < count; ++index)
             {
-                const auto object = model.Objects().ReadObject(index);
+                if (static_cast<size_t>(index - windowFirst) >= windowCount)
+                {
+                    windowFirst = index;
+                    windowCount = std::min(window.size(), static_cast<size_t>(count - index));
+                    if (!model.Objects().ReadObjects(index, {window.data(), windowCount}))
+                        throw std::runtime_error("Schema object window contract failed");
+                }
+                const auto &object = window[static_cast<size_t>(index - windowFirst)];
                 if (!object.IsValid())
                 {
                     result.limited = result.limited || object.status != ObjectReadStatus::Empty;

@@ -203,6 +203,8 @@ namespace nextdumper::ue
         [[nodiscard]] FieldChainResult FieldsWithStatus(uintptr_t first, size_t maxFields = 65536) const;
         [[nodiscard]] FieldChainResult UFieldsWithStatus(uintptr_t first, size_t maxFields = 65536) const;
         [[nodiscard]] std::optional<PropertyMetadata> Property(uintptr_t field) const;
+        // 复用本轮字段链已验证的头部，不得跨 schema 或 Capture 复用
+        [[nodiscard]] std::optional<PropertyMetadata> Property(const FieldMetadata &field) const;
         [[nodiscard]] std::optional<FieldClassMetadata> FieldClass(uintptr_t address) const;
         [[nodiscard]] FieldClassValidationResult ValidateFieldClass(uintptr_t address) const;
         [[nodiscard]] bool IsValidFieldClass(uintptr_t address) const;
@@ -214,8 +216,6 @@ namespace nextdumper::ue
         [[nodiscard]] EnumReadResult ReadEnumValues(uintptr_t enumeration, size_t maxValues = 65536) const;
 
     private:
-        [[nodiscard]] std::optional<uintptr_t> ReadPointer(uintptr_t address) const;
-        [[nodiscard]] std::optional<std::pair<uintptr_t, bool>> DecodeFieldOwner(uintptr_t field) const;
         [[nodiscard]] FieldKind ResolveFFieldKind(uintptr_t classAddress, FieldKind fallback) const;
         [[nodiscard]] FieldKind ResolveUFieldKind(uintptr_t classAddress, FieldKind fallback) const;
         [[nodiscard]] std::optional<std::string> NameField(uintptr_t object) const;

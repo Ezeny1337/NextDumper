@@ -38,43 +38,6 @@ namespace nextdumper::ue
         return initialized_;
     }
 
-    std::optional<uintptr_t> ObjectModelReader::ReadPointer(uintptr_t address) const
-    {
-        uintptr_t value = 0;
-        if (!memory_.Read(address, value) || value == 0)
-            return std::nullopt;
-        return value;
-    }
-
-    std::optional<std::pair<uintptr_t, bool>> ObjectModelReader::DecodeFieldOwner(uintptr_t field) const
-    {
-        const auto ownerAddress = Add(field, schema_.ffield.owner);
-        if (!ownerAddress)
-            return std::nullopt;
-        uintptr_t rawOwner = 0;
-        if (!memory_.Read(*ownerAddress, rawOwner))
-            return std::nullopt;
-
-        uintptr_t owner = rawOwner;
-        bool ownerIsUObject = false;
-        if (schema_.features.fFieldOwnerEncoding == FFieldOwnerEncoding::TaggedPointer)
-        {
-            ownerIsUObject = (rawOwner & static_cast<uintptr_t>(1)) != 0;
-            owner = rawOwner & ~static_cast<uintptr_t>(1);
-        }
-        else
-        {
-            const auto discriminatorAddress = Add(*ownerAddress, static_cast<int32_t>(sizeof(uintptr_t)));
-            uint8_t discriminator = 0;
-            if (!discriminatorAddress || !memory_.Read(*discriminatorAddress, discriminator) || discriminator > 1)
-                return std::nullopt;
-            ownerIsUObject = discriminator == 1;
-        }
-        if (owner == 0 || !IsReadableObject(owner))
-            return std::nullopt;
-        return std::pair{owner, ownerIsUObject};
-    }
-
     FieldKind ObjectModelReader::ResolveFFieldKind(uintptr_t classAddress, FieldKind fallback) const
     {
         if (fallback != FieldKind::FField || schema_.ffieldClass.superClass < 0)
@@ -281,21 +244,39 @@ namespace nextdumper::ue
         if (!classAddress || !ownerAddress || !nextAddress || !nameAddress)
             return std::nullopt;
 
-        const auto classValue = ReadPointer(*classAddress);
-        const auto ownerValue = DecodeFieldOwner(field);
-        const auto name = names_.ReadFName(*nameAddress);
-        uintptr_t nextValue = 0;
-        if (!classValue || !ownerValue || !memory_.Read(*nextAddress, nextValue) || !name)
+        uintptr_t classValue = 0, ownerValue = 0, nextValue = 0;
+        uint8_t discriminator = 0;
+        std::array<memory::ReadRequest, 4> requests{{{*classAddress, &classValue, sizeof(classValue)}, {*ownerAddress, &ownerValue, sizeof(ownerValue)}, {*nextAddress, &nextValue, sizeof(nextValue)}, {}}};
+        size_t count = 3;
+        const bool tagged = schema_.features.fFieldOwnerEncoding == FFieldOwnerEncoding::TaggedPointer;
+        if (!tagged)
+        {
+            const auto address = Add(*ownerAddress, static_cast<int32_t>(sizeof(uintptr_t)));
+            if (!address)
+                return std::nullopt;
+            requests[count++] = {*address, &discriminator, sizeof(discriminator)};
+        }
+        std::array<memory::ReadResult, requests.size()> reads{};
+        if (!memory_.ReadBatch({requests.data(), count}, {reads.data(), count}) ||
+            std::any_of(reads.begin(), reads.begin() + static_cast<ptrdiff_t>(count), [](const auto &read)
+                        { return !read.Ok(); }) ||
+            !classValue || (!tagged && discriminator > 1))
             return std::nullopt;
-        const auto classNameAddress = Add(*classValue, schema_.ffieldClass.name);
-        if (!classNameAddress)
+        const bool ownerIsUObject = tagged ? (ownerValue & uintptr_t{1}) != 0 : discriminator == 1;
+        if (tagged)
+            ownerValue &= ~uintptr_t{1};
+        if (!ownerValue || !IsReadableObject(ownerValue))
+            return std::nullopt;
+        const auto name = names_.ReadFName(*nameAddress);
+        const auto classNameAddress = Add(classValue, schema_.ffieldClass.name);
+        if (!name || !classNameAddress)
             return std::nullopt;
         const auto className = names_.ReadFName(*classNameAddress);
         if (!className)
             return std::nullopt;
         const std::string normalizedClassName = NormalizeRuntimeFieldName(*className);
-        const FieldKind kind = ResolveFFieldKind(*classValue, FieldKindFromRuntimeName(*className, true));
-        return FieldMetadata{field, *classValue, ownerValue->first, ownerValue->second, nextValue, *name, *className,
+        const FieldKind kind = ResolveFFieldKind(classValue, FieldKindFromRuntimeName(*className, true));
+        return FieldMetadata{field, classValue, ownerValue, ownerIsUObject, nextValue, *name, *className,
                              normalizedClassName, kind};
     }
 
@@ -370,11 +351,15 @@ namespace nextdumper::ue
     std::optional<PropertyMetadata> ObjectModelReader::Property(uintptr_t field) const
     {
         const auto base = Field(field);
-        if (!base)
-            return std::nullopt;
-        if (!IsPropertyFieldKind(base->kind))
+        return base ? Property(*base) : std::nullopt;
+    }
+
+    std::optional<PropertyMetadata> ObjectModelReader::Property(const FieldMetadata &base) const
+    {
+        if (!IsPropertyFieldKind(base.kind))
             return std::nullopt;
 
+        const uintptr_t field = base.address;
         const auto arrayDimAddress = Add(field, schema_.property.arrayDim);
         const auto elementSizeAddress = Add(field, schema_.property.elementSize);
         const auto offsetAddress = Add(field, schema_.property.offsetInternal);
@@ -383,14 +368,18 @@ namespace nextdumper::ue
             return std::nullopt;
 
         PropertyMetadata result;
-        static_cast<FieldMetadata &>(result) = *base;
-        if (!memory_.Read(*arrayDimAddress, result.arrayDim) ||
-            !memory_.Read(*elementSizeAddress, result.elementSize) ||
-            !memory_.Read(*offsetAddress, result.offset) ||
-            !memory_.Read(*flagsAddress, result.flags))
+        static_cast<FieldMetadata &>(result) = base;
+        const std::array<memory::ReadRequest, 4> requests{{{*arrayDimAddress, &result.arrayDim, sizeof(result.arrayDim)},
+                                                           {*elementSizeAddress, &result.elementSize, sizeof(result.elementSize)},
+                                                           {*offsetAddress, &result.offset, sizeof(result.offset)},
+                                                           {*flagsAddress, &result.flags, sizeof(result.flags)}}};
+        std::array<memory::ReadResult, requests.size()> reads{};
+        if (!memory_.ReadBatch(requests, reads) ||
+            std::any_of(reads.begin(), reads.end(), [](const auto &read)
+                        { return !read.Ok(); }))
             return std::nullopt;
 
-        // 分别保留两次引用读取的状态，整体状态保留第一次失败，不能由后一次读取覆盖。
+        // 分别保留两次引用读取的状态，整体状态保留第一次失败，不能由后一次读取覆盖
         const auto recordDetail = [&](const PropertyMetadata::DetailRead &detail)
         {
             result.detailReads.at(result.detailReadCount++) = detail;
@@ -431,7 +420,7 @@ namespace nextdumper::ue
             recordDetail(detail);
             return value;
         };
-        const std::string &propertyClassName = base->normalizedClassName;
+        const std::string &propertyClassName = base.normalizedClassName;
         if (propertyClassName == "ObjectProperty" || propertyClassName == "ObjectPropertyBase" || propertyClassName == "ObjectPtrProperty" ||
             propertyClassName == "SoftObjectProperty" || propertyClassName == "WeakObjectProperty" ||
             propertyClassName == "LazyObjectProperty")
@@ -522,9 +511,13 @@ namespace nextdumper::ue
             return std::nullopt;
         FieldClassMetadata result;
         const auto name = names_.ReadFName(*nameAddress);
-        if (!name || name->empty() || !memory_.Read(*idAddress, result.id) ||
-            !memory_.Read(*castAddress, result.castFlags) || !memory_.Read(*flagsAddress, result.classFlags) ||
-            !memory_.Read(*superAddress, result.superClass))
+        if (!name || name->empty())
+            return std::nullopt;
+        const std::array<memory::ReadRequest, 4> requests{{{*idAddress, &result.id, sizeof(result.id)}, {*castAddress, &result.castFlags, sizeof(result.castFlags)}, {*flagsAddress, &result.classFlags, sizeof(result.classFlags)}, {*superAddress, &result.superClass, sizeof(result.superClass)}}};
+        std::array<memory::ReadResult, requests.size()> reads{};
+        if (!memory_.ReadBatch(requests, reads) ||
+            std::any_of(reads.begin(), reads.end(), [](const auto &read)
+                        { return !read.Ok(); }))
             return std::nullopt;
         result.name = *name;
         return result;
