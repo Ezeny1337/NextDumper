@@ -272,7 +272,10 @@ namespace nextdumper::memory
         result.readFailures = readFailures_;
         result.readFailureSamples = readFailureSamples_;
         if (observations_.empty())
+        {
+            result.generationChanged = result.generationChanged || generation_ != source_.AddressSpaceGeneration();
             return result;
+        }
         constexpr size_t maxBatchSize = 64 * 1024;
         constexpr size_t maxGap = 64;
         std::vector<uint8_t> current;
