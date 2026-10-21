@@ -1,6 +1,6 @@
 # NextDumper
 
-> 面向 Android 的 Unreal Engine 运行时反射与 SDK 生成工具。
+**面向 Android 的 Unreal Engine 运行时 SDK 生成工具。**
 
 [![Language](https://img.shields.io/badge/language-C%2B%2B20-00599C?logo=cplusplus&logoColor=white)](https://isocpp.org/)
 [![Build system](https://img.shields.io/badge/build-CMake%20%7C%20Ninja-064F8C?logo=cmake&logoColor=white)](https://cmake.org/)
@@ -10,59 +10,184 @@
 
 [English](README.md)
 
-NextDumper 可以从正在运行的 Android 进程中发现 Unreal Engine 的运行时结构，验证对象表与名称存储，解析反射 Schema，并为开发者和逆向分析工具生成 C++ 描述及机器可读的反射元数据。
+NextDumper 会附加到正在运行的 Android 游戏进程，定位 Unreal Engine 的对象数组和名称池，识别该构建使用的反射布局，并生成 C++ SDK 与 JSON 元数据，供 IDA、Ghidra 或自研工具分析使用。
 
-它不依赖单一硬编码布局，而是结合二进制分析、运行时探针、交叉验证和反射数据，在读取对象图之前先建立经过验证的运行时绑定。
+它不依赖某一套写死的偏移：所有候选根和布局都从目标进程实时读取，通过校验后才会使用。生成的文件描述的是目标内存布局，不能作为运行库链接进游戏。
 
-工具 ABI 需要与目标进程匹配：64 位游戏使用`arm64-v8a`版本，32 位 ARM 游戏使用`armeabi-v7a`版本。
+> **ABI 必须与目标进程一致。** 64 位游戏使用 `arm64-v8a` 版本，32 位 ARM 游戏使用 `armeabi-v7a` 版本。
 
-## 核心能力
+## 主要功能
 
-- **运行时绑定** — 运行时定位并验证 `GUObjectArray`、`ObjObjects` 与 `FName` 存储。
-- **Schema 自动解析** — 从实时数据中解析 `UObject`、`UStruct`、`FField`/`FProperty`、`UFunction` 和 `UEnum` 布局。
-- **ARM 架构分析** — 支持 ARM64 和 ARM32 ARM-mode 指令解码，以及面向 Unreal 二进制的候选地址分析策略；Thumb/Thumb-2 暂未支持。
-- **反射提取** — 遍历 Unreal 运行时对象，输出类型、属性、函数、枚举、继承关系和布局元数据。
-- **IDA 导入** — 导入反射类型描述，并为已验证的模块内执行入口 RVA 添加标注。
-- **常用类地址收集** — 记录 `World`、`Engine`、`GameInstance`、`PlayerController` 等常用 `UClass` 对象地址。
-- **可追溯产物输出** — 将生成头文件、JSON 元数据、诊断、运行时绑定及生成器身份写入统一产物目录。
-- **验证失败即拒绝** — 对无效候选和不一致布局进行拒绝，避免静默使用错误结果。
-- **有界采集** — 复核实际消费的字节，通过有限尾部枚举覆盖对象表增长。
-- **只读实例证据** — 对容器内容、Weak 引用、文本 header 和委托绑定进行采样，并独立校验稳定性。
+- **定位引擎全局变量** —— 找到并验证 `GUObjectArray`、`ObjObjects` 和 `FName` 存储。
+- **识别反射布局** —— 解析 UE 4.23–5.6 的 `UObject`、`UStruct`、`FField`/`FProperty`、`UFunction` 和 `UEnum` 偏移。
+- **导出完整类型信息** —— 输出类、结构体、属性、函数、枚举、继承关系和字段偏移。
+- **支持符号被剥离的游戏** —— 符号定位不充分时，通过 ARM64 和 ARM32（ARM 模式）反汇编补充根地址候选；暂不支持 Thumb/Thumb-2。
+- **IDA 集成** —— 导入生成的类型，并为已验证的函数入口添加名称和注释。
+- **常用类地址** —— 记录 `World`、`Engine`、`GameInstance`、`PlayerController` 等 `UClass` 对象地址。
+- **输出集中** —— 头文件、反射数据、运行时布局、清单和诊断都在同一目录。
+- **拒绝无效数据** —— 未通过校验的候选和布局不会写入输出。
+- **控制读取量** —— 对象数组、容器和可选运行时采样都有明确上限。
 
-## 工作流程
+## 工作原理
 
 ```mermaid
 flowchart TD
-    A[Android 目标进程] --> B[RemoteMemorySource]
-    B --> C[ModuleCatalog]
-    C --> D[编译期 GameProfile]
-    D --> E[GlobalLocator + UEAnalyzer]
-    E --> F[BindingBuilder]
-    F --> G[SchemaResolver]
-    G --> H[CommonObjectCollector]
-    H --> I[ReflectionReader]
-    I --> K[RuntimeInspector]
-    K --> L[ArtifactWriter + SdkEmitter]
-    L --> M[生成 SDK + JSON 诊断]
+    A[目标进程] --> B[内存访问]
+    B --> C[模块发现]
+    C --> D[游戏 profile 选择]
+    D --> E[根定位：ELF 符号 + ARM 分析]
+    E --> F[绑定校验]
+    F --> G[反射布局识别]
+    G --> H[常用类收集]
+    H --> I[反射采集]
+    I --> J[只读运行时采样]
+    J --> K[SDK 与 JSON 输出]
 ```
 
-一次运行会依次执行以下阶段：
+1. 附加到目标进程，找到 Unreal 模块（`libUnreal.so` 或 `libUE4.so`）。
+2. 如果包名和模块匹配已编译的 profile，则选用该 profile。
+3. 从 ELF 符号、profile 和代码分析中收集对象数组与名称池的根地址候选。
+4. 按预期布局验证对象数组和名称池。
+5. 检查支持的 UE 反射布局，选择通过校验的一种。
+6. 收集常用 `UClass` 对象。
+7. 读取反射出的类型、属性、函数和枚举。
+8. 以只读方式采样少量运行时值。
+9. 写入 SDK 和 JSON 文件。
 
-1. 连接目标进程并发现 Unreal 模块。
-2. 按包名和模块信息选择唯一匹配的编译期游戏 profile；未匹配时使用 identity 解码。
-3. 汇总 ELF 符号、profile 和 UEAnalyzer 提供的对象根及名称根候选。
-4. 使用 profile 解码和可选布局提示，验证对象容器与名称存储。
-5. 探测引擎 Schema profile，并验证运行时反射布局。
-6. 收集常见 `UClass` 对象，读取并校验反射定义。
-7. 采集有界实例证据并发布 SDK 产物，同时输出独立兼容性诊断。
+### 引擎版本覆盖
 
-Schema profile 覆盖 UE 4.23–4.27 和 5.0–5.6 的布局族，选择结果记录已验证的运行时布局、兼容 profile 和引擎版本置信度；profile 覆盖不代表保证适配每个引擎分支或构建配置。
+反射布局在运行时检测，而不是按版本号直接选择。内置的布局版本如下：
 
-## 游戏适配与兼容性诊断
+| 布局 | 引擎版本 |
+| --- | --- |
+| `UProperty` | 4.23–4.24 |
+| `FProperty` | 4.25–4.27 |
+| 带枚举 flags 的 `FProperty` | 4.26–4.27 |
+| `FField` 显式 owner | 5.0 |
+| 带枚举 package 的 `FField` 显式 owner | 5.1–5.2 |
+| `FField` tagged owner | 5.3–5.4 |
+| 新版反射布局 | 5.5–5.6 |
 
-编译期 profile 是当前游戏专有适配入口。开发者在 `include/nextdumper/compat/GameProfile.hpp` 定义的 `IGameProfile` 上派生实现，并在 `src/compat/GameProfiles.cpp` 注册实例；没有匹配 profile 时程序保持现有自动探测与 identity 解码行为。
+`runtime.json` 和 `EngineLayouts.hpp` 会记录最终选择的布局，`reflection.json` 还会记录兼容的其他 profile 和版本可信度。不同分支或自定义构建可能存在差异；此时诊断报告会指出失败的阶段，而不是直接假定引擎版本。
 
-最小 profile 形态如下。可将类放入单独的头文件并由 `GameProfiles.cpp` 包含，再在 `CreateGameProfiles()` 工厂中加入实例；若实现需要独立 `.cpp`，还需将它加入 `CMakeLists.txt`：
+## 快速开始
+
+### 环境要求
+
+- Android SDK，包含 `android-29` 或兼容平台。
+- Android NDK r26 或更高版本，CI 使用 `26.3.11579264`。
+- CMake `3.22.1` 和 Ninja。
+- 可构建 Android `arm64-v8a` 和 `armeabi-v7a` 的主机环境。
+- 读取目标进程内存和写入输出目录的权限。
+
+### 构建脚本
+
+`build.sh` 会配置 Android 工具链，并默认启用 ThinLTO。
+
+| 模式 | 配置 | 用途 |
+| --- | --- | --- |
+| `verify`（默认） | Release、ThinLTO、不优化体积、关闭断言 | 快速检查编译 |
+| `release` | Release、`-Oz`、ThinLTO、启用断言、构建后 strip | 体积较小的发布版本 |
+| `debug` | 调试符号、ThinLTO、关闭断言 | 便于调试 |
+
+运行前将 `ANDROID_NDK_HOME`（或 `ANDROID_NDK_ROOT`）指向 NDK r26 或更高版本。如果只设置了 `ANDROID_SDK_ROOT`，脚本会自动选择已安装的最新 NDK。
+
+```bash
+chmod +x build.sh
+
+# 快速检查编译，默认 arm64-v8a
+./build.sh
+
+# 体积优化的 release 版本
+./build.sh --mode release --abi arm64-v8a
+
+# armeabi-v7a 调试版本
+./build.sh --mode debug --abi armeabi-v7a --jobs 4
+```
+
+可执行文件默认位于 `build/android-<abi>-<mode>/NextDumper`。使用 `--build-dir` 修改构建目录，或使用 `--no-strip` 保留 release 版本的符号。
+
+### 直接使用 CMake
+
+下面的配置与 GitHub Actions 工作流一致：
+
+```bash
+cmake -S . -B build/android-arm64-release -G Ninja \
+  -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+  -DANDROID_ABI=arm64-v8a \
+  -DANDROID_PLATFORM=android-29 \
+  -DNEXTDUMPER_ENABLE_THINLTO=ON \
+  -DCMAKE_BUILD_TYPE=Release
+
+cmake --build build/android-arm64-release --parallel
+```
+
+可执行文件位于 `build/android-arm64-release/NextDumper`。
+
+### 运行
+
+```text
+NextDumper -o <输出目录> -p <包名> [options]
+```
+
+先启动游戏，再在设备上运行 NextDumper。工具需要读取目标进程内存和写入输出目录的权限，不会绕过平台安全限制。
+
+| 参数 | 说明 |
+| --- | --- |
+| `-o`、`--output <dir>` | 保存日志和生成文件的可写目录。必填。 |
+| `-p`、`--package <name>` | 目标进程的包名。必填。 |
+| `--memory-log` | 额外写入 `NextDumper_*.memory.jsonl`，记录内存读取耗时。默认关闭。 |
+| `-h`、`--help` | 显示命令行帮助。 |
+
+```bash
+./NextDumper \
+  --output /storage/emulated/0/NextDumper-output \
+  --package com.example.game
+```
+
+## 输出文件
+
+一次成功运行会生成以包名和时间戳命名的目录：
+
+```text
+<输出目录>/com_example_game_20261021163000/
+├── BasicTypes.hpp
+├── EngineLayouts.hpp
+├── Types.hpp
+├── Enums.hpp
+├── Functions.hpp
+├── reflection.json
+├── manifest.json
+├── diagnostics.json
+└── runtime.json
+```
+
+输出目录下还会写入会话日志和诊断报告：
+
+```text
+<输出目录>/NextDumper_20261021163000.log
+<输出目录>/NextDumper_20261021163000.diagnosis.json
+```
+
+| 文件 | 内容 |
+| --- | --- |
+| `BasicTypes.hpp` | SDK 基础类型、定长不透明存储包装和容器布局描述。 |
+| `EngineLayouts.hpp` | 所选 Unreal 反射结构的运行时偏移；`-1` 表示该偏移未解析。 |
+| `Types.hpp` | 反射出的类和结构体，包含名称、继承关系和字段偏移。 |
+| `Enums.hpp` | 反射出的枚举声明和值。 |
+| `Functions.hpp` | 反射函数的执行入口 RVA 和参数布局。 |
+| `reflection.json` | 完整反射数据、字段存储描述、生成信息和少量运行时采样。 |
+| `manifest.json` | 输出状态、解析统计和构建信息（commit、版本、工作区状态）。 |
+| `diagnostics.json` | 反射与生成诊断、计数，以及对共用采样数据的引用。 |
+| `runtime.json` | 模块信息、绑定布局、反射偏移和常用类地址。 |
+
+头文件使用 `NextDumper` 命名空间，描述的是目标内存。反射得到的大小、偏移、掩码和引用关系是判断依据；C++ 声明只是该布局的描述，不等同于 native ABI 定义。
+
+时间戳在会话启动时按本地时间生成。反射或 SDK 生成不完整时，目录名会带 `.partial`，例如 `com_example_game.partial_20261021163000/`。
+
+## 游戏 profile
+
+游戏 profile 以编译期实现的形式提供，是适配特定游戏的扩展点。在 `include/nextdumper/compat/GameProfile.hpp` 中实现 `IGameProfile`，并在 `src/compat/GameProfiles.cpp` 中注册实例。没有匹配的 profile 时，工具使用自动发现和默认解码。
 
 ```cpp
 class ExampleGameProfile final : public nextdumper::compat::IGameProfile
@@ -87,180 +212,65 @@ public:
 };
 ```
 
-在 `CreateGameProfiles()` 中将该类加入返回列表。`Matches()` 应尽量同时检查包名、目标 ABI 和模块名；每个运行时阶段都以实际探针结果决定是否接受 profile。
+将类加入 `CreateGameProfiles()`。如果实现需要独立的 `.cpp` 文件，请同时把它加入 `CMakeLists.txt`。
 
-| 适配层 | profile 能力 | 验证与诊断边界 |
+| 接口 | 作用 | 仍需通过的校验 |
 | --- | --- | --- |
-| 进程、内存访问与模块发现 | 不由游戏 profile 覆盖 | 失败属于运行环境阻断；兼容性标记为未评估。 |
-| 全局根定位与指针链 | `LocateRoots()` 返回额外的对象/名称根候选 | 候选仍需经过布局和语义验证；找不到根不等同于已确认加密。 |
-| 对象表、名称存储布局 | `LayoutHints()` 可提供单个对象/名称布局提示 | 提示替代对应自动布局发现，但不能跳过运行时探针。 |
-| 对象与名称字段解码 | `MakeDecodePlan()` 配置指针、计数、索引、`FName` number、header 等解码器 | 解码后的数据仍须通过对象自索引、名称 sentinel 等验证。 |
-| 名称文本 | `DecodePlan::nameText` 可解码 UTF-8/UTF-16 原始字节 | 同一回调用于名称布局发现、探测和实际读取，避免探测与读取行为不一致。 |
-| UE 反射 Schema | 使用内置 SchemaResolver 自动探测 UE 布局族 | 当前游戏 profile 不覆盖任意厂商自定义反射 Schema；若实际案例需要，再基于证据扩展。 |
+| `Matches()` | 匹配包名、ABI 和模块 | 必须唯一；多个匹配时会改用默认解码。 |
+| `LocateRoots()` | 补充对象数组或名称池的根地址候选 | 候选仍需通过布局和取值校验。 |
+| `LayoutHints()` | 覆盖对象数组或名称池的布局 | 只替代该容器的自动发现，运行时检查不变。 |
+| `MakeDecodePlan()` | 配置指针、计数、索引、`FName`、header 和名称文本解码器 | 解码结果仍需通过索引、名称和布局校验。 |
 
-`Matches()` 应使用明确的包名及模块/ABI 条件；当前模块身份不是内容哈希，因此包名匹配不能证明目标二进制与逆向样本完全相同。profile 只能通过只读 `IMemorySource` 读取目标数据。解码回调随 `RuntimeSession` 中的 profile 和绑定共同存活，不能捕获短生命周期对象。
+`Matches()` 应尽量同时检查包名、目标 ABI 和模块名。模块标识来自已映射的段，不是内容哈希，因此包名匹配不能证明目标二进制与逆向样本完全相同。profile 回调只能通过只读的 `IMemorySource` 读取数据；解码配置会随本次会话一直保留，不要捕获短生命周期对象。
 
-每次运行会在输出目录生成 `NextDumper_时间戳.diagnosis.json`，即使流程在绑定或 Schema 阶段提前结束也会尝试写入。报告包含包名、模块名、架构和指针宽度，并将运行状态与兼容性结论分开；findings 提供稳定的 domain、code、stage、confidence、summary 和 next action：
+## 兼容性诊断
 
-- 进程、内存访问、模块或输出失败记录为 `runtime` 问题；兼容性仍为 `not-evaluated` 或保留已完成的兼容性结论。
-- 没有 profile 时，根绑定失败记录为 `ROOT_BINDING_NOT_VALIDATED`；它只指出根、布局或解码未通过验证，不宣称检测到加密。
-- 已选 profile 但未通过验证时记录为 `profile-validation-failed`，并保留失败阶段及建议检查项。
-- 无 profile 的绑定、Schema 与反射流程完整通过时记录为 `baseline-compatible`；profile 路径完整通过时记录为 `profile-validated`。
-- profile 解码器抛出异常会被单独记录；绑定阶段会回退并尝试 identity 解码，后续阶段则停止发布不可信结果。
+每次运行都会尝试写入 `NextDumper_<时间戳>.diagnosis.json`，即使流程在绑定或布局识别前就结束。报告包含包名、模块名、架构和指针宽度，并把运行结果与兼容性结论分开：
 
-诊断报告提供可复核的分析方向，不会自动推导厂商算法，也不会将布局差异或普通运行故障直接标记为“加密”。
+- `session_status` —— 运行进行到哪一步。
+- `compatibility_status` —— 兼容性结论。
+- `profile_status` —— profile 是否被选中、启用并通过验证。
+- `findings[]` —— 每项包含稳定的 `domain`、`code`、`stage`、`confidence`、`summary` 和 `next_action` 字段。
 
-## 构建
-
-### 环境要求
-
-- Android SDK，包含 `android-29` 或兼容版本的平台组件。
-- 手动构建使用 Android NDK r26 或更高版本；仓库 CI 固定使用 `26.3.11579264`。
-- CMake `3.22.1`，与仓库 CI 配置一致。
-- Ninja。
-- 能够构建 Android `arm64-v8a` 和 `armeabi-v7a` 代码的主机环境。
-
-### 构建脚本
-
-`build.sh` 封装了 Android 工具链配置，并默认启用 ThinLTO。脚本支持三种模式：
-
-| 模式 | 配置 | 用途 |
-| --- | --- | --- |
-| `verify` | Release、ThinLTO、不启用体积专用优化 | 快速验证编译是否通过，默认模式。 |
-| `release` | Release、`-Oz`、ThinLTO、禁用 `NDEBUG`、剥离符号 | 生成较小的可分发产物。 |
-| `debug` | 保留调试信息、ThinLTO、启用 `NDEBUG` | 生成可调试产物。 |
-
-运行脚本前将 `ANDROID_NDK_HOME` 或 `ANDROID_NDK_ROOT` 设置为 Android NDK r26 或更高版本。如果只设置了 `ANDROID_SDK_ROOT`，脚本会自动查找已安装的最新 NDK。
-
-```bash
-chmod +x build.sh
-
-# 快速验证编译，默认使用 arm64-v8a
-./build.sh
-
-# 体积优化的 release 产物
-./build.sh --mode release --abi arm64-v8a
-
-# 启用 NDEBUG 并保留调试信息的 debug 产物
-./build.sh --mode debug --abi armeabi-v7a --jobs 4
-```
-
-脚本构建默认生成 `build/android-<abi>-<mode>/NextDumper`。使用 `--build-dir` 指定构建目录，或使用 `--no-strip` 保留 release 符号。
-
-### 直接使用 CMake 配置与构建
-
-下面的工具链配置与 GitHub Actions 工作流一致：
-
-```bash
-cmake -S . -B build/android-arm64-release -G Ninja \
-  -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
-  -DANDROID_ABI=arm64-v8a \
-  -DANDROID_PLATFORM=android-29 \
-  -DNEXTDUMPER_ENABLE_THINLTO=ON \
-  -DCMAKE_BUILD_TYPE=Release
-
-cmake --build build/android-arm64-release --parallel
-```
-
-可执行文件位于：
-
-```text
-build/android-arm64-release/NextDumper
-```
-
-## 使用方法
-
-```text
-NextDumper -o <输出目录> -p <包名> [options]
-```
-
-在 Android 设备上运行工具，并保持目标进程运行。工具需要读取目标进程内存和写入输出目录的权限，不会绕过平台访问限制。
-
-### 必选参数
-
-| 参数 | 说明 |
+| `compatibility_status` | 含义 |
 | --- | --- |
-| `-o`、`--output <dir>` | 用于保存日志和生成 SDK 产物的可写目录。 |
-| `-p`、`--package <name>` | 目标进程的 Android 包名。 |
+| `not-evaluated` | 在检查兼容性之前已停止。 |
+| `baseline-compatible` | 自动发现和默认解码完整走完。 |
+| `profile-selected` | 已匹配 profile，但还没有最终结论。 |
+| `profile-validated` | 所选 profile 完整走完全流程。 |
+| `profile-validation-failed` | 所选 profile 未通过某个校验阶段。 |
+| `needs-investigation` | 自动路径在绑定、布局识别或反射阶段失败。 |
+| `inconclusive` | 采集不完整、profile 匹配有歧义，或地址空间不稳定。 |
 
-### 可选参数
+诊断项遵循以下规则：
 
-| 参数 | 说明 |
-| --- | --- |
-| `--memory-log` | 在输出目录写入 `NextDumper_*.memory.jsonl` 性能日志，默认关闭。 |
-| `-h`、`--help` | 显示命令行帮助。 |
+- 进程、内存访问、模块和输出失败记录为 `runtime` 问题。
+- 没有 profile 时，根绑定失败记录为 `ROOT_BINDING_NOT_VALIDATED`。这只表示根、布局或解码未通过校验，不代表检测到加密。
+- 已选 profile 未通过校验时记录为 `profile-validation-failed`，并给出失败阶段和排查建议。
+- 自动路径完整通过时为 `baseline-compatible`；profile 路径完整通过时为 `profile-validated`。
+- 解码器异常会单独记录。绑定阶段会改用默认解码重试；后续阶段则停止，不写入基于失败解码器的结果。
 
-### 示例
+报告给出的是可复核的排查方向，不会推导厂商算法，也不会把普通的布局差异判定为加密。
 
-```bash
-./NextDumper \
-  --output /storage/emulated/0/NextDumper-output \
-  --package com.example.game
-```
+## IDA 导入
 
-## 生成的 SDK 产物
+在 IDA 中运行 `tools/ida/nextdumper_import.py`，选择 NextDumper 的输出目录。导入器会：
 
-例如包名为 `com.example.game` 时，成功运行后会生成类似目录：
+- 在所选目录中写入 `NextDumper_IDA_types.h`；
+- 把反射出的字节布局类型导入 IDA 本地类型库；
+- 为已验证的执行入口 RVA，以及 RVA 落在已加载镜像可执行段内的原生函数候选，添加名称和注释。
 
-```text
-<输出目录>/com_example_game_YYYYMMDDHHMMSS/
-├── BasicTypes.hpp
-├── EngineLayouts.hpp
-├── Types.hpp
-├── Enums.hpp
-├── Functions.hpp
-├── reflection.json
-├── manifest.json
-├── diagnostics.json
-└── runtime.json
-```
+它不会把运行时堆地址写入静态镜像，也不会自动创建函数。超出 32 位 C 枚举范围的枚举值会保留在 `reflection.json` 中，不写入生成的 IDA 头文件。导入器还会检查输出文件的架构和位数是否与当前 IDA 数据库一致。
 
-目录名以与会话日志、诊断文件相同的本地时间戳（从年到秒）结尾，一次运行对应一组可识别的产物。
+输出中不包含目标二进制的内容哈希。使用 RVA 标注前，请确认 IDA 打开的文件与本次采集的镜像一致。
 
-输出目录本身还会保存本次运行日志：
+## 常用类地址
+
+`runtime.json` 中可能包含以下 `UClass` 对象：
 
 ```text
-<输出目录>/NextDumper_YYYYMMDDHHMMSS.log
-<输出目录>/NextDumper_YYYYMMDDHHMMSS.diagnosis.json
-```
-
-时间戳（从年到秒）在会话启动时按本地时间生成，因此每次运行都会尝试写入独立的日志和兼容性诊断文件。即使运行在 SDK 产物生成前失败，也会保留阶段诊断。如果目标目录已存在同名产物目录，将执行覆盖：先删除旧目录，再由临时目录提交生成新目录。
-
-`.diagnosis.json` 文件为本次运行提供稳定的阶段和 finding code；`session_status` 描述 Dumper 执行结果，`compatibility_status` 描述目标兼容性，`profile_status` 描述所选 profile 是否实际启用及其验证状态，三者不可互相替代。
-
-### 文件说明
-
-| 文件 | 用途 |
-| --- | --- |
-| `BasicTypes.hpp` | SDK 基础类型、typed opaque 存储及源码驱动的布局标签。 |
-| `EngineLayouts.hpp` | 选定 Unreal 反射结构的运行时解析偏移；`-1` 表示该偏移未解析，不代表完整的 native C++ ABI 布局。 |
-| `Types.hpp` | 生成的 Unreal 类和结构体，包含反射身份与目标布局信息。 |
-| `Enums.hpp` | 生成的枚举声明和值。 |
-| `Functions.hpp` | 反射执行入口 RVA 与参数布局。 |
-| `reflection.json` | 反射 IR、生成元数据、存储模型及有界运行时证据。 |
-| `manifest.json` | 产物状态、解析统计和生成器来源信息。 |
-| `diagnostics.json` | 反射与生成诊断、计数及共用证据引用。 |
-| `runtime.json` | 运行时模块、绑定布局、Schema 偏移和常用对象地址。 |
-
-生成的头文件使用 `NextDumper` 命名空间，用于开发者阅读目标内存结构、开发游戏分析工具，以及辅助 IDA/Ghidra 分析。反射得到的大小、偏移、掩码和引用关系是依据，C++ 声明用于描述目标布局。
-
-SDK 不是可直接调用的运行库，不保证 native C++ ABI 兼容；应使用反射元数据，而非 `sizeof`/`offsetof`。执行入口 RVA 不保证对应原始 C++ 业务实现。
-
-生成元数据区分语义声明与存储描述，并标明委托形态；诊断引用共用的反射证据。
-
-### IDA 导入
-
-在 IDA 中运行 `tools/ida/nextdumper_import.py` 并选择 NextDumper 产物目录。导入器会在产物旁生成 `NextDumper_IDA_types.h`，将反射类型的字节布局描述导入 IDA 本地类型库，并为符合条件的模块内执行入口 RVA 添加名称和可重复注释。它不会把运行时堆地址应用到静态镜像，也不会自动创建函数。底层值超出 32 位 C 枚举范围的枚举会保留在 `reflection.json` 中，但不会写入生成的 IDA 头文件。
-
-产物不包含目标二进制的内容哈希。应用 RVA 标注前，请确认 IDA 当前打开的文件与本次采集所用镜像完全匹配。
-
-## 常用对象类地址
-
-运行时产物可以包含以下常用 `UClass` 对象：
-
-```text
-World
 Engine
+World
 GameInstance
 LocalPlayer
 PlayerController
@@ -269,73 +279,55 @@ Console
 CheatManager
 ```
 
-这些是从 Unreal 对象表中发现的类对象地址，并不自动等同于当前运行实例的地址，例如当前的 `GWorld`、`GEngine` 或当前玩家控制器实例地址。
+这些是从 `GUObjectArray` 中找到的类对象地址，不是当前运行实例的地址，例如当前的 `GWorld`、`GEngine` 或玩家控制器实例。
 
-## 验证与状态
-
-NextDumper 会在绑定、Schema 解析、反射采集和 SDK 生成阶段记录以下证据：
-
-- 对象和名称候选数量；
-- 选中的容器布局及探针评分；
-- 解析出的 UObject 和反射偏移；
-- 对象槽位和反射统计；
-- 未知属性、未解析类型细节、布局冲突和读取失败。
-
-产物状态分为以下几种；已发布的产物会在 `manifest.json` 中记录状态：
+## 输出状态与退出码
 
 | 状态 | 含义 |
 | --- | --- |
-| `Complete` | 反射读取与 SDK 描述均完整，所有必需产物文件均已写入并关闭。 |
-| `Partial` | 反射读取或 SDK 描述存在限制，产物目录会在时间戳前标记 `.partial`。 |
-| `Failed` | 绑定、Schema 解析、反射或产物写入失败，可能没有产物或 manifest 文件。 |
+| `Complete` | 反射采集和 SDK 输出完整，所有必需文件均已写入。 |
+| `Partial` | 反射采集或 SDK 输出有遗漏，输出目录名包含 `.partial`。 |
+| `Failed` | 绑定、布局识别、反射或文件写入失败，输出可能缺失。 |
 
-命令行程序在完整产物就绪时返回 `0`，反射读取或 SDK 描述部分完成时返回 `3`，命令行参数无效时返回 `2`，其他失败或未完成运行阶段返回 `1`。
+| 退出码 | 含义 |
+| --- | --- |
+| `0` | 输出完整，或显示 `--help`。 |
+| `1` | 运行时失败或阶段未完成。 |
+| `2` | 命令行参数无效。 |
+| `3` | 反射采集或 SDK 输出不完整。 |
 
-`manifest.json` 分别记录 `reflection_status` 和 `sdk_status`。Typed opaque 存储保留已知字段语义和大小；已选择的 heap 和 MemoryImage 容器布局标签描述目标偏移，不代表所有运行时遍历均已验证。Opaque 存储本身不会使 SDK 描述变为部分完成。遗漏字段和描述布局警告会使 SDK 描述标记为部分完成。
+`manifest.json` 分别记录 `reflection_status` 和 `sdk_status`。以固定大小不透明存储输出的字段会保留反射得到的大小和语义，但不会展开内部内容。不透明存储本身不会让 SDK 变成部分完成；遗漏字段和布局警告才会。
 
-JSON 产物保留完整字段元数据。日志保留诊断汇总、有界正常样本和异常，并记录省略样本数及对应产物位置。
+JSON 文件保留完整字段元数据。日志保留诊断摘要、有限的样本和异常，并记录省略的样本数量及对应 JSON 记录的位置。
 
-值存储描述使用覆盖 UE4.23–5.6 的源码结构族候选，而非仅按版本猜测布局。可选的只读实例证据受预算限制并独立校验；无法读取实例值不会降低 SDK 完整性，也不代表生成描述具备 native ABI 兼容性。
+## 已知限制
 
-采集稳定不等于原子快照，`scan_complete` 仅表示对象槽位枚举完成，不表示所有字段或值均已采集。FText 证据描述外层存储，不保证获取任意显示字符串。Sparse 绑定检查依赖已定位的存储根和兼容布局候选；frozen 元素布局及 remote object 解析可能仍未验证。
+- SDK 不是可调用的运行库，不保证 native C++ ABI 兼容；请使用反射元数据，而不是 `sizeof` 和 `offsetof`。
+- 执行入口 RVA 不一定对应原始 C++ 业务逻辑。
+- 运行时读取不是原子快照。`scan_complete` 只表示对象槽位枚举完成，不代表所有字段和值都已采集。
+- 可选的运行时采样有数量限制，并会独立校验。读不到值不会降低 SDK 完整性，也不代表具备 native ABI 兼容性。
+- FText 采样描述的是外层存储，不是任意显示字符串。
+- `SparseDelegates` 检查需要已定位的存储根和兼容的布局候选；部分容器元素布局和远程对象解析可能仍未验证。
+- 引擎覆盖范围不保证适配所有分支或自定义构建，请用诊断报告定位失败阶段。
+- 输出中没有二进制哈希；用于 IDA 分析的文件必须与采集时的镜像一致。
 
-## Issue
+## 反馈问题
 
-遇到可复现的目标识别、绑定、Schema、反射或产物生成问题时，请提交 [Issue](https://github.com/Ezeny1337/NextDumper/issues)。建议包含：
+遇到可复现的目标识别、绑定、布局、反射或输出问题时，请提交 [Issue](https://github.com/Ezeny1337/NextDumper/issues)，并尽量附上：
 
 1. 使用的 commit 或 release。
-2. Android 版本、设备 ABI，以及已知的目标 Unreal Engine 信息。
-3. 执行命令；必要时请先隐藏包名或其他敏感值。
+2. Android 版本、设备 ABI，以及已知的目标 Unreal Engine 版本。
+3. 执行的命令；必要时请先隐藏包名或其他敏感值。
 4. 相关的带时间戳 `NextDumper_*.log` 日志片段。
 5. 可提供时附上 `manifest.json`、`diagnostics.json` 和 `runtime.json`。
-6. 简洁的问题复现步骤和预期结果。
+6. 简短的问题复现步骤和预期结果。
 
-上传日志或产物前，请移除凭据、私有二进制、专有资源以及任何未经授权不得分享的信息。较大的 `reflection.json` 可以单独作为附件，或只提供相关对象和 Schema 记录。
+上传日志或输出前，请移除凭据、私有二进制、专有资源以及任何未经授权不得分享的信息。较大的 `reflection.json` 可以单独作为附件，或只保留相关的对象和布局记录。
 
 ## 免责声明
 
-NextDumper 仅面向获得授权的研究、调试、互操作和开发用途。使用者应自行确保拥有检查目标进程的合法授权，并遵守适用法律、许可证、平台规则和软件服务条款。不同引擎版本、分支、构建配置和 Shipping 进程之间的运行时布局可能存在差异；绑定成功不代表每个生成字段或函数都完整，也不代表生成代码适合直接用于生产环境。本项目按现状提供，不作任何明示或默示保证；因使用、误用或无法使用本项目造成的损坏、数据丢失、服务中断或其他后果，维护者不承担责任。
+NextDumper 仅面向获得授权的研究、调试、互操作和开发用途。使用者应自行确保拥有检查目标进程的合法授权，并遵守适用法律、许可证、平台规则和软件服务条款。不同引擎版本、分支、构建配置和 Shipping 进程之间的运行时布局可能存在差异；绑定成功不代表每个生成的字段或函数都完整，也不代表生成代码适合直接用于生产环境。本项目按现状提供，不作任何明示或默示保证；因使用、误用或无法使用本项目造成的损坏、数据丢失、服务中断或其他后果，维护者不承担责任。
 
 ## 许可证
 
-    MIT License
-
-    Copyright (c) 2026 Ezeny1337
-
-    Permission is hereby granted, free of charge, to any person obtaining a copy
-    of this software and associated documentation files (the "Software"), to deal
-    in the Software without restriction, including without limitation the rights
-    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-    copies of the Software, and to permit persons to whom the Software is
-    furnished to do so, subject to the following conditions:
-
-    The above copyright notice and this permission notice shall be included in all
-    copies or substantial portions of the Software.
-
-    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-    SOFTWARE.
+NextDumper 基于 [MIT License](./LICENSE) 开源。
