@@ -21,7 +21,8 @@ namespace nextdumper::binding
 
     bool NamePoolLayout::IsValid() const
     {
-        return blocksOffset >= 0 && blocksBit >= 1 && blocksBit <= 16 && (entryStride == 2 || entryStride == 4) &&
+        // 上界涵盖布局探测尝试的 14/16/18 block-bit 候选
+        return blocksOffset >= 0 && blocksBit >= 1 && blocksBit <= 18 && (entryStride == 2 || entryStride == 4) &&
                entryHeaderOffset >= 0 && entryHeaderOffset <= 64 && entryStringOffset >= entryHeaderOffset + 2 &&
                entryStringOffset <= 64 && entryLengthShift >= 0 && entryLengthShift < 16 && entryWideMask != 0 &&
                currentBlockFromBlocks.has_value() == byteCursorFromBlocks.has_value();

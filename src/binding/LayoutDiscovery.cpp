@@ -322,36 +322,42 @@ namespace nextdumper::binding
                             continue;
                         for (int32_t stride : {2, 4})
                         {
-                            NamePoolLayout pool;
-                            pool.blocksOffset = pointerOffset;
-                            pool.blocksBit = 0x10;
-                            pool.entryStride = stride;
-                            pool.entryHeaderOffset = headerOffset;
-                            pool.entryStringOffset = stringOffset;
-                            pool.entryLengthShift = shift;
-                            pool.entryWideMask = 1;
-                            const uintptr_t table = root + static_cast<uintptr_t>(pointerOffset);
-                            if (table >= 8 && memory_.IsReadable(table - 8, 8))
+                            // 0x10 是 UE 标准块大小，厂商变体只在其不通过校验时才有机会
+                            // 每个组合只采用首个通过的候选，重复布局会让下游探针判定为歧义并整体拒绝
+                            for (int32_t blocksBit : {0x10, 0x0e, 0x12})
                             {
-                                uint32_t block = 0;
-                                uint32_t cursor = 0;
-                                const size_t blockSize = (size_t{1} << pool.blocksBit) * stride;
-                                if (memory_.Read(table - 8, block) && memory_.Read(table - 4, cursor) &&
-                                    block < 8192 && cursor <= blockSize && cursor % static_cast<uint32_t>(stride) == 0)
+                                NamePoolLayout pool;
+                                pool.blocksOffset = pointerOffset;
+                                pool.blocksBit = blocksBit;
+                                pool.entryStride = stride;
+                                pool.entryHeaderOffset = headerOffset;
+                                pool.entryStringOffset = stringOffset;
+                                pool.entryLengthShift = shift;
+                                pool.entryWideMask = 1;
+                                const uintptr_t table = root + static_cast<uintptr_t>(pointerOffset);
+                                if (table >= 8 && memory_.IsReadable(table - 8, 8))
                                 {
-                                    pool.currentBlockFromBlocks = -8;
-                                    pool.byteCursorFromBlocks = -4;
+                                    uint32_t block = 0;
+                                    uint32_t cursor = 0;
+                                    const size_t blockSize = (size_t{1} << pool.blocksBit) * stride;
+                                    if (memory_.Read(table - 8, block) && memory_.Read(table - 4, cursor) &&
+                                        block < 8192 && cursor <= blockSize && cursor % static_cast<uint32_t>(stride) == 0)
+                                    {
+                                        pool.currentBlockFromBlocks = -8;
+                                        pool.byteCursorFromBlocks = -4;
+                                    }
                                 }
+                                std::string name;
+                                if (!ReadPoolEntry(target, pool, decode, name) || name != "None")
+                                    continue;
+                                NameContainerLayout layout;
+                                layout.kind = NameContainerKind::Pool;
+                                layout.pool = pool;
+                                result.emplace_back(std::move(layout), 0.90);
+                                if (static_cast<int32_t>(result.size()) >= maxCandidates)
+                                    return result;
+                                break;
                             }
-                            std::string name;
-                            if (!ReadPoolEntry(target, pool, decode, name) || name != "None")
-                                continue;
-                            NameContainerLayout layout;
-                            layout.kind = NameContainerKind::Pool;
-                            layout.pool = pool;
-                            result.emplace_back(std::move(layout), 0.90);
-                            if (static_cast<int32_t>(result.size()) >= maxCandidates)
-                                return result;
                         }
                     }
                 }
