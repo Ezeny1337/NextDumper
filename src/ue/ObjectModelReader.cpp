@@ -164,7 +164,13 @@ namespace nextdumper::ue
         const auto address = Add(object, schema_.uobject.name);
         if (!address)
             return std::nullopt;
-        return names_.ReadFName(*address);
+        const auto cached = nameCache_.find(*address);
+        if (cached != nameCache_.end())
+            return cached->second;
+        auto name = names_.ReadFName(*address);
+        if (name)
+            nameCache_.emplace(*address, *name);
+        return name;
     }
 
     std::optional<std::string> ObjectModelReader::Name(uintptr_t object) const

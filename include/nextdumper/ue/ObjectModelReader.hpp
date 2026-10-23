@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <array>
 #include <optional>
+#include <unordered_map>
 #include <utility>
 #include <string>
 #include <vector>
@@ -228,5 +229,7 @@ namespace nextdumper::ue
         ObjectStoreReader objects_;
         NameStoreReader names_;
         bool initialized_ = false;
+        // 键是 FName 字段地址：同一地址总是解析出同一字符串，缓存可随会话存活
+        mutable std::unordered_map<uintptr_t, std::string> nameCache_;
     };
 } // namespace nextdumper::ue
