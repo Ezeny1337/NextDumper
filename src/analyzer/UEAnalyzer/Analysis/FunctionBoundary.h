@@ -9,6 +9,8 @@ class IArchDecoder;
 namespace nextdumper::analyzer
 {
 
+	class EhFrameIndex;
+
 	/**
 	 * @brief Half-open address range of one recovered function.
 	 */
@@ -25,13 +27,16 @@ namespace nextdumper::analyzer
 	/**
 	 * @brief Finds the function enclosing an arbitrary instruction address.
 	 *
-	 * These binaries are stripped, so there is no function table to consult. The
-	 * boundaries are recovered from the instruction stream: scanning backwards, the
-	 * first return means the previous function ended there, and the first frame
-	 * setup means this function began there - whichever is nearer wins. Scanning
-	 * forwards, the first return ends the function.
+	 * When the caller built an EhFrameIndex for this module, its .eh_frame_hdr
+	 * search table is consulted first: it records the exact start of every function
+	 * the compiler emitted unwind data for, at instruction precision, and does not
+	 * depend on symbols. The instruction stream remains the fallback for the small
+	 * remainder of functions without unwind data and for modules without the table:
+	 * scanning backwards, the first return means the previous function ended there,
+	 * and the first frame setup means this function began there - whichever is
+	 * nearer wins. Scanning forwards, the first return ends the function.
 	 *
-	 * This is deliberately conservative. Over-reaching is the dangerous failure:
+	 * The scan is deliberately conservative. Over-reaching is the dangerous failure:
 	 * it would pull in a neighbouring function's globals and produce a confident
 	 * wrong answer, so an unbounded scan returns nothing instead.
 	 */
@@ -44,11 +49,16 @@ namespace nextdumper::analyzer
 		 *        boundary is built per anchor site, and fetching the module by value
 		 *        each time copied its whole segment list on every one.
 		 * @param Arch   Decoder for the module's architecture.
+		 * @param EhFrame Optional function table decoded from the module's
+		 *        .eh_frame_hdr. Borrowed; must outlive this. Nullptr keeps the
+		 *        instruction-scanning behaviour.
 		 */
-		FunctionBoundary(const IMemory *Memory, const ModuleInfo &Module, const IArchDecoder &Arch)
+		FunctionBoundary(const IMemory *Memory, const ModuleInfo &Module, const IArchDecoder &Arch,
+						 const EhFrameIndex *EhFrame = nullptr)
 			: Memory_(Memory),
 			  Module_(Module),
-			  Arch_(Arch)
+			  Arch_(Arch),
+			  EhFrame_(EhFrame)
 		{
 		}
 
@@ -63,7 +73,8 @@ namespace nextdumper::analyzer
 		 * invisible to the anchor that names it.
 		 *
 		 * @param Address Any instruction inside the function.
-		 * @param MaxScan How far to scan in each direction before giving up.
+		 * @param MaxScan How far to scan in each direction before giving up. A hit
+		 *        in the unwind table is exact and is not subject to this limit.
 		 * @return Invalid bounds when no boundary is found inside MaxScan bytes.
 		 */
 		FunctionBounds Find(uint64_t Address, uint32_t MaxScan = 0x8000) const;
@@ -72,6 +83,7 @@ namespace nextdumper::analyzer
 		const IMemory *Memory_;
 		const ModuleInfo &Module_;
 		const IArchDecoder &Arch_;
+		const EhFrameIndex *EhFrame_ = nullptr;
 	};
 
 } // namespace nextdumper::analyzer

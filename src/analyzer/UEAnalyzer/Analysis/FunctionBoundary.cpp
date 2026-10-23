@@ -4,6 +4,7 @@
 #include "../../Memory/IMemory.h"
 
 #include "CodeWindow.h"
+#include "EhFrameIndex.h"
 
 namespace nextdumper::analyzer
 {
@@ -12,13 +13,18 @@ namespace nextdumper::analyzer
 	{
 		FunctionBounds Out;
 
-		const uint32_t Stride = Arch_.InstructionStride();
-		if (Stride == 0)
-			return Out; // variable-width targets need a different walk
-
 		const MemRegionInfo *Seg = Module_.FindAddressRegion(Address);
 		if (!Seg || !Seg->IsExecutable())
 			return Out;
+
+		// The unwind table is compiler output, not a heuristic: prefer it whenever
+		// this address has an entry, independent of the instruction set.
+		if (EhFrame_ && EhFrame_->Find(Address, Out))
+			return Out;
+
+		const uint32_t Stride = Arch_.InstructionStride();
+		if (Stride == 0)
+			return Out; // variable-width targets need a different walk
 
 		// The scan runs to the region's end; CodeWindow stops it earlier if the bytes
 		// are not actually readable, which is what bounds it at the end of file-backed

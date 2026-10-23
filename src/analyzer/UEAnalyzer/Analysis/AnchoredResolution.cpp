@@ -299,7 +299,7 @@ namespace nextdumper::analyzer
 		if (!bSelfIsTarget && !DeriveThisOffset(Fn, Offset))
 			return false;
 
-		FunctionBoundary Boundary(Memory_, Module_, Arch_);
+		FunctionBoundary Boundary(Memory_, Module_, Arch_, EhFrame_);
 
 		// Several callers usually pass the same global; agreement is the check that
 		// the recovered `this` is the engine singleton and not some other instance.
@@ -404,7 +404,7 @@ namespace nextdumper::analyzer
 		if (It != BoundsCache_.end())
 			return It->second;
 
-		FunctionBoundary Boundary(Memory_, Module_, Arch_);
+		FunctionBoundary Boundary(Memory_, Module_, Arch_, EhFrame_);
 		const FunctionBounds F = Boundary.Find(Site);
 		BoundsCache_.emplace(Site, F);
 		return F;

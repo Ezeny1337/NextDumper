@@ -9,6 +9,7 @@
 
 #include "Analysis/AnchoredResolution.h"
 #include "Analysis/CallGraph.h"
+#include "Analysis/EhFrameIndex.h"
 #include "Analysis/GlobalAccessHarvester.h"
 #include "Analysis/LiteralScanner.h"
 #include "Analysis/StringAnchors.h"
@@ -74,6 +75,10 @@ namespace nextdumper::analyzer
 		/// Fetched once. Everything downstream borrows this rather than calling
 		/// GetUnrealModule(), which returns by value.
 		ModuleInfo Module;
+
+		/// Decoded once from the module's unwind table; empty when the table is
+		/// absent, in which case function bounds fall back to the instruction scan.
+		EhFrameIndex EhFrame;
 
 		/// Measured once in Analyze(): the scans behind it are not free, and nothing
 		/// about the answer changes between queries.
@@ -167,6 +172,7 @@ namespace nextdumper::analyzer
 
 		auto State = std::make_shared<Analysis>();
 		State->Module = Memory->GetUnrealModule();
+		State->EhFrame = EhFrameIndex::Build(*Memory, State->Module);
 		State->Arch = Arch;
 
 		// Each strategy brings its own proximity anchors, so locating them needs no
@@ -578,7 +584,7 @@ namespace nextdumper::analyzer
 		if (!Found || !Found->Strategy)
 			return Out;
 
-		AnchoredResolution Anchored(Memory_, State_->Module, State_->Harvester, *State_->Arch, &State_->Calls, &State_->ResolutionSites);
+		AnchoredResolution Anchored(Memory_, State_->Module, State_->Harvester, *State_->Arch, &State_->Calls, &State_->ResolutionSites, &State_->EhFrame);
 		Anchored.Resolve(*Found->Strategy, Options_.Weights);
 		Out.reserve(Anchored.GetTraces().size());
 		for (const AnchoredResolution::AnchorTrace &Trace : Anchored.GetTraces())
@@ -642,7 +648,7 @@ namespace nextdumper::analyzer
 		// and its output is never presented as a result.
 		if (State->Arch && bWantAnchored)
 		{
-			AnchoredResolution Anchored(Memory_, State->Module, State->Harvester, *State->Arch, &State->Calls, &State->ResolutionSites);
+			AnchoredResolution Anchored(Memory_, State->Module, State->Harvester, *State->Arch, &State->Calls, &State->ResolutionSites, &State->EhFrame);
 			std::vector<Candidate> Verified = Anchored.Resolve(Strategy, Options_.Weights);
 
 			// Structure verification says the shape is right; it does not say the

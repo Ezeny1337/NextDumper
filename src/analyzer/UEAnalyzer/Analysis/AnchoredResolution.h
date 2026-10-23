@@ -24,6 +24,7 @@ namespace nextdumper::analyzer
 	class GlobalAccessHarvester;
 	class IStrategy;
 	class LiteralScanBatch;
+	class EhFrameIndex;
 
 	/**
 	 * @brief One anchored resolution, kept for explainability and cross-checking.
@@ -75,14 +76,18 @@ namespace nextdumper::analyzer
 		 * @param Arch      Decoder for the module's architecture.
 		 * @param Calls     Optional call graph; without it the rules that resolve
 		 *                  through callers cannot run.
+		 * @param EhFrame   Optional .eh_frame_hdr index; when present, function
+		 *                  bounds come from the compiler's unwind table rather than
+		 *                  the instruction-scanning heuristic.
 		 */
-		AnchoredResolution(IMemory *Memory, const ModuleInfo &Module, const GlobalAccessHarvester &Harvester, const IArchDecoder &Arch, const CallGraph *Calls = nullptr, const AnchorSites *Sites = nullptr)
+		AnchoredResolution(IMemory *Memory, const ModuleInfo &Module, const GlobalAccessHarvester &Harvester, const IArchDecoder &Arch, const CallGraph *Calls = nullptr, const AnchorSites *Sites = nullptr, const EhFrameIndex *EhFrame = nullptr)
 			: Memory_(Memory),
 			  Module_(Module),
 			  Harvester_(Harvester),
 			  Arch_(Arch),
 			  Calls_(Calls),
-			  SharedSites_(Sites)
+			  SharedSites_(Sites),
+			  EhFrame_(EhFrame)
 		{
 		}
 
@@ -230,6 +235,7 @@ namespace nextdumper::analyzer
 		const IArchDecoder &Arch_;
 		const CallGraph *Calls_ = nullptr;
 		const AnchorSites *SharedSites_ = nullptr;
+		const EhFrameIndex *EhFrame_ = nullptr;
 		mutable AnchorSites LocalSites_;
 		mutable std::vector<AnchorHit> Hits_;
 		mutable std::vector<AnchorTrace> Traces_;
