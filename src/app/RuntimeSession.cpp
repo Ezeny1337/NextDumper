@@ -826,6 +826,7 @@ namespace nextdumper::app
                      " planned_bytes=" + std::to_string(result.Coverage.PlannedBytes) +
                      " read_bytes=" + std::to_string(result.Coverage.ReadBytes) +
                      " read_failures=" + std::to_string(result.Coverage.ReadFailures) +
+                     " functions=" + std::to_string(result.Coverage.FunctionCount) +
                      " complete=" + std::to_string(result.Coverage.Complete));
             for (const auto &diagnostic : result.Diagnostics)
             {

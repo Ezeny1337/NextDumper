@@ -39,6 +39,7 @@ namespace nextdumper::analysis
         uint64_t PlannedBytes = 0;
         uint64_t ReadBytes = 0;
         uint64_t ReadFailures = 0;
+        uint64_t FunctionCount = 0;
         bool Complete = false;
     };
 

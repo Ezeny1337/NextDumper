@@ -4,6 +4,12 @@
 #include <cstdint>
 #include <string>
 
+#include "nextdumper/analysis/CodeWindow.hpp"
+#include "nextdumper/analysis/FunctionIndex.hpp"
+#include "nextdumper/analysis/ImageModel.hpp"
+#include "nextdumper/analysis/InstructionDecoder.hpp"
+#include "nextdumper/common/Hex.hpp"
+
 namespace nextdumper::analysis
 {
     const char *AnalysisStatusName(AnalysisStatus status)
@@ -65,15 +71,12 @@ namespace nextdumper::analysis
             return result;
         }
 
-        for (const auto &segment : module_.segments)
-        {
-            ++result.Coverage.ModuleSegments;
-            if (!segment.executable || segment.end <= segment.start)
-                continue;
-            ++result.Coverage.ExecutableSegments;
-            result.Coverage.PlannedBytes += static_cast<uint64_t>(segment.end - segment.start);
-        }
+        const ImageModel image(memory_, module_);
+        result.Coverage.ModuleSegments = image.ModuleSegmentCount();
+        result.Coverage.ExecutableSegments = image.ExecutableSegmentCount();
+        result.Coverage.PlannedBytes = image.ExecutableBytes();
 
+        bool imageHeaderReadable = false;
         std::array<uint8_t, 16> header{};
         if (!memory_.IsReadable(module_.base, header.size()))
         {
@@ -104,15 +107,108 @@ namespace nextdumper::analysis
             }
             else
             {
-                result.Status = AnalysisStatus::Unsupported;
-                result.Reason = "no-contract-matchers-registered";
+                imageHeaderReadable = true;
                 result.Diagnostics.push_back({DiagnosticSeverity::Info, "ANALYSIS_IMAGE_HEADER_READ",
                                               "ELF header readable; executable_bytes=" + std::to_string(result.Coverage.PlannedBytes) +
                                                   " executable_segments=" + std::to_string(result.Coverage.ExecutableSegments)});
             }
         }
 
-        // 目前只建立覆盖基线，不输出未经匹配器闭合的契约
+        std::string functionError;
+        const FunctionIndex functions = FunctionIndex::Build(image, functionError);
+        if (functions.IsValid())
+        {
+            result.Coverage.FunctionCount = functions.Count();
+            result.Diagnostics.push_back({DiagnosticSeverity::Info, "ANALYSIS_FUNCTION_INDEX_READY",
+                                          "functions=" + std::to_string(functions.Count()) +
+                                              " first=" + common::Hex(functions.FirstStart()) +
+                                              " last=" + common::Hex(functions.LastStart())});
+
+            FunctionRange firstRange;
+            if (functions.Find(functions.FirstStart(), firstRange))
+            {
+                result.Diagnostics.push_back({DiagnosticSeverity::Info, "ANALYSIS_FUNCTION_RANGE",
+                                              "first=[" + common::Hex(firstRange.Start) + "," +
+                                                  common::Hex(firstRange.End) + ")"});
+            }
+            else
+            {
+                result.Diagnostics.push_back({DiagnosticSeverity::Warning, "ANALYSIS_FUNCTION_RANGE_UNAVAILABLE",
+                                              "first=" + common::Hex(functions.FirstStart())});
+            }
+
+            FunctionRange lastRange;
+            if (functions.Find(functions.LastStart(), lastRange))
+            {
+                result.Diagnostics.push_back({DiagnosticSeverity::Info, "ANALYSIS_FUNCTION_RANGE",
+                                              "last=[" + common::Hex(lastRange.Start) + "," +
+                                                  common::Hex(lastRange.End) + ")"});
+            }
+            else
+            {
+                result.Diagnostics.push_back({DiagnosticSeverity::Warning, "ANALYSIS_FUNCTION_RANGE_UNAVAILABLE",
+                                              "last=" + common::Hex(functions.LastStart())});
+            }
+        }
+        else
+        {
+            result.Diagnostics.push_back({DiagnosticSeverity::Warning, "ANALYSIS_FUNCTION_INDEX_UNAVAILABLE",
+                                          "reason=" + functionError});
+        }
+
+        const auto decoder = CreateInstructionDecoder(module_.architecture);
+        if (!decoder)
+        {
+            result.Diagnostics.push_back({DiagnosticSeverity::Warning, "ANALYSIS_DECODER_UNSUPPORTED",
+                                          "architecture=" + std::string(module::ModuleArchitectureName(module_.architecture))});
+        }
+        else
+        {
+            result.Diagnostics.push_back({DiagnosticSeverity::Info, "ANALYSIS_DECODER_READY",
+                                          "architecture=" + std::string(module::ModuleArchitectureName(module_.architecture))});
+            if (functions.IsValid())
+            {
+                FunctionRange firstRange;
+                if (functions.Find(functions.FirstStart(), firstRange) &&
+                    firstRange.Start <= UINTPTR_MAX && firstRange.End > firstRange.Start)
+                {
+                    CodeWindow window(image.Memory(), 256);
+                    Instruction instruction;
+                    uintptr_t at = static_cast<uintptr_t>(firstRange.Start);
+                    size_t decoded = 0;
+                    size_t other = 0;
+                    size_t clobbered = 0;
+                    constexpr size_t kSampleLimit = 16;
+                    while (decoded < kSampleLimit && at < firstRange.End)
+                    {
+                        const uint8_t *bytes = window.At(at, 4);
+                        if (!bytes || !decoder->Decode(bytes, 4, at, instruction))
+                            break;
+                        ++decoded;
+                        if (instruction.Kind == InstructionKind::Other)
+                            ++other;
+                        if (instruction.bClobbersAll)
+                            ++clobbered;
+                        const uint8_t length = instruction.Length ? instruction.Length : 4;
+                        if (static_cast<uint64_t>(length) > firstRange.End - at)
+                            break;
+                        at += length;
+                    }
+                    result.Coverage.ReadBytes += window.BytesFetched();
+                    result.Diagnostics.push_back({DiagnosticSeverity::Info, "ANALYSIS_DECODER_SAMPLE",
+                                                  "decoded=" + std::to_string(decoded) +
+                                                      " other=" + std::to_string(other) +
+                                                      " clobbered=" + std::to_string(clobbered) +
+                                                      " bytes=" + std::to_string(window.BytesFetched())});
+                }
+            }
+        }
+
+        if (imageHeaderReadable)
+        {
+            result.Status = AnalysisStatus::Unsupported;
+            result.Reason = "no-contract-matchers-registered";
+        }
         result.Coverage.Complete = false;
         result.Diagnostics.push_back({DiagnosticSeverity::Info, "ANALYSIS_SKELETON",
                                       "No contract matchers are registered; the session reports coverage only."});
