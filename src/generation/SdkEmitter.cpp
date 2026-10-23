@@ -1,5 +1,4 @@
 #include "SdkEmitter.hpp"
-#include "Formatting.hpp"
 
 #include <algorithm>
 #include <initializer_list>
@@ -8,6 +7,7 @@
 #include <unordered_map>
 #include <utility>
 
+#include "nextdumper/common/Hex.hpp"
 #include "nextdumper/generation/JsonExport.hpp"
 #include "nextdumper/ir/ReflectionLayout.hpp"
 #include "nextdumper/ue/ContainerLayout.hpp"
@@ -18,6 +18,7 @@ namespace nextdumper::generation::detail
     using ir::EnumUnderlyingType;
     using ir::LayoutIssueKind;
     using ir::PropertyKind;
+    using ::nextdumper::common::Hex;
 
     void SdkEmitter::BasicTypes(std::ostream &stream, const CppSymbols &symbols) const
     {

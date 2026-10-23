@@ -1,5 +1,6 @@
 #include "nextdumper/reflection/ReflectionReader.hpp"
 #include "ReflectionEvidenceLog.hpp"
+#include "nextdumper/common/Hex.hpp"
 #include "nextdumper/ir/ReflectionLayout.hpp"
 #include "nextdumper/ue/BoolLayout.hpp"
 #include "nextdumper/ue/ContainerLayout.hpp"
@@ -19,6 +20,8 @@ namespace nextdumper::reflection
 {
     namespace
     {
+        using ::nextdumper::common::Hex;
+
         constexpr size_t kMaxFunctionDefinitions = 2 * 1024 * 1024;
 
         std::optional<uintptr_t> Add(uintptr_t base, int32_t offset)
@@ -223,7 +226,7 @@ namespace nextdumper::reflection
         };
         if (depth >= 32 || remaining == 0 || !path.insert(metadata.address).second)
         {
-            property.diagnostics.push_back("nested property cycle or traversal limit: address=" + std::to_string(metadata.address));
+            property.diagnostics.push_back("nested property cycle or traversal limit: address=" + Hex(metadata.address));
             RecordPropertyDetail(metadata, property, "cycle-or-traversal-limit");
             ++stats.failures;
             return result;
@@ -235,7 +238,7 @@ namespace nextdumper::reflection
         {
             // 成员读取失败或必需引用为空时，仅记录证据，不能再以其结果做对象/子属性解引用
             property.diagnostics.push_back("property details status=" + std::to_string(static_cast<int>(metadata.detailsStatus)) +
-                                           " address=" + std::to_string(metadata.address));
+                                           " address=" + Hex(metadata.address));
             if (metadata.detailsStatus != PropertyMetadata::DetailsStatus::UnsupportedLayout)
                 ++stats.failures;
             if (result.kind == PropertyKind::Unknown)
@@ -258,7 +261,7 @@ namespace nextdumper::reflection
             if (!child)
             {
                 ++stats.failures;
-                property.diagnostics.push_back("nested property header unreadable: address=" + std::to_string(address));
+                property.diagnostics.push_back("nested property header unreadable: address=" + Hex(address));
                 PropertyMetadata missing;
                 missing.address = address;
                 missing.name = "<unreadable>";
@@ -271,7 +274,7 @@ namespace nextdumper::reflection
             if (schema_.features.useFProperty && (child->ownerIsUObject || child->ownerAddress != metadata.address))
             {
                 ++stats.failures;
-                property.diagnostics.push_back("nested property owner mismatch: address=" + std::to_string(address));
+                property.diagnostics.push_back("nested property owner mismatch: address=" + Hex(address));
                 RecordPropertyDetail(*child, property, "nested-owner-mismatch");
                 return {};
             }
@@ -334,7 +337,7 @@ namespace nextdumper::reflection
                     semanticMatch = false;
                     ++stats.failures;
                     property.diagnostics.push_back("delegate signature worklist budget exhausted: signature=" +
-                                                   std::to_string(result.referencedObject));
+                                                   Hex(result.referencedObject));
                     break;
                 }
                 ::nextdumper::ir::DelegateSignatureObservation observation;
@@ -366,7 +369,7 @@ namespace nextdumper::reflection
                                                                     : semanticMatch);
         if (!semanticMatch)
         {
-            property.diagnostics.push_back("property type semantics unresolved: address=" + std::to_string(metadata.address));
+            property.diagnostics.push_back("property type semantics unresolved: address=" + Hex(metadata.address));
             result.detailsResolved = false;
         }
         if (!result.detailsResolved)
@@ -445,7 +448,7 @@ namespace nextdumper::reflection
             ++stats.failures;
             result.complete = false;
             diagnostics.push_back("property field chain status=" + std::to_string(static_cast<int>(chain.status)) +
-                                  " owner=" + std::to_string(owner) + " root=" + std::to_string(first));
+                                  " owner=" + Hex(owner) + " root=" + Hex(first));
         }
         for (const FieldMetadata &field : chain.fields)
         {
@@ -466,9 +469,9 @@ namespace nextdumper::reflection
                 ++stats.failures;
                 result.complete = false;
                 diagnostics.push_back("property owner mismatch: property=" + field.name +
-                                      " address=" + std::to_string(field.address) +
-                                      " expected_owner=" + std::to_string(owner) +
-                                      " actual_owner=" + std::to_string(field.ownerAddress));
+                                      " address=" + Hex(field.address) +
+                                      " expected_owner=" + Hex(owner) +
+                                      " actual_owner=" + Hex(field.ownerAddress));
                 continue;
             }
             const auto property = ReadProperty(field, stats);
@@ -479,7 +482,7 @@ namespace nextdumper::reflection
                 ++stats.failures;
                 result.complete = false;
                 diagnostics.push_back("property header unreadable: property=" + field.name +
-                                      " class=" + field.className + " address=" + std::to_string(field.address));
+                                      " class=" + field.className + " address=" + Hex(field.address));
             }
         }
         return result;
@@ -548,7 +551,7 @@ namespace nextdumper::reflection
         if (address == 0 || ir.functions.size() >= kMaxFunctionDefinitions)
         {
             ++ir.stats.failures;
-            ir.diagnostics.push_back("function registry budget or invalid address: address=" + std::to_string(address));
+            ir.diagnostics.push_back("function registry budget or invalid address: address=" + Hex(address));
             return nullptr;
         }
         FunctionIR &function = ir.functions.try_emplace(address).first->second;
@@ -641,7 +644,7 @@ namespace nextdumper::reflection
             function.status = ParseStatus::Partial;
             function.layoutConflicts.push_back("function exec entry unreadable or invalid: offset=" +
                                                std::to_string(schema_.ufunction.nativeFunction) +
-                                               " entry=" + std::to_string(function.execEntry) +
+                                               " entry=" + Hex(function.execEntry) +
                                                " native_flag=" + std::to_string(function.nativeFlag));
         }
         const auto parameters = objects_.StructProperties(address);
@@ -667,7 +670,7 @@ namespace nextdumper::reflection
             ++ir.stats.failures;
             type.status = ParseStatus::Partial;
             type.layoutConflicts.push_back("function field chain status=" + std::to_string(static_cast<int>(chain.status)) +
-                                           " root=" + std::to_string(first));
+                                           " root=" + Hex(first));
         }
         for (const FieldMetadata &field : chain.fields)
         {
@@ -687,8 +690,8 @@ namespace nextdumper::reflection
             {
                 ++ir.stats.failures;
                 type.status = ParseStatus::Partial;
-                type.layoutConflicts.push_back("function Children owner mismatch: address=" + std::to_string(field.address) +
-                                               " actual_outer=" + std::to_string(function->outerAddress));
+                type.layoutConflicts.push_back("function Children owner mismatch: address=" + Hex(field.address) +
+                                               " actual_outer=" + Hex(function->outerAddress));
             }
         }
     }
@@ -1030,7 +1033,7 @@ namespace nextdumper::reflection
         const auto className = objects_.ClassName(object);
         if (!name || !className)
         {
-            ir.diagnostics.push_back("type identity unreadable: address=" + std::to_string(object) +
+            ir.diagnostics.push_back("type identity unreadable: address=" + Hex(object) +
                                      " name_readable=" + std::to_string(name.has_value()) +
                                      " class_readable=" + std::to_string(className.has_value()));
             return std::nullopt;
@@ -1040,7 +1043,7 @@ namespace nextdumper::reflection
         if (!size || *size < 0 || !super)
         {
             ir.diagnostics.push_back("type header invalid or unreadable: name=" + *name +
-                                     " address=" + std::to_string(object) +
+                                     " address=" + Hex(object) +
                                      " size_offset=" + std::to_string(schema_.ustruct.propertiesSizeOffset) +
                                      " size=" + (size ? std::to_string(*size) : "unreadable") +
                                      " super_offset=" + std::to_string(schema_.ustruct.superStruct) +
@@ -1259,7 +1262,7 @@ namespace nextdumper::reflection
                                              " limit_exceeded=" + std::to_string(validation.limitExceeded) +
                                              " generation_changed=" + std::to_string(validation.generationChanged));
                 for (uintptr_t address : validation.failedAddresses)
-                    result.diagnostics.push_back("capture validation failed at address=" + std::to_string(address));
+                    result.diagnostics.push_back("capture validation failed at address=" + Hex(address));
                 if (!validation.limitExceeded && attempt == 1)
                     continue;
             }
@@ -1269,7 +1272,7 @@ namespace nextdumper::reflection
         result.diagnostics.push_back("capture attempts=" + std::to_string(result.capture.attempts) +
                                      "; consistency covers observed bytes, not an atomic process snapshot");
         for (const auto &failure : result.capture.readFailureSamples)
-            result.diagnostics.push_back("capture read failure: address=" + std::to_string(failure.address) +
+            result.diagnostics.push_back("capture read failure: address=" + Hex(failure.address) +
                                          " requested=" + std::to_string(failure.requested) +
                                          " transferred=" + std::to_string(failure.transferred) +
                                          " read_error=" + std::to_string(failure.error));
@@ -1330,7 +1333,7 @@ namespace nextdumper::reflection
                                         uint32_t flags)
         {
             const auto name = objects_.Name(object);
-            return "index=" + std::to_string(index) + " address=" + std::to_string(object) +
+            return "index=" + std::to_string(index) + " address=" + Hex(object) +
                    " class=" + className + " name=" + (name ? *name : "<unreadable>") +
                    " flags=" + std::to_string(flags);
         };
@@ -1350,10 +1353,10 @@ namespace nextdumper::reflection
             const size_t count = ++failureReasons[reason];
             if (diagnostic_)
                 diagnostic_("reflection_object_failure reason=" + reason +
-                            " index=" + std::to_string(index) + " address=" + std::to_string(address));
+                            " index=" + std::to_string(index) + " address=" + Hex(address));
             if (count <= 8)
                 result.diagnostics.push_back("reflection object failure: reason=" + reason +
-                                             " index=" + std::to_string(index) + " address=" + std::to_string(address));
+                                             " index=" + std::to_string(index) + " address=" + Hex(address));
         };
         auto *performance = memory_.Performance();
         const auto validate = [&]()
@@ -1472,7 +1475,7 @@ namespace nextdumper::reflection
                     ++result.stats.emptyObjectSlots;
                     recordObjectDiagnostic(result.stats.emptyObjectSlots, [&]
                                            { return "empty object slot: index=" + std::to_string(index) +
-                                                    " read_address=" + std::to_string(objectResult.readAddress); });
+                                                    " read_address=" + Hex(objectResult.readAddress); });
                 }
                 else
                 {
@@ -1481,8 +1484,8 @@ namespace nextdumper::reflection
                     recordObjectDiagnostic(result.stats.objectReadFailures, [&]
                                            { return "object slot could not be read: index=" + std::to_string(index) +
                                                     " reason=" + ::nextdumper::ue::ObjectReadStatusName(objectResult.status) +
-                                                    " read_address=" + std::to_string(objectResult.readAddress) +
-                                                    " pointer=" + std::to_string(objectResult.address) +
+                                                    " read_address=" + Hex(objectResult.readAddress) +
+                                                    " pointer=" + Hex(objectResult.address) +
                                                     " read_error=" + std::to_string(static_cast<int>(objectResult.readError)); });
                 }
                 continue;
@@ -1503,7 +1506,7 @@ namespace nextdumper::reflection
                 ++result.stats.failures;
                 recordObjectDiagnostic(result.stats.classNameReadFailures, [&]
                                        { return "object class name could not be read: index=" + std::to_string(index) +
-                                                " address=" + std::to_string(object); });
+                                                " address=" + Hex(object); });
                 continue;
             }
             auto classification = classKinds.find(*classAddress);
@@ -1554,7 +1557,7 @@ namespace nextdumper::reflection
                 memory_.Invalidate();
                 recordObjectDiagnostic(result.stats.identityFailures, [&]
                                        { return "reflection object identity mismatch: index=" + std::to_string(index) +
-                                                " address=" + std::to_string(object); });
+                                                " address=" + Hex(object); });
                 continue;
             }
             const auto objectFlags = objects_.Flags(object);
@@ -1703,13 +1706,13 @@ namespace nextdumper::reflection
             {
                 if (++detailCounts[detail.reason + ":" + detail.normalizedClass] <= 8)
                     result.diagnostics.push_back("property detail failure: owner=" + owner +
-                                                 " owner_address=" + std::to_string(ownerAddress) +
+                                                 " owner_address=" + Hex(ownerAddress) +
                                                  " root=" + property.name + " property=" + detail.name +
                                                  " property_class=" + detail.reflectedClass +
-                                                 " address=" + std::to_string(detail.address) +
+                                                 " address=" + Hex(detail.address) +
                                                  " reason=" + detail.reason +
-                                                 " referenced_address=" + std::to_string(detail.referencedAddress) +
-                                                 " secondary_address=" + std::to_string(detail.secondaryAddress));
+                                                 " referenced_address=" + Hex(detail.referencedAddress) +
+                                                 " secondary_address=" + Hex(detail.secondaryAddress));
             }
         };
         for (const TypeIR &type : result.types)

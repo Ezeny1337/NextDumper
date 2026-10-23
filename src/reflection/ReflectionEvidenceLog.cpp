@@ -7,6 +7,7 @@
 #include <tuple>
 #include <unordered_set>
 
+#include "nextdumper/common/Hex.hpp"
 #include "nextdumper/ue/FunctionSemantics.hpp"
 
 namespace nextdumper::reflection::detail
@@ -15,6 +16,7 @@ namespace nextdumper::reflection::detail
     using ir::PropertyIR;
     using ir::PropertyKind;
     using ir::TypeReferenceIR;
+    using ::nextdumper::common::Hex;
 
     void LogReflectionEvidence(const ir::ReflectionIR &reflection, uintptr_t moduleBase,
                                const std::function<void(const std::string &)> &diagnostic)
@@ -27,7 +29,7 @@ namespace nextdumper::reflection::detail
             if (owners.insert(address).second)
             {
                 std::ostringstream line;
-                line << "reflection_owner address=0x" << std::hex << address << " full_name=" << std::quoted(name);
+                line << "reflection_owner address=" << Hex(address) << " full_name=" << std::quoted(name);
                 diagnostic(line.str());
             }
         };
@@ -62,7 +64,7 @@ namespace nextdumper::reflection::detail
                 return;
             const auto &[entry, readable, executable, inModule] = key;
             std::ostringstream line;
-            line << "exec_entry_context id=" << id << " entry=0x" << std::hex << entry << std::dec
+            line << "exec_entry_context id=" << id << " entry=" << Hex(entry)
                  << " functions=" << entryCounts.at(key);
             if (!readable)
                 line << " readable=0";
@@ -71,7 +73,7 @@ namespace nextdumper::reflection::detail
             if (!inModule)
                 line << " in_module=0";
             if (inModule)
-                line << " rva=0x" << std::hex << (entry - moduleBase);
+                line << " rva=" << Hex(entry - moduleBase);
             diagnostic(line.str());
         };
         diagnostic("delegate_signature_summary total=" + std::to_string(reflection.delegateSignatures.size()) +
@@ -85,8 +87,8 @@ namespace nextdumper::reflection::detail
         for (const auto &signature : reflection.delegateSignatures)
         {
             std::ostringstream line;
-            line << "delegate_signature address=0x" << std::hex << signature.address << " outer=0x" << signature.outerAddress
-                 << " children_root=0x" << signature.childrenRoot << std::dec
+            line << "delegate_signature address=" << Hex(signature.address) << " outer=" << Hex(signature.outerAddress)
+                 << " children_root=" << Hex(signature.childrenRoot)
                  << " exported=" << signature.exported << " owner_exported=" << signature.ownerExported
                  << " found_in_children=" << signature.foundInChildren << " children_root_readable=" << signature.childrenRootReadable
                  << " children_status=" << signature.childrenStatus << " definition_status=" << signature.definitionStatus
@@ -102,35 +104,35 @@ namespace nextdumper::reflection::detail
             for (const auto &message : property.diagnostics)
             {
                 std::ostringstream line;
-                line << "property_diagnostic owner=" << std::quoted(owner) << " owner_address=" << ownerAddress
+                line << "property_diagnostic owner=" << std::quoted(owner) << " owner_address=" << Hex(ownerAddress)
                      << " scope=" << scope << " property=" << std::quoted(property.name)
-                     << " address=" << property.address << " message=" << std::quoted(message);
+                     << " address=" << Hex(property.address) << " message=" << std::quoted(message);
                 diagnostic(line.str());
             }
             for (const auto &detail : property.detailDiagnostics)
             {
                 std::ostringstream line;
                 line << "property_detail owner=" << std::quoted(owner) << " scope=" << scope
-                     << " root=" << std::quoted(property.name) << " root_address=" << property.address
-                     << " node=" << std::quoted(detail.name) << " address=" << detail.address
-                     << " class=" << std::quoted(detail.reflectedClass) << " class_address=" << detail.classAddress
-                     << " next=" << detail.nextAddress << " immediate_owner=" << detail.immediateOwner
+                     << " root=" << std::quoted(property.name) << " root_address=" << Hex(property.address)
+                     << " node=" << std::quoted(detail.name) << " address=" << Hex(detail.address)
+                     << " class=" << std::quoted(detail.reflectedClass) << " class_address=" << Hex(detail.classAddress)
+                     << " next=" << Hex(detail.nextAddress) << " immediate_owner=" << Hex(detail.immediateOwner)
                      << " owner_is_uobject=" << detail.ownerIsUObject << " header_available=" << detail.headerAvailable
                      << " reason=" << detail.reason << " status=" << detail.detailsStatus
                      << " offset=" << detail.offset << " element_size=" << detail.elementSize << " array_dim=" << detail.arrayDim
-                     << " flags=" << detail.flags << " reference=" << detail.referencedAddress << " secondary=" << detail.secondaryAddress
+                     << " flags=" << detail.flags << " reference=" << Hex(detail.referencedAddress) << " secondary=" << Hex(detail.secondaryAddress)
                      << " reference_class=" << std::quoted(detail.referencedClass) << " secondary_class=" << std::quoted(detail.secondaryClass)
                      << " object_class_null=" << detail.objectPropertyClassNull
-                     << " object_class_pointer_address=" << detail.objectPropertyClassPointerAddress
+                     << " object_class_pointer_address=" << Hex(detail.objectPropertyClassPointerAddress)
                      << " bool_field_size=" << static_cast<unsigned int>(detail.boolean.fieldSize)
                      << " bool_byte_offset=" << static_cast<unsigned int>(detail.boolean.byteOffset)
                      << " bool_byte_mask=" << static_cast<unsigned int>(detail.boolean.byteMask)
                      << " bool_field_mask=" << static_cast<unsigned int>(detail.boolean.fieldMask);
                 diagnostic(line.str());
                 for (const auto &read : detail.reads)
-                    diagnostic("property_detail_read node=" + std::to_string(detail.address) +
+                    diagnostic("property_detail_read node=" + Hex(detail.address) +
                                " member=" + read.member + " selected_offset=" + std::to_string(read.offset) +
-                               " address=" + std::to_string(read.address) + " raw=" + std::to_string(read.rawValue) +
+                               " address=" + Hex(read.address) + " raw=" + std::to_string(read.rawValue) +
                                " error=" + std::to_string(read.error) + " requested=" + std::to_string(read.requested) +
                                " transferred=" + std::to_string(read.transferred) + " status=" + read.status);
             }
@@ -139,7 +141,7 @@ namespace nextdumper::reflection::detail
             {
                 if (depth >= 32 || remaining == 0)
                 {
-                    diagnostic("delegate_reference traversal_limit=1 root=" + std::to_string(property.address) + " path=" + path);
+                    diagnostic("delegate_reference traversal_limit=1 root=" + Hex(property.address) + " path=" + path);
                     return;
                 }
                 --remaining;
@@ -147,12 +149,12 @@ namespace nextdumper::reflection::detail
                 {
                     logOwner(ownerAddress, owner);
                     std::ostringstream line;
-                    line << "delegate_reference owner=0x" << std::hex << ownerAddress << std::dec << " scope=" << scope
-                         << " root=" << std::quoted(property.name) << " root_address=" << property.address
-                         << " path=" << path << " node=" << reference.metadataAddress
+                    line << "delegate_reference owner=" << Hex(ownerAddress) << " scope=" << scope
+                         << " root=" << std::quoted(property.name) << " root_address=" << Hex(property.address)
+                         << " path=" << path << " node=" << Hex(reference.metadataAddress)
                          << " class=" << reference.reflectedClass
                          << " storage_kind=" << ::nextdumper::ir::DelegateStorageKindName(reference.delegateStorage)
-                         << " signature=" << reference.referencedObject
+                         << " signature=" << Hex(reference.referencedObject)
                          << " details_resolved=" << reference.detailsResolved;
                     diagnostic(line.str());
                 }
@@ -168,7 +170,7 @@ namespace nextdumper::reflection::detail
         for (const auto &type : reflection.types)
         {
             for (const auto &message : type.layoutConflicts)
-                diagnostic("type_conflict owner=" + type.fullName + " address=" + std::to_string(type.address) + " message=" + message);
+                diagnostic("type_conflict owner=" + type.fullName + " address=" + Hex(type.address) + " message=" + message);
             for (const auto &property : type.properties)
                 propertyEvidence(property, type.fullName, type.address, "type-field");
         }
@@ -200,8 +202,8 @@ namespace nextdumper::reflection::detail
                 logOwner(function.outerAddress, function.outerFullName);
                 const EntryKey key{function.execEntry, function.entryReadable, function.entryExecutable, function.entryInModule};
                 std::ostringstream line;
-                line << "function_entry address=0x" << std::hex << address << " owner=0x" << function.outerAddress
-                     << " flags=0x" << function.flags << std::dec;
+                line << "function_entry address=" << Hex(address) << " owner=" << Hex(function.outerAddress)
+                     << " flags=" << Hex(function.flags);
                 if (const auto id = entryIds.find(key); id != entryIds.end())
                 {
                     logEntry(key, id->second);
@@ -209,7 +211,7 @@ namespace nextdumper::reflection::detail
                 }
                 else
                 {
-                    line << " entry=0x" << std::hex << function.execEntry << std::dec;
+                    line << " entry=" << Hex(function.execEntry);
                     if (!function.entryReadable)
                         line << " readable=0";
                     if (!function.entryExecutable)
@@ -217,7 +219,7 @@ namespace nextdumper::reflection::detail
                     if (!function.entryInModule)
                         line << " in_module=0";
                     if (function.execEntryRva)
-                        line << " rva=0x" << std::hex << *function.execEntryRva << std::dec;
+                        line << " rva=" << Hex(*function.execEntryRva);
                 }
                 line << " name=" << std::quoted(function.name)
                      << " params=" << static_cast<unsigned int>(function.headerNumParams) << '/' << function.headerParamSize;
@@ -245,7 +247,7 @@ namespace nextdumper::reflection::detail
                 diagnostic(line.str());
             }
             for (const auto &message : function.layoutConflicts)
-                diagnostic("function_conflict address=" + std::to_string(address) + " message=" + message);
+                diagnostic("function_conflict address=" + Hex(address) + " message=" + message);
             for (const auto &property : function.parameters)
                 propertyEvidence(property, function.fullName, address, "function-parameter");
             for (const auto &property : function.locals)
@@ -277,8 +279,8 @@ namespace nextdumper::reflection::detail
                 continue;
             }
             std::ostringstream line;
-            line << "container_storage_candidate property=0x" << std::hex << observation.propertyAddress
-                 << " owner=0x" << observation.ownerAddress << " address=0x" << observation.address << std::dec
+            line << "container_storage_candidate property=" << Hex(observation.propertyAddress)
+                 << " owner=" << Hex(observation.ownerAddress) << " address=" << Hex(observation.address)
                  << " owner_is_uobject=" << observation.ownerIsUObject
                  << " name=" << std::quoted(observation.propertyName) << " class=" << observation.propertyClass
                  << " member=" << observation.member << " offset=" << observation.offset
@@ -302,7 +304,7 @@ namespace nextdumper::reflection::detail
                 line << std::setw(2) << static_cast<unsigned int>(byte);
             diagnostic(line.str());
             for (const auto &flag : observation.flagCandidates)
-                diagnostic("container_flag_candidate property=" + std::to_string(observation.propertyAddress) +
+                diagnostic("container_flag_candidate property=" + Hex(observation.propertyAddress) +
                            " offset=" + std::to_string(flag.offset) + " width=" + std::to_string(flag.width) +
                            " raw=" + std::to_string(flag.raw) + " known_value=" + std::to_string(flag.knownValue) +
                            " basis=" + flag.basis + " width_selected=0");
@@ -312,7 +314,7 @@ namespace nextdumper::reflection::detail
                        " samples=8 full_records=reflection.json/container_storage_evidence/observations");
         for (const auto &enumeration : reflection.enums)
             for (const auto &message : enumeration.diagnostics)
-                diagnostic("enum_diagnostic owner=" + enumeration.fullName + " address=" + std::to_string(enumeration.address) + " message=" + message);
+                diagnostic("enum_diagnostic owner=" + enumeration.fullName + " address=" + Hex(enumeration.address) + " message=" + message);
     }
 
 } // namespace nextdumper::reflection::detail

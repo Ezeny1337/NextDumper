@@ -5,6 +5,7 @@
 #include <chrono>
 #include <memory>
 
+#include "nextdumper/common/Hex.hpp"
 #include "nextdumper/memory/ReadDiagnostics.hpp"
 #include "nextdumper/module/ElfSymbols.hpp"
 
@@ -15,6 +16,8 @@ namespace nextdumper::binding
 {
     namespace
     {
+        using ::nextdumper::common::Hex;
+
         EArch ToAnalyzerArchitecture(module::ModuleArchitecture architecture)
         {
             switch (architecture)
@@ -98,7 +101,7 @@ namespace nextdumper::binding
                         if (progress)
                             progress("locator_symbol name=" + name + " source=" + source +
                                      " status=" + (symbols.status.contains(name) ? module::SymbolStatusName(symbols.status.at(name)) : "incomplete") +
-                                     " address=" + std::to_string(address));
+                                     " address=" + Hex(address));
                     }
                 };
                 append(objectSymbols, result.objectRoots);

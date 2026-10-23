@@ -6,10 +6,14 @@
 #include <limits>
 #include <optional>
 
+#include "nextdumper/common/Hex.hpp"
+
 namespace nextdumper::binding
 {
     namespace
     {
+        using ::nextdumper::common::Hex;
+
         std::optional<uintptr_t> Add(uintptr_t base, uintptr_t offset)
         {
             if (base > UINTPTR_MAX - offset)
@@ -403,7 +407,7 @@ namespace nextdumper::binding
                 }
                 report.evidence.push_back("name pool publication boundary current_block=" + std::to_string(current) +
                                           " byte_cursor=" + std::to_string(cursor) +
-                                          " published_block=" + std::to_string(publishedBlock) +
+                                          " published_block=" + Hex(publishedBlock) +
                                           " readable=" + std::to_string(readable) +
                                           " validated=" + std::to_string(report.accepted));
                 if (!report.accepted)

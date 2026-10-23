@@ -1,4 +1,5 @@
 #include "ProbeContext.hpp"
+#include "nextdumper/common/Hex.hpp"
 #include "nextdumper/ue/FunctionSemantics.hpp"
 
 #include <algorithm>
@@ -10,6 +11,8 @@
 
 namespace nextdumper::ue::schema_probe
 {
+    using ::nextdumper::common::Hex;
+
     bool SchemaProbeContext::ResolveFunctionSchema(EngineSchema &schema, SchemaResolutionReport &report) const
     {
         if (!bootstrap_ || !bootstrap_->IsValid())
@@ -64,7 +67,7 @@ namespace nextdumper::ue::schema_probe
             {
                 ++excludedDefaultObjects;
                 if (excludedDefaultObjects <= 8)
-                    report.evidence.push_back("excluded UFunction CDO address=" + std::to_string(object.address) +
+                    report.evidence.push_back("excluded UFunction CDO address=" + Hex(object.address) +
                                               " class=" + object.className + " object_flags=" + std::to_string(objectFlags));
                 continue;
             }
@@ -210,7 +213,7 @@ namespace nextdumper::ue::schema_probe
                 report.evidenceComplete = false;
             if (!sample.parameterChainValid && reportedInvalidChains < 8)
             {
-                report.evidence.push_back("UFunction parameter chain rejected address=" + std::to_string(sample.address) +
+                report.evidence.push_back("UFunction parameter chain rejected address=" + Hex(sample.address) +
                                           " function=" + sample.name + " class=" + sample.className +
                                           " chain_status=" + std::to_string(static_cast<int>(sample.chainStatus)) +
                                           " sample_state=" + std::to_string(static_cast<int>(sample.parameterChainState)));
@@ -537,7 +540,7 @@ namespace nextdumper::ue::schema_probe
                                                           ? static_cast<uint16_t>(summary.returnOffset)
                                                           : std::numeric_limits<uint16_t>::max();
                 returnSamples += " sample_index=" + std::to_string(index) +
-                                 " address=" + std::to_string(sample.address) +
+                                 " address=" + Hex(sample.address) +
                                  " function=" + sample.name + " class=" + sample.className +
                                  " object_flags=" + std::to_string(sample.objectFlags) +
                                  " readable=" + std::to_string(observation.readable) +
@@ -726,8 +729,8 @@ namespace nextdumper::ue::schema_probe
                                       std::to_string(diagnosticNative.nonNativeOutsideModuleExecutableHits) +
                                       " non_native_missing=" + std::to_string(diagnosticNative.nonNativeMissingHits) +
                                       " equivalent_candidates=" + std::to_string(equivalentNativeCandidates) +
-                                      " module_base=" + std::to_string(moduleBase_) +
-                                      " module_end=" + std::to_string(moduleEnd_) + candidateSummary);
+                                      " module_base=" + Hex(moduleBase_) +
+                                      " module_end=" + Hex(moduleEnd_) + candidateSummary);
             return false;
         }
         schema.ufunction.nativeFunction = bestNative.offset;

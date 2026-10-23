@@ -1,5 +1,4 @@
 #include "nextdumper/generation/JsonExport.hpp"
-#include "Formatting.hpp"
 #include "nextdumper/ue/ContainerLayout.hpp"
 #include "nextdumper/ir/ReflectionLayout.hpp"
 
@@ -8,9 +7,11 @@
 #include <map>
 #include <ostream>
 
+#include "nextdumper/common/Hex.hpp"
+
 namespace nextdumper::generation
 {
-    using detail::Hex;
+    using ::nextdumper::common::Hex;
 
     std::string EscapeJson(std::string_view value)
     {

@@ -1,5 +1,6 @@
 #include "ProbeContext.hpp"
 #include "PropertyLayout.hpp"
+#include "nextdumper/common/Hex.hpp"
 #include "nextdumper/ue/BoolLayout.hpp"
 
 #include <algorithm>
@@ -15,6 +16,8 @@ namespace nextdumper::ue::schema_probe
 {
     namespace
     {
+        using ::nextdumper::common::Hex;
+
         constexpr size_t kMaxSamplesPerKind = 32;
         constexpr size_t kMaxSamplesPerOwner = 4;
         constexpr size_t kMaxProperties = 262144;
@@ -465,14 +468,14 @@ namespace nextdumper::ue::schema_probe
                 if (!budget.Read(sample.metadata.address, tail.repNotify, name.data(), static_cast<size_t>(schema.fname.size)))
                 {
                     report.evidence.push_back("property subtype tail rejected: layout=" + std::string(PropertyTailName(tail.layout)) +
-                                              " sample=" + std::to_string(sample.metadata.address) + " reason=repnotify-unreadable");
+                                              " sample=" + Hex(sample.metadata.address) + " reason=repnotify-unreadable");
                     return false;
                 }
                 const auto address = Add(sample.metadata.address, tail.repNotify);
                 if (!address || !model.Names().ReadFName(*address))
                 {
                     report.evidence.push_back("property subtype tail rejected: layout=" + std::string(PropertyTailName(tail.layout)) +
-                                              " sample=" + std::to_string(sample.metadata.address) + " reason=repnotify-invalid");
+                                              " sample=" + Hex(sample.metadata.address) + " reason=repnotify-invalid");
                     return false;
                 }
                 for (int32_t link = 0; link < 4; ++link)
@@ -481,7 +484,7 @@ namespace nextdumper::ue::schema_probe
                     if (!budget.Read(sample.metadata.address, tail.links + link * static_cast<int32_t>(sizeof(uintptr_t)), value))
                     {
                         report.evidence.push_back("property subtype tail rejected: layout=" + std::string(PropertyTailName(tail.layout)) +
-                                                  " sample=" + std::to_string(sample.metadata.address) + " link=" + std::to_string(link) +
+                                                  " sample=" + Hex(sample.metadata.address) + " link=" + std::to_string(link) +
                                                   " reason=property-link-unreadable");
                         return false;
                     }
@@ -491,8 +494,8 @@ namespace nextdumper::ue::schema_probe
                         if (!field || !IsPropertyFieldKind(field->kind))
                         {
                             report.evidence.push_back("property subtype tail rejected: layout=" + std::string(PropertyTailName(tail.layout)) +
-                                                      " sample=" + std::to_string(sample.metadata.address) + " link=" + std::to_string(link) +
-                                                      " raw_value=" + std::to_string(value) + " reason=property-link-invalid");
+                                                      " sample=" + Hex(sample.metadata.address) + " link=" + std::to_string(link) +
+                                                      " raw_value=" + Hex(value) + " reason=property-link-invalid");
                             return false;
                         }
                     }
@@ -666,8 +669,8 @@ namespace nextdumper::ue::schema_probe
                     rawReferences.insert(rawReference);
                     targetClasses.insert(targetName);
                     rejectionReasons.insert(reason);
-                    observations << " {property=0x" << std::hex << sample.metadata.address
-                                 << " owner=0x" << sample.rootOwner << " raw=0x" << rawReference << std::dec
+                    observations << " {property=" << Hex(sample.metadata.address)
+                                 << " owner=" << Hex(sample.rootOwner) << " raw=" << Hex(rawReference)
                                  << " target=" << std::quoted(targetName) << " state=" << ObservationName(state)
                                  << " reason=" << std::quoted(reason) << '}';
                 }
@@ -812,9 +815,9 @@ namespace nextdumper::ue::schema_probe
                         }
                     }
 
-                    observations << " {property=0x" << std::hex << sample.metadata.address
-                                 << " owner=0x" << sample.metadata.ownerAddress << " root_owner=0x" << sample.rootOwner
-                                 << " raw=0x" << rawReference << " child_owner=0x" << childOwner << std::dec
+                    observations << " {property=" << Hex(sample.metadata.address)
+                                 << " owner=" << Hex(sample.metadata.ownerAddress) << " root_owner=" << Hex(sample.rootOwner)
+                                 << " raw=" << Hex(rawReference) << " child_owner=" << Hex(childOwner)
                                  << " child_owner_is_uobject=" << childOwnerIsUObject
                                  << " child_name=" << std::quoted(childName) << " child_class=" << std::quoted(childClass)
                                  << " state=" << matchState << " reason=" << std::quoted(rejectionReason) << '}';
@@ -916,9 +919,9 @@ namespace nextdumper::ue::schema_probe
                         ++mismatches;
                         break;
                     }
-                    observations << " {property=0x" << std::hex << sample.metadata.address
-                                 << " owner=0x" << sample.metadata.ownerAddress << " root_owner=0x" << sample.rootOwner
-                                 << " raw=0x" << first << " secondary=0x" << second << std::dec
+                    observations << " {property=" << Hex(sample.metadata.address)
+                                 << " owner=" << Hex(sample.metadata.ownerAddress) << " root_owner=" << Hex(sample.rootOwner)
+                                 << " raw=" << Hex(first) << " secondary=" << Hex(second)
                                  << " class=" << sample.metadata.normalizedClassName << " name=" << std::quoted(sample.metadata.name)
                                  << " scope=" << sample.scope << " state=" << ObservationName(state) << '}';
                 }

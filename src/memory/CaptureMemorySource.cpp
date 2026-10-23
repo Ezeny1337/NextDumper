@@ -5,8 +5,15 @@
 #include <array>
 #include <stdexcept>
 
+#include "nextdumper/common/Hex.hpp"
+
 namespace nextdumper::memory
 {
+    namespace
+    {
+        using ::nextdumper::common::Hex;
+    }
+
     void CaptureMemorySource::Reset() const
     {
         auto *performance = Performance();
@@ -31,7 +38,7 @@ namespace nextdumper::memory
         if (readFailureSamples_.size() < 16)
             readFailureSamples_.push_back(read);
         if (diagnostic_)
-            diagnostic_("capture_read_failure address=" + std::to_string(read.address) +
+            diagnostic_("capture_read_failure address=" + Hex(read.address) +
                         " error=" + std::to_string(static_cast<int32_t>(read.error)) +
                         " requested=" + std::to_string(read.requested) + " transferred=" + std::to_string(read.transferred) +
                         " errno=" + std::to_string(read.systemError));
@@ -214,7 +221,7 @@ namespace nextdumper::memory
                 continue;
             changedDuringRead_ = true;
             if (diagnostic_)
-                diagnostic_("capture_overlap_change address=" + std::to_string(start) + " size=" + std::to_string(length));
+                diagnostic_("capture_overlap_change address=" + Hex(start) + " size=" + std::to_string(length));
             if (changesDuringRead_.size() < 8)
             {
                 const size_t sampleSize = std::min<size_t>(length, 16);
@@ -289,7 +296,7 @@ namespace nextdumper::memory
             else
                 return;
             if (diagnostic_)
-                diagnostic_("capture_validation_range address=" + std::to_string(address) +
+                diagnostic_("capture_validation_range address=" + Hex(address) +
                             " size=" + std::to_string(bytes.size()) +
                             " changed=" + std::to_string(read.Ok()) +
                             " error=" + std::to_string(static_cast<int32_t>(read.error)) +

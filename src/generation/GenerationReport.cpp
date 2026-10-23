@@ -1,13 +1,15 @@
 #include "GenerationReport.hpp"
-#include "Formatting.hpp"
 
 #include <iomanip>
 #include <sstream>
 #include <string_view>
 
+#include "nextdumper/common/Hex.hpp"
+
 namespace nextdumper::generation::detail
 {
     using ir::PropertyKind;
+    using ::nextdumper::common::Hex;
 
     void GenerationReport::RegisterOwner(GenerationOwner owner)
     {

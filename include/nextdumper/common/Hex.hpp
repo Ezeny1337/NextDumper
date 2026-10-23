@@ -3,9 +3,10 @@
 #include <cstdint>
 #include <string>
 
-namespace nextdumper::generation::detail
+namespace nextdumper::common
 {
-    inline std::string Hex(uint64_t value)
+    // 十六进制输出统一为 0x 前缀大写，日志与诊断中的运行时地址均使用它
+    [[nodiscard]] inline std::string Hex(uint64_t value)
     {
         constexpr char digits[] = "0123456789ABCDEF";
         char buffer[2 + sizeof(value) * 2];
@@ -21,4 +22,4 @@ namespace nextdumper::generation::detail
         return {at, buffer + sizeof(buffer)};
     }
 
-} // namespace nextdumper::generation::detail
+} // namespace nextdumper::common

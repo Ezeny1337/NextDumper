@@ -3,8 +3,12 @@
 #include <array>
 #include <cstring>
 
+#include "nextdumper/common/Hex.hpp"
+
 namespace nextdumper::ue::schema_probe
 {
+    using ::nextdumper::common::Hex;
+
     bool SchemaProbeContext::ResolveStructSchema(EngineSchema &schema, SchemaResolutionReport &report) const
     {
         const auto guid = FindObjectByName(schema, names_.guidStruct);
@@ -116,7 +120,7 @@ namespace nextdumper::ue::schema_probe
                     allPlausible = allPlausible && plausible;
                     if (index != 0)
                         evidence += ",";
-                    evidence += std::to_string(object) + "/" + std::to_string(size) + "/" +
+                    evidence += Hex(object) + "/" + std::to_string(size) + "/" +
                                 (readable ? std::to_string(raw) : "unreadable") + "/" +
                                 std::to_string(static_cast<int>(read.error)) + "/" + std::to_string(read.transferred);
                 }

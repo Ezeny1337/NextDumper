@@ -15,6 +15,7 @@
 #include "nextdumper/binding/CommonObjectCollector.hpp"
 #include "nextdumper/binding/BindingBuilder.hpp"
 #include "nextdumper/binding/GlobalLocator.hpp"
+#include "nextdumper/common/Hex.hpp"
 #include "nextdumper/compat/GameProfile.hpp"
 #include "nextdumper/memory/ReadDiagnostics.hpp"
 #include "nextdumper/memory/RemoteMemorySource.hpp"
@@ -49,6 +50,8 @@ namespace nextdumper::app
 
     namespace
     {
+        using ::nextdumper::common::Hex;
+
         const char *AddressMeaningName(AddressMeaning meaning)
         {
             switch (meaning)
@@ -61,13 +64,6 @@ namespace nextdumper::app
                 return "resolved-value";
             }
             return "unknown";
-        }
-
-        std::string HexAddress(uintptr_t address)
-        {
-            std::ostringstream stream;
-            stream << "0x" << std::hex << std::uppercase << address;
-            return stream.str();
         }
 
         const char *LevelName(RuntimeLogLevel level)
@@ -583,18 +579,18 @@ namespace nextdumper::app
         diagnosis_.moduleName = context_.Module().name;
         diagnosis_.architecture = module::ModuleArchitectureName(context_.Module().architecture);
         diagnosis_.pointerWidth = context_.Module().pointerWidth;
-        Note("Module=" + context_.Module().name + " base=" + std::to_string(context_.Module().base) +
+        Note("Module=" + context_.Module().name + " base=" + Hex(context_.Module().base) +
              " architecture=" + module::ModuleArchitectureName(context_.Module().architecture) +
              " pointer_width=" + std::to_string(context_.Module().pointerWidth));
         Note(RuntimeLogLevel::Debug, "module_identity run_id=" + provenance_.runId +
                                          " pid=" + std::to_string(pid) +
-                                         " base=" + HexAddress(context_.Module().base) +
-                                         " end=" + HexAddress(context_.Module().end) +
+                                         " base=" + Hex(context_.Module().base) +
+                                         " end=" + Hex(context_.Module().end) +
                                          " address_space_generation=" + std::to_string(memory_->AddressSpaceGeneration()) +
                                          " identity=mapped-segments-not-content-hash");
         for (const auto &segment : context_.Module().segments)
-            Note(RuntimeLogLevel::Debug, "module_segment start=" + HexAddress(segment.start) +
-                                             " end=" + HexAddress(segment.end) + " file_offset=" + HexAddress(segment.fileOffset) +
+            Note(RuntimeLogLevel::Debug, "module_segment start=" + Hex(segment.start) +
+                                             " end=" + Hex(segment.end) + " file_offset=" + Hex(segment.fileOffset) +
                                              " readable=" + std::to_string(segment.readable) +
                                              " writable=" + std::to_string(segment.writable) +
                                              " executable=" + std::to_string(segment.executable) +
@@ -784,14 +780,14 @@ namespace nextdumper::app
         {
             const LocatedAddress &candidate = candidates.objectRoots[index];
             Note(RuntimeLogLevel::Debug, "object_candidate[" + std::to_string(index) + "] address=" +
-                                             std::to_string(candidate.address) + " meaning=" + AddressMeaningName(candidate.meaning) +
+                                             Hex(candidate.address) + " meaning=" + AddressMeaningName(candidate.meaning) +
                                              " confidence=" + std::to_string(candidate.confidence) + " source=" + candidate.source);
         }
         for (size_t index = 0; index < candidates.nameRoots.size(); ++index)
         {
             const LocatedAddress &candidate = candidates.nameRoots[index];
             Note(RuntimeLogLevel::Debug, "name_candidate[" + std::to_string(index) + "] address=" +
-                                             std::to_string(candidate.address) + " meaning=" + AddressMeaningName(candidate.meaning) +
+                                             Hex(candidate.address) + " meaning=" + AddressMeaningName(candidate.meaning) +
                                              " confidence=" + std::to_string(candidate.confidence) + " source=" + candidate.source);
         }
 
@@ -1074,7 +1070,7 @@ namespace nextdumper::app
         for (const auto &obj : commonObjects)
         {
             Note(RuntimeLogLevel::Debug, "common_object: " + obj.name +
-                                             " address=" + HexAddress(obj.address) +
+                                             " address=" + Hex(obj.address) +
                                              " index=" + std::to_string(obj.index));
         }
 
@@ -1246,7 +1242,7 @@ namespace nextdumper::app
         for (const auto &[reason, count] : runtime.skipped)
             Note(RuntimeLogLevel::Debug, "runtime_value_skipped reason=" + reason + " count=" + std::to_string(count));
         Note(RuntimeLogLevel::Debug, "sparse_binding_evidence status=" + runtime.sparse.status +
-                                         " root=" + HexAddress(runtime.sparse.address) + " source=" + runtime.sparse.source +
+                                         " root=" + Hex(runtime.sparse.address) + " source=" + runtime.sparse.source +
                                          " records=" + std::to_string(runtime.sparse.delegates.size()) +
                                          " enumeration_complete=" + std::to_string(runtime.sparse.enumerationComplete) +
                                          " observations_stable=" + std::to_string(runtime.sparse.capture.observationsStable) +

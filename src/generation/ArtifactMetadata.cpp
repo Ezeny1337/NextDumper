@@ -1,8 +1,8 @@
 #include "ArtifactMetadata.hpp"
-#include "Formatting.hpp"
 
 #include <ostream>
 
+#include "nextdumper/common/Hex.hpp"
 #include "nextdumper/generation/JsonExport.hpp"
 
 namespace nextdumper::generation::detail
@@ -11,6 +11,7 @@ namespace nextdumper::generation::detail
     using ::nextdumper::binding::NameContainerKind;
     using ::nextdumper::binding::ObjectContainerKind;
     using ::nextdumper::binding::RuntimeBinding;
+    using ::nextdumper::common::Hex;
     using ::nextdumper::ir::ReflectionStats;
     using ::nextdumper::ir::TypeIR;
     using ::nextdumper::ue::EngineSchema;
