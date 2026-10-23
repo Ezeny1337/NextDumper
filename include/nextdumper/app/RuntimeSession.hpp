@@ -43,12 +43,20 @@ namespace nextdumper::app
         ArtifactPartial,
     };
 
+    enum class AnalysisMode
+    {
+        Off,
+        Auto,
+        Force,
+    };
+
     struct RuntimeSessionConfig
     {
         std::string packageName;
         std::string outputRoot;
         std::vector<std::string> moduleNames = {"libUnreal.so", "libUE4.so"};
         bool enableMemoryLog = false;
+        AnalysisMode analysis = AnalysisMode::Off;
     };
 
     class RuntimeSession

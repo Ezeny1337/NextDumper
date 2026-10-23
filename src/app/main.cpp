@@ -1,6 +1,7 @@
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <exception>
 
@@ -16,6 +17,7 @@ namespace
         std::fprintf(stderr, "  -p, --package <name>      Target package name (e.g., com.example.app)\n");
         std::fprintf(stderr, "\nOptional arguments:\n");
         std::fprintf(stderr, "      --memory-log          Write memory performance JSONL (disabled by default)\n");
+        std::fprintf(stderr, "      --analysis=<mode>     Analysis diagnostics: off|auto|force (default off)\n");
         std::fprintf(stderr, "  -h, --help                Show this help message\n");
         std::fprintf(stderr, "\nExample:\n");
         std::fprintf(stderr, "  %s -o ./output -p com.YS.Nicecity\n", program);
@@ -43,6 +45,24 @@ try
         if (arg == "--memory-log")
         {
             config.enableMemoryLog = true;
+            continue;
+        }
+
+        if (arg.starts_with("--analysis="))
+        {
+            const std::string_view mode = std::string_view(arg).substr(std::string_view("--analysis=").size());
+            if (mode == "off")
+                config.analysis = nextdumper::app::AnalysisMode::Off;
+            else if (mode == "auto")
+                config.analysis = nextdumper::app::AnalysisMode::Auto;
+            else if (mode == "force")
+                config.analysis = nextdumper::app::AnalysisMode::Force;
+            else
+            {
+                std::fprintf(stderr, "Error: invalid analysis mode: %s\n", std::string(mode).c_str());
+                PrintUsage(argv[0]);
+                return 2;
+            }
             continue;
         }
 

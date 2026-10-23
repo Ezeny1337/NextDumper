@@ -7,11 +7,14 @@
 #include <fstream>
 #include <exception>
 #include <new>
+#include <span>
 #include <sstream>
 #include <utility>
 #include <vector>
 #include <ctime>
 
+#include "nextdumper/analysis/AnalysisSession.hpp"
+#include "nextdumper/analysis/MemoryView.hpp"
 #include "nextdumper/binding/CommonObjectCollector.hpp"
 #include "nextdumper/binding/BindingBuilder.hpp"
 #include "nextdumper/binding/GlobalLocator.hpp"
@@ -101,6 +104,51 @@ namespace nextdumper::app
             }
             return "failed";
         }
+
+        const char *AnalysisModeName(AnalysisMode mode)
+        {
+            switch (mode)
+            {
+            case AnalysisMode::Off:
+                return "off";
+            case AnalysisMode::Auto:
+                return "auto";
+            case AnalysisMode::Force:
+                return "force";
+            }
+            return "unknown";
+        }
+
+        class AnalysisMemoryView final : public ::nextdumper::analysis::MemoryView
+        {
+        public:
+            explicit AnalysisMemoryView(const memory::IMemorySource &source) : source_(source) {}
+
+            [[nodiscard]] bool IsInitialized() const override { return source_.IsInitialized(); }
+            [[nodiscard]] bool IsReadable(uintptr_t address, size_t size) const override
+            {
+                return source_.IsReadable(address, size);
+            }
+            [[nodiscard]] bool IsExecutable(uintptr_t address, size_t size) const override
+            {
+                return source_.IsExecutable(address, size);
+            }
+            [[nodiscard]] memory::ReadResult ReadBytes(uintptr_t address, void *buffer, size_t size) const override
+            {
+                return source_.ReadBytes(address, buffer, size);
+            }
+            [[nodiscard]] std::span<const memory::MemoryRegion> Regions() const override
+            {
+                return source_.Regions();
+            }
+            [[nodiscard]] uint64_t AddressSpaceGeneration() const override
+            {
+                return source_.AddressSpaceGeneration();
+            }
+
+        private:
+            const memory::IMemorySource &source_;
+        };
 
         struct ProfileExecutionState
         {
@@ -759,6 +807,42 @@ namespace nextdumper::app
         };
         if (discardFailedProfileDecoders())
             binding = builder.Build(candidates, decode, bindingProgress, layoutHints);
+
+        const auto runAnalysisProbe = [&]()
+        {
+            BeginMemoryStage("analysis-probe");
+            AnalysisMemoryView analysisMemory(*memory_);
+            ::nextdumper::analysis::AnalysisSession session(analysisMemory, context_.Module());
+            const ::nextdumper::analysis::AnalysisResult result = session.Run();
+            finishStage("analysis-probe");
+
+            Note(RuntimeLogLevel::Info,
+                 "analysis_probe mode=" + std::string(AnalysisModeName(config_.analysis)) +
+                     " status=" + ::nextdumper::analysis::AnalysisStatusName(result.Status) +
+                     " reason=" + result.Reason +
+                     " contracts=" + std::to_string(result.Contracts.size()) +
+                     " segments=" + std::to_string(result.Coverage.ModuleSegments) +
+                     " executable_segments=" + std::to_string(result.Coverage.ExecutableSegments) +
+                     " planned_bytes=" + std::to_string(result.Coverage.PlannedBytes) +
+                     " read_bytes=" + std::to_string(result.Coverage.ReadBytes) +
+                     " read_failures=" + std::to_string(result.Coverage.ReadFailures) +
+                     " complete=" + std::to_string(result.Coverage.Complete));
+            for (const auto &diagnostic : result.Diagnostics)
+            {
+                RuntimeLogLevel level = RuntimeLogLevel::Info;
+                if (diagnostic.Severity == ::nextdumper::analysis::DiagnosticSeverity::Warning)
+                    level = RuntimeLogLevel::Warning;
+                else if (diagnostic.Severity == ::nextdumper::analysis::DiagnosticSeverity::Error)
+                    level = RuntimeLogLevel::Error;
+                Note(level, "analysis_diagnostic severity=" +
+                                std::string(::nextdumper::analysis::DiagnosticSeverityName(diagnostic.Severity)) +
+                                " code=" + diagnostic.Code + " message=" + diagnostic.Message);
+            }
+        };
+        if (config_.analysis == AnalysisMode::Force ||
+            (config_.analysis == AnalysisMode::Auto && !binding))
+            runAnalysisProbe();
+
         if (!binding)
         {
             Note("locator_path source=analyzer reason=symbol-binding-incomplete");

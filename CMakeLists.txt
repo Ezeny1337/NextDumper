@@ -70,6 +70,15 @@ target_include_directories(ue_analyzer PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src/a
 target_compile_features(ue_analyzer PUBLIC cxx_std_20)
 target_compile_options(ue_analyzer PRIVATE -Wall -Wextra -Wno-unused-parameter -fexceptions)
 
+file(GLOB UE_ANALYSIS_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/analysis/*.cpp"
+)
+
+add_library(ue_analysis STATIC ${UE_ANALYSIS_SOURCES})
+target_include_directories(ue_analysis PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_compile_features(ue_analysis PUBLIC cxx_std_20)
+target_compile_options(ue_analysis PRIVATE -Wall -Wextra -Wpedantic -Werror -fexceptions)
+
 add_library(nextdumper_core STATIC
     src/app/CompatibilityDiagnosis.cpp
     src/app/MemoryPerformanceLog.cpp
@@ -144,12 +153,13 @@ target_compile_options(nextdumper_core PRIVATE
     -fexceptions
 )
 target_link_libraries(nextdumper_core PUBLIC ue_analyzer)
+target_link_libraries(nextdumper_core PRIVATE ue_analysis)
 
 add_executable(NextDumper src/app/main.cpp)
 target_link_libraries(NextDumper PRIVATE nextdumper_core)
 target_compile_options(NextDumper PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
-set(NEXTDUMPER_NATIVE_TARGETS ue_analyzer nextdumper_core NextDumper)
+set(NEXTDUMPER_NATIVE_TARGETS ue_analyzer ue_analysis nextdumper_core NextDumper)
 foreach(target IN LISTS NEXTDUMPER_NATIVE_TARGETS)
     target_compile_options(${target} PRIVATE
         -ffunction-sections
