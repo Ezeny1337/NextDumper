@@ -112,18 +112,32 @@ namespace nextdumper::app
                     continue;
                 const auto &objectFields = objectContract.ObjectArray;
                 ::nextdumper::binding::ObjectContainerLayout objectLayout;
-                objectLayout.kind = ::nextdumper::binding::ObjectContainerKind::Chunked;
-                objectLayout.objectsOffset = objectFields.ObjectsOffset;
-                objectLayout.maxElementsOffset = objectFields.MaxElementsOffset;
-                objectLayout.numElementsOffset = objectFields.NumElementsOffset;
-                objectLayout.maxChunksOffset = objectFields.MaxChunksOffset;
-                objectLayout.numChunksOffset = objectFields.NumChunksOffset;
-                objectLayout.elementsPerChunk = objectFields.ElementsPerChunk;
-                objectLayout.itemObjectOffset = objectFields.ItemObjectOffset;
-                objectLayout.itemStride = objectFields.ItemStride;
-                objectLayout.itemIndexOffset = objectFields.ItemIndexOffset;
-                objectLayout.packedPointers = objectFields.PackedPointers;
-                objectLayout.chunkFieldsValidated = true;
+                if (objectFields.Fixed)
+                {
+                    objectLayout.kind = ::nextdumper::binding::ObjectContainerKind::Fixed;
+                    objectLayout.objectsOffset = objectFields.ObjectsOffset;
+                    objectLayout.numElementsOffset = objectFields.NumElementsOffset;
+                    objectLayout.itemObjectOffset = objectFields.ItemObjectOffset;
+                    objectLayout.itemStride = objectFields.ItemStride;
+                    objectLayout.itemIndexOffset = objectFields.ItemIndexOffset;
+                    objectLayout.packedPointers = objectFields.PackedPointers;
+                    objectLayout.chunkFieldsValidated = true;
+                }
+                else
+                {
+                    objectLayout.kind = ::nextdumper::binding::ObjectContainerKind::Chunked;
+                    objectLayout.objectsOffset = objectFields.ObjectsOffset;
+                    objectLayout.maxElementsOffset = objectFields.MaxElementsOffset;
+                    objectLayout.numElementsOffset = objectFields.NumElementsOffset;
+                    objectLayout.maxChunksOffset = objectFields.MaxChunksOffset;
+                    objectLayout.numChunksOffset = objectFields.NumChunksOffset;
+                    objectLayout.elementsPerChunk = objectFields.ElementsPerChunk;
+                    objectLayout.itemObjectOffset = objectFields.ItemObjectOffset;
+                    objectLayout.itemStride = objectFields.ItemStride;
+                    objectLayout.itemIndexOffset = objectFields.ItemIndexOffset;
+                    objectLayout.packedPointers = objectFields.PackedPointers;
+                    objectLayout.chunkFieldsValidated = true;
+                }
                 if (!objectLayout.IsValid())
                     continue;
                 proposal.objectRoot = objectContract.Root;

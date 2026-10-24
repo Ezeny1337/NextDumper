@@ -69,6 +69,7 @@ namespace nextdumper::analysis
         int32_t ItemObjectOffset = -1;
         int32_t ItemIndexOffset = -1;
         bool PackedPointers = false;
+        bool Fixed = false;
         uint32_t Count = 0;
         uint32_t MaxElements = 0;
         uint32_t Chunks = 0;
@@ -76,7 +77,7 @@ namespace nextdumper::analysis
         [[nodiscard]] bool Complete() const
         {
             return ObjectsOffset >= 0 && MaxElementsOffset >= 0 && NumElementsOffset >= 0 &&
-                   MaxChunksOffset >= 0 && NumChunksOffset >= 0 && ElementsPerChunk > 0 &&
+                   MaxChunksOffset >= 0 && NumChunksOffset >= 0 && (Fixed || ElementsPerChunk > 0) &&
                    ItemStride > 0 && ItemObjectOffset >= 0 && ItemIndexOffset >= 0 && Count > 0;
         }
     };

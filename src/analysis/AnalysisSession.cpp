@@ -394,6 +394,7 @@ namespace nextdumper::analysis
                     result.Diagnostics.push_back(
                         {DiagnosticSeverity::Info, "ANALYSIS_OBJECT_CONTRACT",
                          "target=ObjectArray root=" + common::Hex(contract.Root) +
+                             " kind=" + std::string(fields.Fixed ? "fixed" : "chunked") +
                              " count=" + std::to_string(fields.Count) +
                              " max_elements=" + std::to_string(fields.MaxElements) +
                              " chunks=" + std::to_string(fields.Chunks) +

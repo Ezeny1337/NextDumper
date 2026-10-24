@@ -37,6 +37,7 @@ namespace nextdumper::analysis
 
         struct ShapeResult
         {
+            bool fixed = false;
             int32_t stride = 0;
             int32_t indexOffset = 0;
             uint32_t tested = 0;
@@ -276,30 +277,51 @@ namespace nextdumper::analysis
                     !ReadInt32Value(memory, *numChunksAddress, numChunks))
                     continue;
                 if (count < static_cast<int32_t>(options.MinCount) || count > 0x08000000 ||
-                    maxElements < count || maxElements > 0x08000000 ||
-                    maxChunks <= 0 || maxChunks > 0x1000 || numChunks <= 0 || numChunks > maxChunks)
+                    maxElements < count || maxElements > 0x08000000)
                     continue;
 
-                std::vector<int32_t> elementsPerChunk = {64 * 1024};
-                if (maxElements % maxChunks == 0)
+                const bool fixedPossible = maxChunks >= 0 && maxChunks <= 1 && numChunks >= 0 && numChunks <= 1;
+                const bool chunkedPossible = maxChunks > 0 && maxChunks <= 0x1000 &&
+                                             numChunks > 0 && numChunks <= maxChunks;
+                if (!fixedPossible && !chunkedPossible)
+                    continue;
+
+                struct Mode
                 {
-                    const int32_t derived = maxElements / maxChunks;
-                    if (derived != elementsPerChunk.front() && derived >= 0x1000 && derived <= 0x200000)
-                        elementsPerChunk.push_back(derived);
+                    bool fixed = false;
+                    int32_t perChunk = 0;
+                };
+                std::vector<Mode> modes;
+                if (fixedPossible)
+                    modes.push_back({true, 0});
+                if (chunkedPossible)
+                {
+                    std::vector<int32_t> elementsPerChunk = {64 * 1024};
+                    if (maxElements % maxChunks == 0)
+                    {
+                        const int32_t derived = maxElements / maxChunks;
+                        if (derived != elementsPerChunk.front() && derived >= 0x1000 && derived <= 0x200000)
+                            elementsPerChunk.push_back(derived);
+                    }
+                    for (const int32_t perChunk : elementsPerChunk)
+                    {
+                        if (perChunk <= 0 || maxElements % perChunk != 0 ||
+                            maxElements / perChunk != maxChunks ||
+                            static_cast<int64_t>(numChunks) * perChunk < count)
+                            continue;
+                        modes.push_back({false, perChunk});
+                    }
                 }
 
-                for (const int32_t perChunk : elementsPerChunk)
+                for (const Mode &mode : modes)
                 {
-                    if (perChunk <= 0 || maxElements % perChunk != 0 || maxElements / perChunk != maxChunks ||
-                        static_cast<int64_t>(numChunks) * perChunk < count)
-                        continue;
-
                     std::vector<ShapeResult> shapes;
-                    for (const int32_t stride : {24, 16, 32})
+                    for (const int32_t stride : {24, 16, 8, 32})
                     {
                         for (const int32_t indexOffset : {12, 36})
                         {
                             ShapeResult shape;
+                            shape.fixed = mode.fixed;
                             shape.stride = stride;
                             shape.indexOffset = indexOffset;
                             std::vector<std::string> namesSample;
@@ -308,18 +330,32 @@ namespace nextdumper::analysis
                                 if (index < 0 || index >= count)
                                     return;
                                 ++shape.tested;
-                                const int32_t chunkIndex = index / perChunk;
-                                const int32_t within = index % perChunk;
-                                if (chunkIndex >= numChunks)
-                                    return;
-                                const auto chunkSlot = AddOffset(chunkTable, static_cast<int64_t>(chunkIndex) * static_cast<int64_t>(sizeof(uintptr_t)));
-                                uintptr_t chunk = 0;
-                                if (!chunkSlot || !ReadPointerValue(memory, *chunkSlot, chunk) || chunk == 0 ||
-                                    !memory.IsReadable(chunk, sizeof(uintptr_t)))
-                                    return;
-                                const auto item = AddOffset(chunk, static_cast<int64_t>(within) * stride);
+                                uintptr_t itemAddress = 0;
+                                if (mode.fixed)
+                                {
+                                    const auto address = AddOffset(chunkTable, static_cast<int64_t>(index) * stride);
+                                    if (!address)
+                                        return;
+                                    itemAddress = *address;
+                                }
+                                else
+                                {
+                                    const int32_t chunkIndex = index / mode.perChunk;
+                                    const int32_t within = index % mode.perChunk;
+                                    if (chunkIndex >= numChunks)
+                                        return;
+                                    const auto chunkSlot = AddOffset(chunkTable, static_cast<int64_t>(chunkIndex) * static_cast<int64_t>(sizeof(uintptr_t)));
+                                    uintptr_t chunk = 0;
+                                    if (!chunkSlot || !ReadPointerValue(memory, *chunkSlot, chunk) || chunk == 0 ||
+                                        !memory.IsReadable(chunk, sizeof(uintptr_t)))
+                                        return;
+                                    const auto address = AddOffset(chunk, static_cast<int64_t>(within) * stride);
+                                    if (!address)
+                                        return;
+                                    itemAddress = *address;
+                                }
                                 uintptr_t object = 0;
-                                if (!item || !ReadPointerValue(memory, *item, object))
+                                if (!ReadPointerValue(memory, itemAddress, object))
                                     return;
                                 if (object == 0)
                                 {
@@ -338,12 +374,22 @@ namespace nextdumper::analysis
                                                                           128, 256, 512, 1024, 2048, 4096, 8192, 16384};
                             for (const int32_t index : kSamples)
                                 validateIndex(index);
-                            const std::array<int32_t, 6> tail = {
-                                count - 1, count / 2, std::min(count - 1, perChunk - 1),
-                                std::min(count - 1, perChunk), std::min(count - 1, 2 * perChunk - 1),
-                                std::min(count - 1, 2 * perChunk)};
-                            for (const int32_t index : tail)
-                                validateIndex(index);
+                            if (mode.fixed)
+                            {
+                                const std::array<int32_t, 2> tail = {count - 1, count / 2};
+                                for (const int32_t index : tail)
+                                    validateIndex(index);
+                            }
+                            else
+                            {
+                                const std::array<int32_t, 6> tail = {
+                                    count - 1, count / 2, std::min(count - 1, mode.perChunk - 1),
+                                    std::min(count - 1, mode.perChunk),
+                                    std::min(count - 1, 2 * mode.perChunk - 1),
+                                    std::min(count - 1, 2 * mode.perChunk)};
+                                for (const int32_t index : tail)
+                                    validateIndex(index);
+                            }
 
                             const uint32_t nonEmpty = shape.tested - shape.empty;
                             shape.confidence = nonEmpty > 0 ? static_cast<double>(shape.valid) / nonEmpty : 0.0;
@@ -356,12 +402,24 @@ namespace nextdumper::analysis
                     {
                         if (bestRejected.empty())
                         {
+                            uintptr_t chunk0 = 0;
+                            ReadPointerValue(memory, chunkTable, chunk0);
+                            uintptr_t firstItem = mode.fixed ? chunkTable : chunk0;
+                            uintptr_t firstObject = 0;
+                            if (firstItem != 0)
+                                ReadPointerValue(memory, firstItem, firstObject);
                             bestRejected = "root=" + common::Hex(pointerAddress) +
                                            " count=" + std::to_string(count) +
                                            " max=" + std::to_string(maxElements) +
                                            " max_chunks=" + std::to_string(maxChunks) +
                                            " num_chunks=" + std::to_string(numChunks) +
-                                           " field=" + field.name;
+                                           " field=" + field.name +
+                                           " mode=" + (mode.fixed ? "fixed" : "chunked") +
+                                           " per_chunk=" + std::to_string(mode.perChunk) +
+                                           " objects=" + common::Hex(chunkTable) +
+                                           " chunk0=" + common::Hex(chunk0) +
+                                           " first_item=" + common::Hex(firstItem) +
+                                           " first_object=" + common::Hex(firstObject);
                         }
                         continue;
                     }
@@ -383,10 +441,11 @@ namespace nextdumper::analysis
                     fields.NumElementsOffset = field.count;
                     fields.MaxChunksOffset = field.maxChunks;
                     fields.NumChunksOffset = field.numChunks;
-                    fields.ElementsPerChunk = perChunk;
+                    fields.ElementsPerChunk = mode.fixed ? 0 : mode.perChunk;
                     fields.ItemStride = best.stride;
                     fields.ItemObjectOffset = 0;
                     fields.ItemIndexOffset = best.indexOffset;
+                    fields.Fixed = mode.fixed;
                     fields.Count = static_cast<uint32_t>(count);
                     fields.MaxElements = static_cast<uint32_t>(maxElements);
                     fields.Chunks = static_cast<uint32_t>(numChunks);
@@ -400,6 +459,7 @@ namespace nextdumper::analysis
             }
             return std::nullopt;
         }
+
     } // namespace
 
     ObjectContractScanResult ScanObjectContracts(const ImageModel &image, uintptr_t nameRoot,
