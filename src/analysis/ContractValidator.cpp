@@ -514,7 +514,7 @@ namespace nextdumper::analysis
             validation.FailureDetail = std::move(detail);
         }
 
-        bool ValidateAt(const MemoryView &memory, const Contract &contract, uintptr_t root,
+        bool ValidateAt(const MemoryView &memory, const NamePoolContract &contract, uintptr_t root,
                         const NamePoolValidationOptions &options, NamePoolValidation &validation)
         {
             const NamePoolFields &fields = contract.NamePool;
@@ -737,16 +737,11 @@ namespace nextdumper::analysis
         }
     } // namespace
 
-    NamePoolValidation ValidateNamePool(const MemoryView &memory, const Contract &contract,
+    NamePoolValidation ValidateNamePool(const MemoryView &memory, const NamePoolContract &contract,
                                         size_t contractIndex, const NamePoolValidationOptions &options)
     {
         NamePoolValidation result;
         result.ContractIndex = contractIndex;
-        if (contract.Kind != ContractKind::NamePool)
-        {
-            Fail(result, "contract-kind");
-            return result;
-        }
 
         std::vector<uintptr_t> roots;
         const auto addRoot = [&roots](uintptr_t value)

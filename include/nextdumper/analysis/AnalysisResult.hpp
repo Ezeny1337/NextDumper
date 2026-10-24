@@ -18,6 +18,7 @@ namespace nextdumper::analysis
         Observed,
         Validated,
         Complete,
+        Ambiguous,
     };
 
     enum class DiagnosticSeverity : uint8_t
@@ -50,11 +51,17 @@ namespace nextdumper::analysis
     struct AnalysisResult
     {
         AnalysisStatus Status = AnalysisStatus::Failed;
+        AnalysisStatus NameStatus = AnalysisStatus::Unsupported;
+        AnalysisStatus ObjectStatus = AnalysisStatus::Unsupported;
+        AnalysisStatus UObjectStatus = AnalysisStatus::Unsupported;
         std::string Reason;
-        std::vector<Contract> Contracts;
+        std::vector<NamePoolContract> NamePools;
+        std::vector<ObjectArrayContract> ObjectArrays;
+        std::vector<UObjectLayoutContract> UObjectLayouts;
         std::vector<NamePoolValidation> NameValidations;
         AnalysisCoverage Coverage;
         std::vector<Diagnostic> Diagnostics;
+        bool AddressSpaceChanged = false;
     };
 
     [[nodiscard]] const char *AnalysisStatusName(AnalysisStatus status);

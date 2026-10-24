@@ -28,6 +28,8 @@ namespace nextdumper::analysis
                 return "validated";
             case ContractState::Unsupported:
                 return "unsupported";
+            case ContractState::Ambiguous:
+                return "ambiguous";
             }
             return "observed";
         }
@@ -44,6 +46,49 @@ namespace nextdumper::analysis
                 return "length";
             }
             return "unknown";
+        }
+
+        bool SameDomainContract(const NamePoolContract &left, const NamePoolContract &right)
+        {
+            return left.Root == right.Root && left.NamePool == right.NamePool;
+        }
+
+        bool SameDomainContract(const ObjectArrayContract &left, const ObjectArrayContract &right)
+        {
+            return left.Root == right.Root && left.ObjectArray == right.ObjectArray;
+        }
+
+        bool SameDomainContract(const UObjectLayoutContract &left, const UObjectLayoutContract &right)
+        {
+            return left.ObjectRoot == right.ObjectRoot && left.UObject == right.UObject &&
+                   left.FName.FName == right.FName.FName;
+        }
+
+        template <typename T>
+        AnalysisStatus DomainStatus(const std::vector<T> &contracts)
+        {
+            const T *validated = nullptr;
+            bool observed = false;
+            bool ambiguous = false;
+            for (const T &contract : contracts)
+            {
+                if (contract.State == ContractState::Validated)
+                {
+                    if (!validated)
+                        validated = &contract;
+                    else if (!SameDomainContract(*validated, contract))
+                        ambiguous = true;
+                }
+                observed = observed || contract.State == ContractState::Observed;
+                ambiguous = ambiguous || contract.State == ContractState::Ambiguous;
+            }
+            if (validated && !ambiguous)
+                return AnalysisStatus::Validated;
+            if (ambiguous)
+                return AnalysisStatus::Ambiguous;
+            if (observed)
+                return AnalysisStatus::Observed;
+            return AnalysisStatus::Unsupported;
         }
     } // namespace
 
@@ -63,6 +108,8 @@ namespace nextdumper::analysis
             return "validated";
         case AnalysisStatus::Complete:
             return "complete";
+        case AnalysisStatus::Ambiguous:
+            return "ambiguous";
         }
         return "failed";
     }
@@ -92,6 +139,7 @@ namespace nextdumper::analysis
     AnalysisResult AnalysisSession::Run() const
     {
         AnalysisResult result;
+        const uint64_t addressSpaceGeneration = memory_.AddressSpaceGeneration();
 
         if (!memory_.IsInitialized())
         {
@@ -244,6 +292,7 @@ namespace nextdumper::analysis
             }
         }
 
+        bool objectContractsAmbiguous = false;
         if (decoder && functions.IsValid())
         {
             NameContractScanOptions options;
@@ -255,37 +304,29 @@ namespace nextdumper::analysis
                 result.Diagnostics.push_back({DiagnosticSeverity::Warning, "ANALYSIS_CONTRACT_SCAN_FAILED",
                                               "reason=" + scan.Error});
             }
-            for (const Contract &contract : scan.Contracts)
-                result.Contracts.push_back(contract);
+            for (const NamePoolContract &contract : scan.Contracts)
+                result.NamePools.push_back(contract);
 
             NamePoolValidationOptions validationOptions;
             validationOptions.RootHints = options_.NameRootHints;
-            size_t validatedContracts = 0;
-            std::optional<Contract> objectScanNameContract;
+            std::optional<NamePoolContract> objectScanNameContract;
             std::optional<NamePoolValidation> objectScanNameValidation;
-            for (size_t index = 0; index < result.Contracts.size(); ++index)
+            for (size_t index = 0; index < result.NamePools.size(); ++index)
             {
-                Contract &contract = result.Contracts[index];
+                NamePoolContract &contract = result.NamePools[index];
                 const NamePoolFields &fields = contract.NamePool;
-                NamePoolValidation validation;
-                validation.ContractIndex = index;
-                if (contract.Kind == ContractKind::NamePool)
-                    validation = ValidateNamePool(memory_, contract, index, validationOptions);
-                else
-                    validation.Failure = "contract-kind";
+                NamePoolValidation validation = ValidateNamePool(memory_, contract, index, validationOptions);
 
                 contract.State = validation.IsValidated() ? ContractState::Validated
                                  : validation.RootUsable  ? ContractState::Unsupported
                                                           : ContractState::Observed;
-                result.NameValidations.push_back(validation);
                 if (validation.IsValidated())
+                    contract.Root = validation.Root;
+                result.NameValidations.push_back(validation);
+                if (validation.IsValidated() && !objectScanNameContract && validation.Decoder && validation.Root != 0)
                 {
-                    ++validatedContracts;
-                    if (!objectScanNameContract && validation.Decoder && validation.Root != 0)
-                    {
-                        objectScanNameContract = contract;
-                        objectScanNameValidation = validation;
-                    }
+                    objectScanNameContract = contract;
+                    objectScanNameValidation = validation;
                 }
 
                 const std::string root = validation.Root != 0 ? common::Hex(validation.Root)
@@ -379,25 +420,33 @@ namespace nextdumper::analysis
                                                   std::move(message)});
                 }
             }
-            if (objectScanNameContract && objectScanNameValidation && objectScanNameValidation->Decoder)
             {
                 ObjectContractScanOptions objectOptions;
+                const uintptr_t objectNameRoot = objectScanNameValidation ? objectScanNameValidation->Root : 0;
+                const NamePoolFields objectNameFields = objectScanNameContract
+                                                            ? objectScanNameContract->NamePool
+                                                            : NamePoolFields{};
+                const NameTextDecoder objectNameDecoder = objectScanNameValidation && objectScanNameValidation->Decoder
+                                                              ? *objectScanNameValidation->Decoder
+                                                              : NameTextDecoder{};
                 const ObjectContractScanResult objectScan =
-                    ScanObjectContracts(image, objectScanNameValidation->Root,
-                                        objectScanNameContract->NamePool,
-                                        *objectScanNameValidation->Decoder, objectOptions);
+                    ScanObjectContracts(image, objectNameRoot, objectNameFields, objectNameDecoder, objectOptions);
+                objectContractsAmbiguous = objectScan.ContractsAmbiguous;
                 result.Coverage.ReadBytes += objectScan.ScannedBytes;
-                for (const Contract &contract : objectScan.Contracts)
+                for (const UObjectLayoutContract &contract : objectScan.UObjectLayouts)
+                    result.UObjectLayouts.push_back(contract);
+                for (const ObjectArrayContract &contract : objectScan.Contracts)
                 {
-                    result.Contracts.push_back(contract);
+                    result.ObjectArrays.push_back(contract);
                     const ObjectArrayFields &fields = contract.ObjectArray;
+                    const ObjectArrayObservation &observation = contract.Observation;
                     result.Diagnostics.push_back(
                         {DiagnosticSeverity::Info, "ANALYSIS_OBJECT_CONTRACT",
                          "target=ObjectArray root=" + common::Hex(contract.Root) +
                              " kind=" + std::string(fields.Fixed ? "fixed" : "chunked") +
-                             " count=" + std::to_string(fields.Count) +
-                             " max_elements=" + std::to_string(fields.MaxElements) +
-                             " chunks=" + std::to_string(fields.Chunks) +
+                             " count=" + std::to_string(observation.Count) +
+                             " max_elements=" + std::to_string(observation.MaxElements) +
+                             " chunks=" + std::to_string(observation.Chunks) +
                              " elements_per_chunk=" + std::to_string(fields.ElementsPerChunk) +
                              " item_stride=" + std::to_string(fields.ItemStride) +
                              " item_index=" + std::to_string(fields.ItemIndexOffset) +
@@ -406,7 +455,7 @@ namespace nextdumper::analysis
                              std::to_string(fields.MaxChunksOffset) + "/" +
                              std::to_string(fields.NumChunksOffset) +
                              " objects_offset=" + std::to_string(fields.ObjectsOffset) +
-                             " state=validated"});
+                             " state=" + ContractStateName(contract.State)});
                 }
                 const auto formatObjectCandidate = [](const ObjectCandidateEvidence &evidence, bool accepted)
                 {
@@ -567,6 +616,9 @@ namespace nextdumper::analysis
                                       " seed_candidates=" + std::to_string(objectScan.SeedCandidates) +
                                       " seeds=" + std::to_string(objectScan.Seeds.size()) +
                                       " contracts=" + std::to_string(objectScan.Contracts.size()) +
+                                      " contracts_ambiguous=" + std::to_string(objectScan.ContractsAmbiguous) +
+                                      " uobject_layouts=" + std::to_string(objectScan.UObjectLayouts.size()) +
+                                      " name_evidence=" + std::to_string(objectScanNameContract ? 1 : 0) +
                                       " budget_exhausted=" + std::to_string(objectScan.BudgetExhausted) +
                                       " deep_budget_exhausted=" + std::to_string(objectScan.DeepBudgetExhausted) +
                                       " seed_budget_exhausted=" + std::to_string(objectScan.SeedBudgetExhausted);
@@ -592,24 +644,57 @@ namespace nextdumper::analysis
                 result.Diagnostics.push_back({DiagnosticSeverity::Warning, "ANALYSIS_CONTRACT_SCAN_BUDGET",
                                               "instruction budget exhausted before the scan completed"});
             }
+        }
 
-            if (!result.Contracts.empty())
-            {
-                result.Status = validatedContracts != 0 ? AnalysisStatus::Validated : AnalysisStatus::Observed;
-                result.Reason = validatedContracts != 0 ? "name-contracts-validated" : "name-contracts-observed";
-            }
-            else if (imageHeaderReadable)
-            {
-                result.Status = AnalysisStatus::Unsupported;
-                result.Reason = "no-name-contracts";
-            }
+        result.NameStatus = DomainStatus(result.NamePools);
+        result.ObjectStatus = objectContractsAmbiguous ? AnalysisStatus::Ambiguous : DomainStatus(result.ObjectArrays);
+        result.UObjectStatus = DomainStatus(result.UObjectLayouts);
+        const bool anyValidated = result.NameStatus == AnalysisStatus::Validated ||
+                                  result.ObjectStatus == AnalysisStatus::Validated ||
+                                  result.UObjectStatus == AnalysisStatus::Validated;
+        const bool allValidated = result.NameStatus == AnalysisStatus::Validated &&
+                                  result.ObjectStatus == AnalysisStatus::Validated &&
+                                  result.UObjectStatus == AnalysisStatus::Validated;
+        const bool anyObserved = result.NameStatus == AnalysisStatus::Observed ||
+                                 result.ObjectStatus == AnalysisStatus::Observed ||
+                                 result.UObjectStatus == AnalysisStatus::Observed;
+        const bool anyAmbiguous = result.NameStatus == AnalysisStatus::Ambiguous ||
+                                  result.ObjectStatus == AnalysisStatus::Ambiguous ||
+                                  result.UObjectStatus == AnalysisStatus::Ambiguous;
+        if (allValidated)
+        {
+            result.Status = AnalysisStatus::Complete;
+            result.Reason = "all-domains-validated";
+        }
+        else if (anyValidated || (anyObserved && anyAmbiguous))
+        {
+            result.Status = AnalysisStatus::Partial;
+            result.Reason = "domain-evidence-incomplete";
+        }
+        else if (anyObserved)
+        {
+            result.Status = AnalysisStatus::Observed;
+            result.Reason = "domain-contracts-observed";
+        }
+        else if (anyAmbiguous)
+        {
+            result.Status = AnalysisStatus::Ambiguous;
+            result.Reason = "domain-contracts-ambiguous";
         }
         else if (imageHeaderReadable)
         {
             result.Status = AnalysisStatus::Unsupported;
-            result.Reason = "no-name-contracts";
+            result.Reason = "no-domain-contracts";
         }
 
+        if (memory_.AddressSpaceGeneration() != addressSpaceGeneration)
+        {
+            result.AddressSpaceChanged = true;
+            result.Status = AnalysisStatus::Partial;
+            result.Reason = "address-space-changed";
+            result.Diagnostics.push_back({DiagnosticSeverity::Warning, "ANALYSIS_ADDRESS_SPACE_CHANGED",
+                                          "Address-space generation changed during analysis; proposals are invalidated."});
+        }
         return result;
     }
 } // namespace nextdumper::analysis

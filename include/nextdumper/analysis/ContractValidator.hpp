@@ -62,7 +62,7 @@ namespace nextdumper::analysis
     };
 
     [[nodiscard]] NamePoolValidation ValidateNamePool(const MemoryView &memory,
-                                                      const Contract &contract,
+                                                      const NamePoolContract &contract,
                                                       size_t contractIndex,
                                                       const NamePoolValidationOptions &options = {});
 } // namespace nextdumper::analysis

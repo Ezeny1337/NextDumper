@@ -125,7 +125,8 @@ namespace nextdumper::analysis
 
     struct ObjectContractScanResult
     {
-        std::vector<Contract> Contracts;
+        std::vector<ObjectArrayContract> Contracts;
+        std::vector<UObjectLayoutContract> UObjectLayouts;
         std::vector<ObjectCandidateEvidence> Accepted;
         std::vector<ObjectCandidateEvidence> Rejections;
         std::vector<ObjectSeedEvidence> Seeds;
@@ -138,6 +139,7 @@ namespace nextdumper::analysis
         bool BudgetExhausted = false;
         bool DeepBudgetExhausted = false;
         bool SeedBudgetExhausted = false;
+        bool ContractsAmbiguous = false;
         std::string Error;
         std::string BestRejected;
     };

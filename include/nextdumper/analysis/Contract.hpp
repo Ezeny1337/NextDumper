@@ -5,17 +5,12 @@
 
 namespace nextdumper::analysis
 {
-    enum class ContractKind : uint8_t
-    {
-        NamePool,
-        ObjectArray,
-    };
-
     enum class ContractState : uint8_t
     {
         Observed,
         Validated,
         Unsupported,
+        Ambiguous,
     };
 
     enum class EvidenceKind : uint8_t
@@ -55,6 +50,36 @@ namespace nextdumper::analysis
             return BlocksOffset >= 0 && BlocksBit > 0 && EntryStride > 0 && HeaderOffset >= 0 &&
                    StringOffset >= HeaderOffset + 2 && LengthShift > 0 && WideMask != 0;
         }
+
+        [[nodiscard]] bool operator==(const NamePoolFields &other) const = default;
+    };
+
+    enum class FNameNumberLayout : uint8_t
+    {
+        Inline,
+        Outlined,
+    };
+
+    struct FNameLayoutFields
+    {
+        int32_t Size = -1;
+        int32_t ComparisonIndex = -1;
+        int32_t DisplayIndex = -1;
+        int32_t Number = -1;
+        FNameNumberLayout NumberLayout = FNameNumberLayout::Inline;
+
+        [[nodiscard]] bool Complete() const
+        {
+            if (Size < static_cast<int32_t>(sizeof(int32_t)) || ComparisonIndex < 0 ||
+                ComparisonIndex > Size - static_cast<int32_t>(sizeof(int32_t)))
+                return false;
+            if (DisplayIndex >= 0 && DisplayIndex > Size - static_cast<int32_t>(sizeof(int32_t)))
+                return false;
+            return NumberLayout == FNameNumberLayout::Outlined ||
+                   (Number >= 0 && Number <= Size - static_cast<int32_t>(sizeof(int32_t)));
+        }
+
+        [[nodiscard]] bool operator==(const FNameLayoutFields &other) const = default;
     };
 
     struct UObjectLayoutFields
@@ -68,6 +93,8 @@ namespace nextdumper::analysis
         {
             return Name >= 0 && InternalIndex >= 0 && Class >= 0 && Outer >= 0;
         }
+
+        [[nodiscard]] bool operator==(const UObjectLayoutFields &other) const = default;
     };
 
     struct ObjectArrayFields
@@ -83,26 +110,54 @@ namespace nextdumper::analysis
         int32_t ItemIndexOffset = -1;
         bool PackedPointers = false;
         bool Fixed = false;
-        uint32_t Count = 0;
-        uint32_t MaxElements = 0;
-        uint32_t Chunks = 0;
 
         [[nodiscard]] bool Complete() const
         {
             return ObjectsOffset >= 0 && MaxElementsOffset >= 0 && NumElementsOffset >= 0 &&
                    MaxChunksOffset >= 0 && NumChunksOffset >= 0 && (Fixed || ElementsPerChunk > 0) &&
-                   ItemStride > 0 && ItemObjectOffset >= 0 && ItemIndexOffset >= 0 && Count > 0;
+                   ItemStride > 0 && ItemObjectOffset >= 0 && ItemIndexOffset >= 0;
         }
+
+        [[nodiscard]] bool operator==(const ObjectArrayFields &other) const = default;
     };
 
-    struct Contract
+    struct ObjectArrayObservation
     {
-        ContractKind Kind = ContractKind::NamePool;
+        uint32_t Count = 0;
+        uint32_t MaxElements = 0;
+        uint32_t Chunks = 0;
+    };
+
+    struct NamePoolContract
+    {
         uintptr_t Root = 0;
         ContractState State = ContractState::Observed;
         NamePoolFields NamePool;
+        std::vector<EvidenceStep> Evidence;
+    };
+
+    struct ObjectArrayContract
+    {
+        uintptr_t Root = 0;
+        ContractState State = ContractState::Observed;
         ObjectArrayFields ObjectArray;
+        ObjectArrayObservation Observation;
+        std::vector<EvidenceStep> Evidence;
+    };
+
+    struct FNameLayoutContract
+    {
+        ContractState State = ContractState::Unsupported;
+        FNameLayoutFields FName;
+        std::vector<EvidenceStep> Evidence;
+    };
+
+    struct UObjectLayoutContract
+    {
+        uintptr_t ObjectRoot = 0;
+        ContractState State = ContractState::Observed;
         UObjectLayoutFields UObject;
+        FNameLayoutContract FName;
         std::vector<EvidenceStep> Evidence;
     };
 } // namespace nextdumper::analysis

@@ -11,7 +11,7 @@ namespace nextdumper::app
     namespace
     {
         using ::nextdumper::analysis::AnalysisResult;
-        using ::nextdumper::analysis::ContractKind;
+        using ::nextdumper::analysis::AnalysisStatus;
         using ::nextdumper::analysis::ContractState;
         using ::nextdumper::analysis::NamePoolFields;
         using ::nextdumper::analysis::NameTextDecoder;
@@ -38,13 +38,16 @@ namespace nextdumper::app
     std::optional<NameBindingProposal> MakeNameBindingProposal(const AnalysisResult &result,
                                                                const DecodePlan &baseDecode)
     {
+        if (result.AddressSpaceChanged || result.NameStatus == AnalysisStatus::Ambiguous ||
+            result.ObjectStatus == AnalysisStatus::Ambiguous || result.UObjectStatus == AnalysisStatus::Ambiguous)
+            return std::nullopt;
         for (const auto &validation : result.NameValidations)
         {
             if (!validation.IsBindable() || !validation.Decoder ||
-                validation.ContractIndex >= result.Contracts.size())
+                validation.ContractIndex >= result.NamePools.size())
                 continue;
-            const auto &contract = result.Contracts[validation.ContractIndex];
-            if (contract.Kind != ContractKind::NamePool || !contract.NamePool.Complete())
+            const auto &contract = result.NamePools[validation.ContractIndex];
+            if (!contract.NamePool.Complete())
                 continue;
 
             const NamePoolFields &fields = contract.NamePool;
@@ -104,10 +107,9 @@ namespace nextdumper::app
                 proposal.evidence += " current_offset=" + std::to_string(*currentOffset) +
                                      " cursor_offset=" + std::to_string(*cursorOffset);
             }
-            for (const auto &objectContract : result.Contracts)
+            for (const auto &objectContract : result.ObjectArrays)
             {
-                if (objectContract.Kind != ContractKind::ObjectArray ||
-                    objectContract.State != ContractState::Validated ||
+                if (objectContract.State != ContractState::Validated ||
                     !objectContract.ObjectArray.Complete())
                     continue;
                 const auto &objectFields = objectContract.ObjectArray;
@@ -142,18 +144,21 @@ namespace nextdumper::app
                     continue;
                 proposal.objectRoot = objectContract.Root;
                 proposal.objectLayout = objectLayout;
-                if (objectContract.UObject.Complete())
+                for (const auto &uobjectContract : result.UObjectLayouts)
                 {
+                    if (uobjectContract.ObjectRoot != objectContract.Root || !uobjectContract.UObject.Complete())
+                        continue;
                     proposal.uobject = ::nextdumper::binding::UObjectLayoutHint{
-                        objectContract.UObject.Name, objectContract.UObject.InternalIndex,
-                        objectContract.UObject.Class, objectContract.UObject.Outer};
-                    proposal.evidence += " uobject_offsets=name:" + std::to_string(objectContract.UObject.Name) +
-                                         " index:" + std::to_string(objectContract.UObject.InternalIndex) +
-                                         " class:" + std::to_string(objectContract.UObject.Class) +
-                                         " outer:" + std::to_string(objectContract.UObject.Outer);
+                        uobjectContract.UObject.Name, uobjectContract.UObject.InternalIndex,
+                        uobjectContract.UObject.Class, uobjectContract.UObject.Outer};
+                    proposal.evidence += " uobject_offsets=name:" + std::to_string(uobjectContract.UObject.Name) +
+                                         " index:" + std::to_string(uobjectContract.UObject.InternalIndex) +
+                                         " class:" + std::to_string(uobjectContract.UObject.Class) +
+                                         " outer:" + std::to_string(uobjectContract.UObject.Outer);
+                    break;
                 }
                 proposal.evidence += " object_root=" + common::Hex(objectContract.Root) +
-                                     " object_count=" + std::to_string(objectFields.Count) +
+                                     " object_count=" + std::to_string(objectContract.Observation.Count) +
                                      " object_item_stride=" + std::to_string(objectFields.ItemStride);
                 break;
             }

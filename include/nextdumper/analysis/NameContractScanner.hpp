@@ -20,7 +20,7 @@ namespace nextdumper::analysis
 
     struct NameContractScanResult
     {
-        std::vector<Contract> Contracts;
+        std::vector<NamePoolContract> Contracts;
         uint64_t Instructions = 0;
         uint64_t FunctionStarts = 0;
         bool BudgetExhausted = false;

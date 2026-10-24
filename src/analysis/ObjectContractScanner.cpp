@@ -260,9 +260,14 @@ namespace nextdumper::analysis
             {
             }
 
+            [[nodiscard]] bool Available() const
+            {
+                return root_ != 0 && fields_.Complete();
+            }
+
             bool Resolve(int32_t index, std::string &out)
             {
-                if (index < 0 || !fields_.Complete())
+                if (!Available() || index < 0)
                     return false;
                 const auto cached = cache_.find(index);
                 if (cached != cache_.end())
@@ -391,8 +396,8 @@ namespace nextdumper::analysis
                 out.nameDecoded = true;
                 std::string className;
                 out.classHit = ResolveClassName(memory, names, object, className);
-                out.outerHit = ResolveOuter(memory, object);
             }
+            out.outerHit = ResolveOuter(memory, object);
 
             if (!out.indexReadable)
             {
@@ -404,7 +409,7 @@ namespace nextdumper::analysis
                 out.stage = out.indexInRange ? ObjectStage::IndexMismatch : ObjectStage::IndexOutOfRange;
                 return;
             }
-            if (!out.nameDecoded)
+            if (names.Available() && !out.nameDecoded)
             {
                 out.stage = ObjectStage::Name;
                 return;
@@ -551,7 +556,7 @@ namespace nextdumper::analysis
             const auto address = AddOffset(object, indexOffset);
             if (!address || !ReadInt32Value(memory, *address, reported) || reported != index)
                 return false;
-            return ReadObjectName(memory, names, object, name);
+            return !names.Available() || ReadObjectName(memory, names, object, name);
         }
 
         bool TrySeed(const MemoryView &memory, NameResolver &names, uintptr_t root,
@@ -1253,11 +1258,11 @@ namespace nextdumper::analysis
             return result;
         }
 
-        std::optional<Contract> TryCandidate(const MemoryView &memory, NameResolver &names,
-                                             uintptr_t pointerAddress, uintptr_t chunkTable,
-                                             const ObjectContractScanOptions &options,
-                                             std::optional<ObjectCandidateEvidence> &rejected,
-                                             std::optional<ObjectCandidateEvidence> &accepted)
+        std::optional<ObjectArrayContract> TryCandidate(const MemoryView &memory, NameResolver &names,
+                                                        uintptr_t pointerAddress, uintptr_t chunkTable,
+                                                        const ObjectContractScanOptions &options,
+                                                        std::optional<ObjectCandidateEvidence> &rejected,
+                                                        std::optional<ObjectCandidateEvidence> &accepted)
         {
             std::optional<ObjectCandidateEvidence> bestRejected;
             for (const FieldLayout &field : kFieldLayouts)
@@ -1387,7 +1392,7 @@ namespace nextdumper::analysis
                                     ++shape.classHits;
                                 if (evaluation.outerHit)
                                     ++shape.outerHits;
-                                if (evaluation.indexExact && evaluation.nameDecoded)
+                                if (evaluation.indexExact && (evaluation.nameDecoded || !names.Available()))
                                 {
                                     ++shape.coreValid;
                                     if (index > shape.maxValidIndex)
@@ -1478,10 +1483,14 @@ namespace nextdumper::analysis
                                       return left.fullValid > right.fullValid;
                                   return left.confidence > right.confidence; });
                     const ShapeResult &best = shapes.front();
-                    Contract contract;
-                    contract.Kind = ContractKind::ObjectArray;
+                    const bool ambiguous = std::any_of(shapes.begin() + 1, shapes.end(), [&](const ShapeResult &candidate)
+                                                       { return candidate.stride != best.stride ||
+                                                                candidate.indexOffset != best.indexOffset; });
+                    ObjectArrayContract contract;
                     contract.Root = pointerAddress;
-                    contract.State = ContractState::Validated;
+                    contract.State = ambiguous           ? ContractState::Ambiguous
+                                     : names.Available() ? ContractState::Validated
+                                                         : ContractState::Observed;
                     ObjectArrayFields &fields = contract.ObjectArray;
                     fields.ObjectsOffset = 0;
                     fields.MaxElementsOffset = field.maxElements;
@@ -1493,9 +1502,9 @@ namespace nextdumper::analysis
                     fields.ItemObjectOffset = 0;
                     fields.ItemIndexOffset = best.indexOffset;
                     fields.Fixed = mode.fixed;
-                    fields.Count = static_cast<uint32_t>(values.count);
-                    fields.MaxElements = static_cast<uint32_t>(values.maxElements);
-                    fields.Chunks = static_cast<uint32_t>(values.numChunks);
+                    contract.Observation.Count = static_cast<uint32_t>(values.count);
+                    contract.Observation.MaxElements = static_cast<uint32_t>(values.maxElements);
+                    contract.Observation.Chunks = static_cast<uint32_t>(values.numChunks);
                     contract.Evidence.push_back({EvidenceKind::TableLoad, pointerAddress, chunkTable});
                     contract.Evidence.push_back({EvidenceKind::EntryLoad, pointerAddress, static_cast<uint64_t>(values.count)});
                     contract.Evidence.push_back({EvidenceKind::ScaleAdd, pointerAddress, static_cast<uint64_t>(best.stride)});
@@ -1523,9 +1532,9 @@ namespace nextdumper::analysis
                                                  const ObjectContractScanOptions &options)
     {
         ObjectContractScanResult result;
-        if (!image.IsValid() || nameRoot == 0 || !nameFields.Complete())
+        if (!image.IsValid())
         {
-            result.Error = "image-or-name-contract-invalid";
+            result.Error = "image-invalid";
             return result;
         }
 
@@ -1538,7 +1547,7 @@ namespace nextdumper::analysis
         }
         std::sort(readableRanges.begin(), readableRanges.end());
 
-        std::vector<Contract> candidates;
+        std::vector<ObjectArrayContract> candidates;
         const auto addRejection = [&](ObjectCandidateEvidence evidence)
         {
             const auto duplicate = std::any_of(result.Rejections.begin(), result.Rejections.end(),
@@ -1784,8 +1793,23 @@ namespace nextdumper::analysis
             }
         }
 
-        std::sort(candidates.begin(), candidates.end(), [](const Contract &left, const Contract &right)
-                  { return left.ObjectArray.Count > right.ObjectArray.Count; });
+        const auto sameObjectContract = [](const ObjectArrayContract &left, const ObjectArrayContract &right)
+        { return left.Root == right.Root && left.ObjectArray == right.ObjectArray; };
+        bool contractsAmbiguous = false;
+        std::optional<ObjectArrayContract> validatedContract;
+        for (const ObjectArrayContract &contract : candidates)
+        {
+            contractsAmbiguous = contractsAmbiguous || contract.State == ContractState::Ambiguous;
+            if (contract.State != ContractState::Validated)
+                continue;
+            if (!validatedContract)
+                validatedContract = contract;
+            else if (!sameObjectContract(*validatedContract, contract))
+                contractsAmbiguous = true;
+        }
+
+        std::sort(candidates.begin(), candidates.end(), [](const ObjectArrayContract &left, const ObjectArrayContract &right)
+                  { return left.Observation.Count > right.Observation.Count; });
         if (candidates.size() > options.MaxCandidates)
             candidates.resize(options.MaxCandidates);
         result.Contracts = std::move(candidates);
@@ -1851,10 +1875,9 @@ namespace nextdumper::analysis
         }
         if (bestHeader)
         {
-            Contract contract;
-            contract.Kind = ContractKind::ObjectArray;
+            ObjectArrayContract contract;
             contract.Root = bestHeader->Root;
-            contract.State = ContractState::Validated;
+            contract.State = names.Available() ? ContractState::Validated : ContractState::Observed;
             ObjectArrayFields &fields = contract.ObjectArray;
             fields.ObjectsOffset = bestHeader->ObjectsOffset;
             fields.MaxElementsOffset = bestHeader->MaxElementsOffset;
@@ -1866,15 +1889,14 @@ namespace nextdumper::analysis
             fields.ItemObjectOffset = 0;
             fields.ItemIndexOffset = bestHeaderSeed->ItemIndexOffset;
             fields.Fixed = false;
-            fields.Count = static_cast<uint32_t>(bestHeader->Count);
-            fields.MaxElements = static_cast<uint32_t>(bestHeader->MaxElements);
-            fields.Chunks = static_cast<uint32_t>(bestHeader->Chunks);
-            contract.UObject.Name = bestHeaderSeed->NameOffset;
-            contract.UObject.InternalIndex = bestHeaderSeed->IndexOffset;
-            contract.UObject.Class = bestHeaderSeed->ClassOffset;
-            contract.UObject.Outer = bestHeaderSeed->OuterOffset;
+            contract.Observation.Count = static_cast<uint32_t>(bestHeader->Count);
+            contract.Observation.MaxElements = static_cast<uint32_t>(bestHeader->MaxElements);
+            contract.Observation.Chunks = static_cast<uint32_t>(bestHeader->Chunks);
             if (fields.Complete())
             {
+                if (contract.State == ContractState::Validated && validatedContract &&
+                    !sameObjectContract(*validatedContract, contract))
+                    contractsAmbiguous = true;
                 contract.Evidence.push_back({EvidenceKind::TableLoad, bestHeader->Root,
                                              bestHeaderSeed->Root});
                 contract.Evidence.push_back({EvidenceKind::EntryLoad, bestHeader->Root,
@@ -1882,9 +1904,21 @@ namespace nextdumper::analysis
                 contract.Evidence.push_back({EvidenceKind::ScaleAdd, bestHeader->Root,
                                              static_cast<uint64_t>(bestHeaderSeed->ItemStride)});
                 result.Contracts.insert(result.Contracts.begin(), std::move(contract));
+
+                UObjectLayoutContract uobject;
+                uobject.ObjectRoot = bestHeader->Root;
+                uobject.State = ContractState::Observed;
+                uobject.UObject.Name = bestHeaderSeed->NameOffset;
+                uobject.UObject.InternalIndex = bestHeaderSeed->IndexOffset;
+                uobject.UObject.Class = bestHeaderSeed->ClassOffset;
+                uobject.UObject.Outer = bestHeaderSeed->OuterOffset;
+                if (uobject.UObject.Name >= 0 || uobject.UObject.InternalIndex >= 0 ||
+                    uobject.UObject.Class >= 0 || uobject.UObject.Outer >= 0)
+                    result.UObjectLayouts.insert(result.UObjectLayouts.begin(), std::move(uobject));
             }
         }
         result.Seeds = std::move(seeds);
+        result.ContractsAmbiguous = contractsAmbiguous;
         return result;
     }
 } // namespace nextdumper::analysis

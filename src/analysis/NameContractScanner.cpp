@@ -71,7 +71,7 @@ namespace nextdumper::analysis
             return width >= 64 ? ~uint64_t{0} : (uint64_t{1} << width) - 1;
         }
 
-        bool SameChain(const Contract &contract, const Role &role)
+        bool SameChain(const NamePoolContract &contract, const Role &role)
         {
             return contract.Root == role.Global &&
                    contract.NamePool.BlocksOffset == role.BlocksOffset &&
@@ -218,8 +218,7 @@ namespace nextdumper::analysis
                 if (role.IdMask != 0 && static_cast<int32_t>(std::bit_width(role.IdMask)) != role.BlocksBit)
                     return;
 
-                Contract contract;
-                contract.Kind = ContractKind::NamePool;
+                NamePoolContract contract;
                 contract.Root = role.Global;
                 contract.State = ContractState::Observed;
                 contract.NamePool.BlocksOffset = role.BlocksOffset;
@@ -540,7 +539,7 @@ namespace nextdumper::analysis
             const InstructionDecoder &decoder_;
             NameContractScanOptions options_;
             std::vector<Role> roles_;
-            std::vector<Contract> contracts_;
+            std::vector<NamePoolContract> contracts_;
             uintptr_t functionStart_ = 0;
         };
     } // namespace

@@ -833,8 +833,12 @@ namespace nextdumper::app
                  "analysis_probe mode=" + std::string(AnalysisModeName(config_.analysis)) +
                      " status=" + ::nextdumper::analysis::AnalysisStatusName(result.Status) +
                      " reason=" + result.Reason +
-                     " contracts=" + std::to_string(result.Contracts.size()) +
+                     " contracts=" + std::to_string(result.NamePools.size() + result.ObjectArrays.size() + result.UObjectLayouts.size()) +
                      " validated=" + std::to_string(validated) +
+                     " name_status=" + ::nextdumper::analysis::AnalysisStatusName(result.NameStatus) +
+                     " object_status=" + ::nextdumper::analysis::AnalysisStatusName(result.ObjectStatus) +
+                     " uobject_status=" + ::nextdumper::analysis::AnalysisStatusName(result.UObjectStatus) +
+                     " address_space_changed=" + std::to_string(result.AddressSpaceChanged) +
                      " segments=" + std::to_string(result.Coverage.ModuleSegments) +
                      " executable_segments=" + std::to_string(result.Coverage.ExecutableSegments) +
                      " planned_bytes=" + std::to_string(result.Coverage.PlannedBytes) +
@@ -872,7 +876,14 @@ namespace nextdumper::app
                 proposal = MakeNameBindingProposal(*analysisResult, decode);
             if (!proposal && analysisResult)
             {
-                Note("analysis_binding_proposal status=unavailable reason=no-validated-name-contract-or-boundary");
+                const char *reason = analysisResult->AddressSpaceChanged
+                                         ? "address-space-changed"
+                                     : (analysisResult->NameStatus == ::nextdumper::analysis::AnalysisStatus::Ambiguous ||
+                                        analysisResult->ObjectStatus == ::nextdumper::analysis::AnalysisStatus::Ambiguous ||
+                                        analysisResult->UObjectStatus == ::nextdumper::analysis::AnalysisStatus::Ambiguous)
+                                         ? "domain-contracts-ambiguous"
+                                         : "no-validated-name-contract-or-boundary";
+                Note("analysis_binding_proposal status=unavailable reason=" + std::string(reason));
             }
             if (proposal)
             {
