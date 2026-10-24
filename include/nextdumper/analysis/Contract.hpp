@@ -91,7 +91,9 @@ namespace nextdumper::analysis
 
         [[nodiscard]] bool Complete() const
         {
-            return Name >= 0 && InternalIndex >= 0 && Class >= 0 && Outer >= 0;
+            return Name >= 0 && InternalIndex >= 0 && Class >= 0 && Outer >= 0 &&
+                   Name != InternalIndex && Name != Class && Name != Outer &&
+                   InternalIndex != Class && InternalIndex != Outer && Class != Outer;
         }
 
         [[nodiscard]] bool operator==(const UObjectLayoutFields &other) const = default;

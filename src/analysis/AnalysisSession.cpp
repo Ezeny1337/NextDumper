@@ -457,55 +457,6 @@ namespace nextdumper::analysis
                              " objects_offset=" + std::to_string(fields.ObjectsOffset) +
                              " state=" + ContractStateName(contract.State)});
                 }
-                const auto formatObjectCandidate = [](const ObjectCandidateEvidence &evidence, bool accepted)
-                {
-                    std::string message = "accepted=" + std::to_string(accepted ? 1 : 0) +
-                                          " root=" + common::Hex(evidence.Root) +
-                                          " storage=" + common::Hex(evidence.Storage) +
-                                          " count=" + std::to_string(evidence.Count) +
-                                          " max_elements=" + std::to_string(evidence.MaxElements) +
-                                          " max_chunks=" + std::to_string(evidence.MaxChunks) +
-                                          " num_chunks=" + std::to_string(evidence.NumChunks) +
-                                          " field=" + evidence.Field +
-                                          " mode=" + std::string(evidence.Fixed ? "fixed" : "chunked") +
-                                          " per_chunk=" + std::to_string(evidence.ElementsPerChunk) +
-                                          " item_stride=" + std::to_string(evidence.ItemStride) +
-                                          " item_index=" + std::to_string(evidence.ItemIndexOffset) +
-                                          " first_object=" + common::Hex(evidence.FirstObject) +
-                                          " tested=" + std::to_string(evidence.Tested) +
-                                          " empty=" + std::to_string(evidence.Empty) +
-                                          " core=" + std::to_string(evidence.CoreValid) + "/" +
-                                          std::to_string(evidence.Tested - evidence.Empty) +
-                                          " shaped=" + std::to_string(evidence.Shaped) +
-                                          " names=" + std::to_string(evidence.NameDecoded) +
-                                          " in_range=" + std::to_string(evidence.IndexInRange) +
-                                          " class_hits=" + std::to_string(evidence.ClassHits) +
-                                          " outer_hits=" + std::to_string(evidence.OuterHits) +
-                                          " full=" + std::to_string(evidence.FullValid) +
-                                          " max_valid_index=" + std::to_string(evidence.MaxValidIndex) +
-                                          " stage=" + evidence.Stage +
-                                          " sample_index=" + std::to_string(evidence.FailureIndex);
-                    if (!evidence.Detail.empty())
-                        message += " detail=" + evidence.Detail;
-                    if (!evidence.SampleNames.empty())
-                        message += " samples=" + evidence.SampleNames;
-                    return message;
-                };
-                for (const ObjectCandidateEvidence &evidence : objectScan.Accepted)
-                {
-                    result.Diagnostics.push_back({DiagnosticSeverity::Info, "ANALYSIS_OBJECT_CANDIDATE",
-                                                  formatObjectCandidate(evidence, true)});
-                }
-                for (const ObjectCandidateEvidence &evidence : objectScan.Rejections)
-                {
-                    result.Diagnostics.push_back({DiagnosticSeverity::Info, "ANALYSIS_OBJECT_CANDIDATE",
-                                                  formatObjectCandidate(evidence, false)});
-                    if (!evidence.Snapshot.empty())
-                    {
-                        result.Diagnostics.push_back({DiagnosticSeverity::Info, "ANALYSIS_OBJECT_SNAPSHOT",
-                                                      "root=" + common::Hex(evidence.Root) + " " + evidence.Snapshot});
-                    }
-                }
                 for (const ObjectSeedEvidence &seed : objectScan.Seeds)
                 {
                     std::string seedMessage = "root=" + common::Hex(seed.Root) +
@@ -516,15 +467,6 @@ namespace nextdumper::analysis
                                               " item_index=" + std::to_string(seed.ItemIndexOffset) +
                                               " prefix=" + std::to_string(seed.PrefixValid) + "/" +
                                               std::to_string(seed.PrefixTested) +
-                                              " header=0:" + common::Hex(seed.Header0) +
-                                              " 4:" + common::Hex(seed.Header4) +
-                                              " 8:" + common::Hex(seed.Header8) +
-                                              " 12:" + common::Hex(seed.Header12) +
-                                              " 16:" + common::Hex(seed.Header16) +
-                                              " 20:" + common::Hex(seed.Header20) +
-                                              " 24:" + common::Hex(seed.Header24) +
-                                              " 28:" + common::Hex(seed.Header28) +
-                                              " 32:" + common::Hex(seed.Header32) +
                                               " chunk_table=" + std::to_string(seed.ChunkTable) +
                                               " chunks=" + std::to_string(seed.ChunkCount) +
                                               " chunk_size=" + std::to_string(seed.ElementsPerChunk) +
@@ -581,37 +523,10 @@ namespace nextdumper::analysis
                                  " outer_hits=" + std::to_string(seed.OuterHits) +
                                  " detail=" + seed.CalibrationDetail});
                     }
-                    if (seed.ContinuationAttempted)
-                    {
-                        std::string continuation = "root=" + common::Hex(seed.Root) +
-                                                   " start=" + std::to_string(seed.ContinuationStart) +
-                                                   " end=" + std::to_string(seed.ContinuationEnd) +
-                                                   " continued=" + std::to_string(seed.Continued) +
-                                                   " valid=" + std::to_string(seed.ValidBeyond) +
-                                                   " empty=" + std::to_string(seed.EmptyBeyond) +
-                                                   " invalid=" + std::to_string(seed.InvalidBeyond) +
-                                                   " first_invalid=" + std::to_string(seed.FirstInvalidIndex) +
-                                                   " first_invalid_object=" + common::Hex(seed.FirstInvalidObject) +
-                                                   " last_valid=" + std::to_string(seed.LastValidIndex) +
-                                                   " stop=" + seed.StopReason;
-                        if (!seed.ContinuationSamples.empty())
-                            continuation += " samples=" + seed.ContinuationSamples;
-                        result.Diagnostics.push_back(
-                            {DiagnosticSeverity::Info, "ANALYSIS_OBJECT_SEED_CONTINUATION",
-                             std::move(continuation)});
-                        if (!seed.ContinuationSnapshot.empty())
-                        {
-                            result.Diagnostics.push_back(
-                                {DiagnosticSeverity::Info, "ANALYSIS_OBJECT_SEED_SNAPSHOT",
-                                 "root=" + common::Hex(seed.Root) + " " + seed.ContinuationSnapshot});
-                        }
-                    }
                 }
 
                 std::string message = "scanned_bytes=" + std::to_string(objectScan.ScannedBytes) +
                                       " candidates=" + std::to_string(objectScan.Candidates) +
-                                      " parent_candidates=" + std::to_string(objectScan.ParentCandidates) +
-                                      " deep_candidates=" + std::to_string(objectScan.DeepCandidates) +
                                       " seed_roots=" + std::to_string(objectScan.SeedRootsProbed) +
                                       " seed_candidates=" + std::to_string(objectScan.SeedCandidates) +
                                       " seeds=" + std::to_string(objectScan.Seeds.size()) +
@@ -620,12 +535,9 @@ namespace nextdumper::analysis
                                       " uobject_layouts=" + std::to_string(objectScan.UObjectLayouts.size()) +
                                       " name_evidence=" + std::to_string(objectScanNameContract ? 1 : 0) +
                                       " budget_exhausted=" + std::to_string(objectScan.BudgetExhausted) +
-                                      " deep_budget_exhausted=" + std::to_string(objectScan.DeepBudgetExhausted) +
                                       " seed_budget_exhausted=" + std::to_string(objectScan.SeedBudgetExhausted);
                 if (!objectScan.Error.empty())
                     message += " error=" + objectScan.Error;
-                if (!objectScan.BestRejected.empty())
-                    message += " best_rejected=" + objectScan.BestRejected;
                 result.Diagnostics.push_back(
                     {objectScan.Contracts.empty() ? DiagnosticSeverity::Warning : DiagnosticSeverity::Info,
                      objectScan.Contracts.empty() ? "ANALYSIS_OBJECT_SCAN_EMPTY" : "ANALYSIS_OBJECT_SCAN",
