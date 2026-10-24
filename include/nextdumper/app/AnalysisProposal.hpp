@@ -18,6 +18,7 @@ namespace nextdumper::app
         bool fullBlockBound = false;
         uintptr_t objectRoot = 0;
         std::optional<::nextdumper::binding::ObjectContainerLayout> objectLayout;
+        std::optional<::nextdumper::binding::UObjectLayoutHint> uobject;
         size_t contractIndex = 0;
         std::string evidence;
 

@@ -892,6 +892,7 @@ namespace nextdumper::app
                     candidates.nameRoots.push_back({proposal->root, AddressMeaning::ResolvedValue, 100, "analysis:NamePool"});
                 ::nextdumper::binding::BindingLayoutHints proposalHints = layoutHints;
                 proposalHints.names = proposal->layout;
+                proposalHints.uobject = proposal->uobject;
                 proposalHints.allowFullBlockNameBound = proposal->fullBlockBound;
                 if (proposal->objectRoot != 0 && proposal->objectLayout)
                 {

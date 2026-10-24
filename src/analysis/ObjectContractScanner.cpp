@@ -821,6 +821,11 @@ namespace nextdumper::analysis
             std::vector<SeedOffsetStat> outerStats;
             for (int32_t offset = 8; offset <= 0x80; offset += 4)
             {
+                if (offset == seed.ClassOffset || offset == seed.IndexOffset)
+                    continue;
+                if (seed.NameOffset >= 0 && offset >= seed.NameOffset - 4 &&
+                    offset < seed.NameOffset + 12)
+                    continue;
                 uint32_t valid = 0;
                 uint32_t nonNull = 0;
                 for (const SeedObject &object : objects)
@@ -957,6 +962,183 @@ namespace nextdumper::analysis
             seed.ContinuationSamples = BuildShapeSamples(samples);
             if (seed.FirstInvalidObject != 0)
                 seed.ContinuationSnapshot = ObjectSnapshot(memory, names, seed.FirstInvalidObject);
+        }
+
+        bool ProbeChunkTable(const MemoryView &memory, NameResolver &names,
+                             ObjectSeedEvidence &seed)
+        {
+            constexpr int32_t kChunkSize = 64 * 1024;
+            std::vector<uintptr_t> chunks;
+            for (int32_t chunkIndex = 0; chunkIndex < static_cast<int32_t>(seed.ChunkValid.size()); ++chunkIndex)
+            {
+                const auto slot = AddOffset(seed.Root, static_cast<int64_t>(chunkIndex) * static_cast<int64_t>(sizeof(uintptr_t)));
+                uintptr_t chunk = 0;
+                if (!slot || !ReadPointerValue(memory, *slot, chunk) || chunk == 0 ||
+                    (chunk & (sizeof(uintptr_t) - 1)) != 0 ||
+                    !memory.IsReadable(chunk, sizeof(uintptr_t)) ||
+                    memory.IsExecutable(chunk, sizeof(uintptr_t)))
+                    break;
+                uintptr_t object = 0;
+                std::string name;
+                if (!ReadPointerValue(memory, chunk, object) ||
+                    !SeedCoreValid(memory, names, object, chunkIndex * kChunkSize,
+                                   seed.ItemIndexOffset, name))
+                    break;
+                chunks.push_back(chunk);
+            }
+            if (chunks.size() < 2)
+                return false;
+
+            seed.ChunkTable = true;
+            seed.ChunkCount = static_cast<int32_t>(chunks.size());
+            seed.ElementsPerChunk = kChunkSize;
+            for (size_t chunkIndex = 0; chunkIndex < chunks.size(); ++chunkIndex)
+            {
+                const uintptr_t chunk = chunks[chunkIndex];
+                const int32_t baseIndex = static_cast<int32_t>(chunkIndex) * kChunkSize;
+                for (int32_t within = 0; within < kChunkSize; ++within)
+                {
+                    const auto itemAddress = AddOffset(chunk, static_cast<int64_t>(within) * seed.ItemStride);
+                    if (!itemAddress || !memory.IsReadable(*itemAddress, sizeof(uintptr_t)))
+                    {
+                        seed.ChunkInvalid[chunkIndex] += kChunkSize - within;
+                        break;
+                    }
+                    uintptr_t object = 0;
+                    if (!ReadPointerValue(memory, *itemAddress, object))
+                    {
+                        ++seed.ChunkInvalid[chunkIndex];
+                        continue;
+                    }
+                    if (object == 0)
+                    {
+                        ++seed.ChunkEmpty[chunkIndex];
+                        continue;
+                    }
+                    std::string name;
+                    const int32_t globalIndex = baseIndex + within;
+                    if (SeedCoreValid(memory, names, object, globalIndex, seed.ItemIndexOffset, name))
+                    {
+                        ++seed.ChunkValid[chunkIndex];
+                        seed.ChunkLastValid[chunkIndex] = globalIndex;
+                        if (globalIndex + 1 > seed.DerivedCount)
+                            seed.DerivedCount = globalIndex + 1;
+                    }
+                    else
+                    {
+                        ++seed.ChunkInvalid[chunkIndex];
+                    }
+                }
+            }
+            return true;
+        }
+
+        struct HeaderCandidate
+        {
+            uintptr_t Root = 0;
+            int32_t ObjectsOffset = -1;
+            int32_t CountOffset = -1;
+            int32_t MaxChunksOffset = -1;
+            int32_t NumChunksOffset = -1;
+            int32_t MaxElementsOffset = -1;
+            int32_t Count = 0;
+            int32_t MaxElements = 0;
+            int32_t Chunks = 0;
+            int32_t Score = 0;
+        };
+
+        bool ProbeChunkHeader(const MemoryView &memory, const ObjectSeedEvidence &seed,
+                              const std::vector<uintptr_t> &referenceSlots, HeaderCandidate &best)
+        {
+            if (!seed.ChunkTable || seed.ChunkCount < 2 || seed.ElementsPerChunk <= 0)
+                return false;
+            constexpr int32_t kWindow = 0x60;
+            for (const uintptr_t referenceSlot : referenceSlots)
+            {
+                for (const int32_t objectsOffset : {0, 8, 16, 24, 32, 40, 48, 56, 64})
+                {
+                    if (referenceSlot < static_cast<uintptr_t>(objectsOffset))
+                        continue;
+                    const uintptr_t base = referenceSlot - static_cast<uintptr_t>(objectsOffset);
+                    if ((base & 3u) != 0 || !memory.IsReadable(base, kWindow))
+                        continue;
+                    uintptr_t objects = 0;
+                    if (!ReadPointerValue(memory, referenceSlot, objects) || objects != seed.Root)
+                        continue;
+
+                    int32_t values[kWindow / 4] = {};
+                    bool readable = true;
+                    for (int32_t offset = 0; offset < kWindow; offset += 4)
+                    {
+                        const auto address = AddOffset(base, offset);
+                        if (!address || !ReadInt32Value(memory, *address, values[offset / 4]))
+                        {
+                            readable = false;
+                            break;
+                        }
+                    }
+                    if (!readable)
+                        continue;
+
+                    for (int32_t numChunksOffset = 0; numChunksOffset < kWindow; numChunksOffset += 4)
+                    {
+                        const int32_t numChunks = values[numChunksOffset / 4];
+                        if (numChunks != seed.ChunkCount)
+                            continue;
+                        if (numChunksOffset >= objectsOffset && numChunksOffset < objectsOffset + 8)
+                            continue;
+                        for (int32_t maxChunksOffset = 0; maxChunksOffset < kWindow; maxChunksOffset += 4)
+                        {
+                            const int32_t maxChunks = values[maxChunksOffset / 4];
+                            if (maxChunks < numChunks || maxChunks > 64)
+                                continue;
+                            if (maxChunksOffset == numChunksOffset ||
+                                (maxChunksOffset >= objectsOffset && maxChunksOffset < objectsOffset + 8))
+                                continue;
+                            for (int32_t maxElementsOffset = 0; maxElementsOffset < kWindow; maxElementsOffset += 4)
+                            {
+                                const int32_t maxElements = values[maxElementsOffset / 4];
+                                if (maxElements <= 0 || maxElements != maxChunks * seed.ElementsPerChunk)
+                                    continue;
+                                if (maxElementsOffset == numChunksOffset || maxElementsOffset == maxChunksOffset ||
+                                    (maxElementsOffset >= objectsOffset && maxElementsOffset < objectsOffset + 8))
+                                    continue;
+                                for (int32_t countOffset = 0; countOffset < kWindow; countOffset += 4)
+                                {
+                                    const int32_t count = values[countOffset / 4];
+                                    if (count <= 0 || count < seed.ChunkValid[0] || count > maxElements)
+                                        continue;
+                                    if (countOffset == numChunksOffset || countOffset == maxChunksOffset ||
+                                        countOffset == maxElementsOffset ||
+                                        (countOffset >= objectsOffset && countOffset < objectsOffset + 8))
+                                        continue;
+                                    int32_t score = 0;
+                                    if (count == seed.DerivedCount)
+                                        score += 100;
+                                    if (maxElements == maxChunks * seed.ElementsPerChunk)
+                                        score += 50;
+                                    if (numChunks == seed.ChunkCount)
+                                        score += 20;
+                                    score += static_cast<int32_t>(seed.ChunkValid[0] / 4096);
+                                    if (score <= best.Score)
+                                        continue;
+                                    best.Root = base;
+                                    best.ObjectsOffset = objectsOffset;
+                                    best.CountOffset = countOffset;
+                                    best.MaxChunksOffset = maxChunksOffset;
+                                    best.NumChunksOffset = numChunksOffset;
+                                    best.MaxElementsOffset = maxElementsOffset;
+                                    best.Count = count;
+                                    best.MaxElements = maxElements;
+                                    best.Chunks = numChunks;
+                                    best.Score = score;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return best.Root != 0;
         }
 
         uint64_t EvidenceScore(const ObjectCandidateEvidence &evidence)
@@ -1382,7 +1564,8 @@ namespace nextdumper::analysis
 
         std::vector<ObjectSeedEvidence> seeds;
         std::unordered_set<uintptr_t> seedRoots;
-        const auto probeSeedRoot = [&](uintptr_t root)
+        std::unordered_map<uintptr_t, std::vector<uintptr_t>> seedReferences;
+        const auto probeSeedRoot = [&](uintptr_t root, uintptr_t referenceSlot)
         {
             if (seedRoots.size() >= options.MaxSeedRoots)
             {
@@ -1421,6 +1604,10 @@ namespace nextdumper::analysis
                 (!SeedCoreValid(image.Memory(), names, firstObject, 0, 36, firstName) &&
                  !SeedCoreValid(image.Memory(), names, firstObject, 0, 12, firstName)))
                 return;
+            std::vector<uintptr_t> &references = seedReferences[root];
+            if (references.size() < 16 &&
+                std::find(references.begin(), references.end(), referenceSlot) == references.end())
+                references.push_back(referenceSlot);
             ++result.SeedCandidates;
             ObjectSeedEvidence seed;
             if (TrySeed(image.Memory(), names, root, options, seed))
@@ -1449,7 +1636,7 @@ namespace nextdumper::analysis
                 !image.Memory().IsReadable(chunk0, sizeof(uintptr_t)))
                 return;
             ++result.Candidates;
-            probeSeedRoot(rawChunkTable);
+            probeSeedRoot(rawChunkTable, pointerAddress);
             std::optional<ObjectCandidateEvidence> rejected;
             std::optional<ObjectCandidateEvidence> accepted;
             const auto contract = TryCandidate(image.Memory(), names, pointerAddress, rawChunkTable,
@@ -1632,10 +1819,70 @@ namespace nextdumper::analysis
                   });
         if (seeds.size() > options.MaxSeeds)
             seeds.resize(options.MaxSeeds);
+        std::optional<HeaderCandidate> bestHeader;
+        ObjectSeedEvidence *bestHeaderSeed = nullptr;
         for (size_t index = 0; index < seeds.size() && index < options.MaxSeedContinuations; ++index)
         {
             CalibrateSeed(image.Memory(), names, seeds[index]);
+            if (ProbeChunkTable(image.Memory(), names, seeds[index]))
+            {
+                HeaderCandidate header;
+                if (ProbeChunkHeader(image.Memory(), seeds[index], seedReferences[seeds[index].Root], header))
+                {
+                    seeds[index].HeaderFound = true;
+                    seeds[index].HeaderRoot = header.Root;
+                    seeds[index].HeaderObjectsOffset = header.ObjectsOffset;
+                    seeds[index].HeaderCountOffset = header.CountOffset;
+                    seeds[index].HeaderMaxChunksOffset = header.MaxChunksOffset;
+                    seeds[index].HeaderNumChunksOffset = header.NumChunksOffset;
+                    seeds[index].HeaderMaxElementsOffset = header.MaxElementsOffset;
+                    seeds[index].HeaderCount = header.Count;
+                    seeds[index].HeaderMaxElements = header.MaxElements;
+                    seeds[index].HeaderChunks = header.Chunks;
+                    if (!bestHeader || header.Score > bestHeader->Score)
+                    {
+                        bestHeader = header;
+                        bestHeaderSeed = &seeds[index];
+                    }
+                }
+                continue;
+            }
             ContinueSeed(image.Memory(), names, options, seeds[index]);
+        }
+        if (bestHeader)
+        {
+            Contract contract;
+            contract.Kind = ContractKind::ObjectArray;
+            contract.Root = bestHeader->Root;
+            contract.State = ContractState::Validated;
+            ObjectArrayFields &fields = contract.ObjectArray;
+            fields.ObjectsOffset = bestHeader->ObjectsOffset;
+            fields.MaxElementsOffset = bestHeader->MaxElementsOffset;
+            fields.NumElementsOffset = bestHeader->CountOffset;
+            fields.MaxChunksOffset = bestHeader->MaxChunksOffset;
+            fields.NumChunksOffset = bestHeader->NumChunksOffset;
+            fields.ElementsPerChunk = bestHeaderSeed->ElementsPerChunk;
+            fields.ItemStride = bestHeaderSeed->ItemStride;
+            fields.ItemObjectOffset = 0;
+            fields.ItemIndexOffset = bestHeaderSeed->ItemIndexOffset;
+            fields.Fixed = false;
+            fields.Count = static_cast<uint32_t>(bestHeader->Count);
+            fields.MaxElements = static_cast<uint32_t>(bestHeader->MaxElements);
+            fields.Chunks = static_cast<uint32_t>(bestHeader->Chunks);
+            contract.UObject.Name = bestHeaderSeed->NameOffset;
+            contract.UObject.InternalIndex = bestHeaderSeed->IndexOffset;
+            contract.UObject.Class = bestHeaderSeed->ClassOffset;
+            contract.UObject.Outer = bestHeaderSeed->OuterOffset;
+            if (fields.Complete())
+            {
+                contract.Evidence.push_back({EvidenceKind::TableLoad, bestHeader->Root,
+                                             bestHeaderSeed->Root});
+                contract.Evidence.push_back({EvidenceKind::EntryLoad, bestHeader->Root,
+                                             static_cast<uint64_t>(bestHeader->Count)});
+                contract.Evidence.push_back({EvidenceKind::ScaleAdd, bestHeader->Root,
+                                             static_cast<uint64_t>(bestHeaderSeed->ItemStride)});
+                result.Contracts.insert(result.Contracts.begin(), std::move(contract));
+            }
         }
         result.Seeds = std::move(seeds);
         return result;

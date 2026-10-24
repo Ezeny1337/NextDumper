@@ -142,6 +142,16 @@ namespace nextdumper::app
                     continue;
                 proposal.objectRoot = objectContract.Root;
                 proposal.objectLayout = objectLayout;
+                if (objectContract.UObject.Complete())
+                {
+                    proposal.uobject = ::nextdumper::binding::UObjectLayoutHint{
+                        objectContract.UObject.Name, objectContract.UObject.InternalIndex,
+                        objectContract.UObject.Class, objectContract.UObject.Outer};
+                    proposal.evidence += " uobject_offsets=name:" + std::to_string(objectContract.UObject.Name) +
+                                         " index:" + std::to_string(objectContract.UObject.InternalIndex) +
+                                         " class:" + std::to_string(objectContract.UObject.Class) +
+                                         " outer:" + std::to_string(objectContract.UObject.Outer);
+                }
                 proposal.evidence += " object_root=" + common::Hex(objectContract.Root) +
                                      " object_count=" + std::to_string(objectFields.Count) +
                                      " object_item_stride=" + std::to_string(objectFields.ItemStride);

@@ -405,6 +405,7 @@ namespace nextdumper::analysis
                              std::to_string(fields.NumElementsOffset) + "/" +
                              std::to_string(fields.MaxChunksOffset) + "/" +
                              std::to_string(fields.NumChunksOffset) +
+                             " objects_offset=" + std::to_string(fields.ObjectsOffset) +
                              " state=validated"});
                 }
                 const auto formatObjectCandidate = [](const ObjectCandidateEvidence &evidence, bool accepted)
@@ -474,9 +475,47 @@ namespace nextdumper::analysis
                                               " 20:" + common::Hex(seed.Header20) +
                                               " 24:" + common::Hex(seed.Header24) +
                                               " 28:" + common::Hex(seed.Header28) +
-                                              " 32:" + common::Hex(seed.Header32);
+                                              " 32:" + common::Hex(seed.Header32) +
+                                              " chunk_table=" + std::to_string(seed.ChunkTable) +
+                                              " chunks=" + std::to_string(seed.ChunkCount) +
+                                              " chunk_size=" + std::to_string(seed.ElementsPerChunk) +
+                                              " derived_count=" + std::to_string(seed.DerivedCount);
                     result.Diagnostics.push_back({DiagnosticSeverity::Info, "ANALYSIS_OBJECT_SEED",
                                                   std::move(seedMessage)});
+                    if (seed.ChunkTable)
+                    {
+                        std::string chunks = "root=" + common::Hex(seed.Root) +
+                                             " chunks=" + std::to_string(seed.ChunkCount) +
+                                             " chunk_size=" + std::to_string(seed.ElementsPerChunk) +
+                                             " derived_count=" + std::to_string(seed.DerivedCount);
+                        for (int32_t index = 0; index < seed.ChunkCount &&
+                                                index < static_cast<int32_t>(seed.ChunkValid.size());
+                             ++index)
+                        {
+                            chunks += " chunk" + std::to_string(index) + "=" +
+                                      std::to_string(seed.ChunkValid[index]) + "/" +
+                                      std::to_string(seed.ChunkEmpty[index]) + "/" +
+                                      std::to_string(seed.ChunkInvalid[index]) + "@" +
+                                      std::to_string(seed.ChunkLastValid[index]);
+                        }
+                        result.Diagnostics.push_back({DiagnosticSeverity::Info,
+                                                      "ANALYSIS_OBJECT_SEED_CHUNKS", std::move(chunks)});
+                    }
+                    if (seed.HeaderFound)
+                    {
+                        result.Diagnostics.push_back(
+                            {DiagnosticSeverity::Info, "ANALYSIS_OBJECT_SEED_HEADER",
+                             "seed_root=" + common::Hex(seed.Root) +
+                                 " header_root=" + common::Hex(seed.HeaderRoot) +
+                                 " objects_offset=" + std::to_string(seed.HeaderObjectsOffset) +
+                                 " count_offset=" + std::to_string(seed.HeaderCountOffset) +
+                                 " max_chunks_offset=" + std::to_string(seed.HeaderMaxChunksOffset) +
+                                 " num_chunks_offset=" + std::to_string(seed.HeaderNumChunksOffset) +
+                                 " max_elements_offset=" + std::to_string(seed.HeaderMaxElementsOffset) +
+                                 " count=" + std::to_string(seed.HeaderCount) +
+                                 " max_elements=" + std::to_string(seed.HeaderMaxElements) +
+                                 " chunks=" + std::to_string(seed.HeaderChunks)});
+                    }
                     if (seed.Calibrated)
                     {
                         result.Diagnostics.push_back(

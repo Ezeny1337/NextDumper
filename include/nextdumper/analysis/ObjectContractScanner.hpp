@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -56,6 +57,24 @@ namespace nextdumper::analysis
         int32_t OuterOffset = -1;
         uint32_t OuterHits = 0;
         std::string CalibrationDetail;
+        bool ChunkTable = false;
+        int32_t ChunkCount = 0;
+        int32_t ElementsPerChunk = 0;
+        std::array<int32_t, 8> ChunkValid{};
+        std::array<int32_t, 8> ChunkEmpty{};
+        std::array<int32_t, 8> ChunkInvalid{};
+        std::array<int32_t, 8> ChunkLastValid{};
+        int32_t DerivedCount = 0;
+        bool HeaderFound = false;
+        uintptr_t HeaderRoot = 0;
+        int32_t HeaderObjectsOffset = -1;
+        int32_t HeaderCountOffset = -1;
+        int32_t HeaderMaxChunksOffset = -1;
+        int32_t HeaderNumChunksOffset = -1;
+        int32_t HeaderMaxElementsOffset = -1;
+        int32_t HeaderCount = 0;
+        int32_t HeaderMaxElements = 0;
+        int32_t HeaderChunks = 0;
         bool ContinuationAttempted = false;
         bool Continued = false;
         int32_t ContinuationStart = 0;

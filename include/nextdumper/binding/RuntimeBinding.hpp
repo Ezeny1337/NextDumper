@@ -122,16 +122,31 @@ namespace nextdumper::binding
         [[nodiscard]] bool IsValid() const;
     };
 
+    struct UObjectLayoutHint
+    {
+        int32_t name = -1;
+        int32_t internalIndex = -1;
+        int32_t classPointer = -1;
+        int32_t outer = -1;
+
+        [[nodiscard]] bool IsValid() const
+        {
+            return name >= 0 && internalIndex >= 0 && classPointer >= 0 && outer >= 0;
+        }
+    };
+
     struct BindingLayoutHints
     {
         std::optional<ObjectContainerLayout> objects;
         std::optional<NameContainerLayout> names;
+        std::optional<UObjectLayoutHint> uobject;
         // 仅分析层已验证但无法定位发布边界的名称池使用：读取器按整块上界工作
         bool allowFullBlockNameBound = false;
 
         [[nodiscard]] bool IsValid() const
         {
-            return (!objects || objects->IsValid()) && (!names || names->IsValid());
+            return (!objects || objects->IsValid()) && (!names || names->IsValid()) &&
+                   (!uobject || uobject->IsValid());
         }
     };
 
@@ -188,6 +203,7 @@ namespace nextdumper::binding
         ObjectContainerLayout objects;
         NameContainerLayout names;
         DecodePlan decode = DecodePlan::Identity();
+        std::optional<UObjectLayoutHint> uobject;
         BindingReport report;
         std::vector<CommonObjectInfo> commonObjects;
 

@@ -75,6 +75,16 @@ namespace nextdumper::ue::schema_probe
         }
 
         const auto &samples = bootstrap_->objectSamples;
+        const auto &uobjectHint = binding_.uobject;
+        const bool hasUObjectHint = uobjectHint.has_value() && uobjectHint->IsValid();
+        if (hasUObjectHint)
+        {
+            report.evidence.push_back("UObject layout hint from analysis name=" +
+                                      std::to_string(uobjectHint->name) +
+                                      " index=" + std::to_string(uobjectHint->internalIndex) +
+                                      " class=" + std::to_string(uobjectHint->classPointer) +
+                                      " outer=" + std::to_string(uobjectHint->outer));
+        }
 
         schema.fname.comparisonIndex = 0;
         schema.fname.size = schema.features.outlineNumberName
@@ -180,6 +190,8 @@ namespace nextdumper::ue::schema_probe
                                       " known_names=" + std::to_string(bestKnownHits));
             return false;
         }
+        if (hasUObjectHint)
+            bestNameOffset = uobjectHint->name;
         schema.uobject.name = bestNameOffset;
         report.evidence.push_back("UObject::Name offset=" + std::to_string(bestNameOffset) +
                                   " valid_names=" + std::to_string(bestNameHits) +
@@ -513,12 +525,12 @@ namespace nextdumper::ue::schema_probe
                 bestClassOffset = offset;
             }
         }
-        if (bestClassHits < 3)
+        if (!hasUObjectHint && bestClassHits < 3)
         {
             report.failures.push_back("UObject::Class did not decode consistently through the validated name store");
             return false;
         }
-        schema.uobject.classPointer = bestClassOffset;
+        schema.uobject.classPointer = hasUObjectHint ? uobjectHint->classPointer : bestClassOffset;
 
         for (int32_t offset = static_cast<int32_t>(sizeof(uintptr_t)); offset <= 0x80; offset += 4)
         {
@@ -544,6 +556,8 @@ namespace nextdumper::ue::schema_probe
                 break;
             }
         }
+        if (hasUObjectHint)
+            schema.uobject.internalIndex = uobjectHint->internalIndex;
 
         if (schema.uobject.internalIndex < 0)
         {
@@ -557,100 +571,109 @@ namespace nextdumper::ue::schema_probe
             return false;
         }
 
-        // 同时核对标准尾部与可选的四字节对象列表索引布局
-        const int32_t nameEnd = schema.uobject.name + schema.fname.size;
-        const int32_t firstOuterOffset = ((nameEnd + pointerSize - 1) / pointerSize) * pointerSize;
-        const int32_t indexedOuterOffset =
-            ((nameEnd + static_cast<int32_t>(sizeof(int32_t)) + pointerSize - 1) / pointerSize) * pointerSize;
-        const auto readObjectName = [&](uintptr_t object)
-        { return ReadObjectName(memory_, binding_, schema, names, object); };
-        struct OuterCandidateEvidence
+        if (hasUObjectHint)
         {
-            int32_t offset = -1;
-            size_t validObjects = 0;
-            size_t sampleHits = 0;
-            size_t nullHits = 0;
-        };
-        std::vector<OuterCandidateEvidence> outerCandidates;
-        const auto inspectOuterCandidate = [&](int32_t offset)
+            schema.uobject.outer = uobjectHint->outer;
+            report.evidence.push_back("resolved UObject::Outer from analysis hint offset=" +
+                                      std::to_string(uobjectHint->outer));
+        }
+        else
         {
-            OuterCandidateEvidence candidate;
-            candidate.offset = offset;
-            for (const auto &[index, object] : samples)
+            // 同时核对标准尾部与可选的四字节对象列表索引布局
+            const int32_t nameEnd = schema.uobject.name + schema.fname.size;
+            const int32_t firstOuterOffset = ((nameEnd + pointerSize - 1) / pointerSize) * pointerSize;
+            const int32_t indexedOuterOffset =
+                ((nameEnd + static_cast<int32_t>(sizeof(int32_t)) + pointerSize - 1) / pointerSize) * pointerSize;
+            const auto readObjectName = [&](uintptr_t object)
+            { return ReadObjectName(memory_, binding_, schema, names, object); };
+            struct OuterCandidateEvidence
             {
-                (void)index;
-                const auto address = Add(object, offset);
-                if (!address)
-                    continue;
-                uintptr_t value = 0;
-                if (!memory_.Read(*address, value))
-                    continue;
-                value = binding_.decode.objectOuter(value, *address);
-                if (value == 0)
+                int32_t offset = -1;
+                size_t validObjects = 0;
+                size_t sampleHits = 0;
+                size_t nullHits = 0;
+            };
+            std::vector<OuterCandidateEvidence> outerCandidates;
+            const auto inspectOuterCandidate = [&](int32_t offset)
+            {
+                OuterCandidateEvidence candidate;
+                candidate.offset = offset;
+                for (const auto &[index, object] : samples)
                 {
-                    ++candidate.nullHits;
-                    continue;
+                    (void)index;
+                    const auto address = Add(object, offset);
+                    if (!address)
+                        continue;
+                    uintptr_t value = 0;
+                    if (!memory_.Read(*address, value))
+                        continue;
+                    value = binding_.decode.objectOuter(value, *address);
+                    if (value == 0)
+                    {
+                        ++candidate.nullHits;
+                        continue;
+                    }
+                    if (value == object || !IsReadablePointer(memory_, value) || !readObjectName(value))
+                        continue;
+                    ++candidate.validObjects;
+                    if (sampleObjects.contains(value))
+                        ++candidate.sampleHits;
                 }
-                if (value == object || !IsReadablePointer(memory_, value) || !readObjectName(value))
+                return candidate;
+            };
+            const std::array<int32_t, 2> sourceOuterOffsets = {firstOuterOffset, indexedOuterOffset};
+            for (const int32_t offset : sourceOuterOffsets)
+            {
+                if (offset == schema.uobject.classPointer ||
+                    std::any_of(outerCandidates.begin(), outerCandidates.end(), [offset](const auto &candidate)
+                                { return candidate.offset == offset; }))
                     continue;
-                ++candidate.validObjects;
-                if (sampleObjects.contains(value))
-                    ++candidate.sampleHits;
+                outerCandidates.push_back(inspectOuterCandidate(offset));
             }
-            return candidate;
-        };
-        const std::array<int32_t, 2> sourceOuterOffsets = {firstOuterOffset, indexedOuterOffset};
-        for (const int32_t offset : sourceOuterOffsets)
-        {
-            if (offset == schema.uobject.classPointer ||
-                std::any_of(outerCandidates.begin(), outerCandidates.end(), [offset](const auto &candidate)
-                            { return candidate.offset == offset; }))
-                continue;
-            outerCandidates.push_back(inspectOuterCandidate(offset));
+            const auto betterOuterEvidence = [](const OuterCandidateEvidence &left, const OuterCandidateEvidence &right)
+            {
+                if (left.validObjects != right.validObjects)
+                    return left.validObjects > right.validObjects;
+                return left.sampleHits > right.sampleHits;
+            };
+            std::sort(outerCandidates.begin(), outerCandidates.end(), betterOuterEvidence);
+            for (const auto &candidate : outerCandidates)
+            {
+                report.evidence.push_back("UObject::Outer source-layout candidate offset=" +
+                                          std::to_string(candidate.offset) + " valid_objects=" +
+                                          std::to_string(candidate.validObjects) + " sampled_objects=" +
+                                          std::to_string(candidate.sampleHits) + " null_objects=" +
+                                          std::to_string(candidate.nullHits));
+            }
+            if (outerCandidates.empty() || outerCandidates.front().validObjects < 3)
+            {
+                report.failures.push_back("UObject::Outer source-layout candidates were rejected; standard_offset=" +
+                                          std::to_string(firstOuterOffset) +
+                                          " indexed_offset=" + std::to_string(indexedOuterOffset) +
+                                          " best_valid_objects=" +
+                                          std::to_string(outerCandidates.empty() ? 0 : outerCandidates.front().validObjects));
+                return false;
+            }
+            if (outerCandidates.size() > 1 &&
+                outerCandidates[0].validObjects == outerCandidates[1].validObjects &&
+                outerCandidates[0].sampleHits == outerCandidates[1].sampleHits)
+            {
+                report.ambiguous = true;
+                report.failures.push_back("UObject::Outer source-layout candidates are ambiguous; offsets=" +
+                                          std::to_string(outerCandidates[0].offset) + "," +
+                                          std::to_string(outerCandidates[1].offset) + " valid_objects=" +
+                                          std::to_string(outerCandidates[0].validObjects) + " sampled_objects=" +
+                                          std::to_string(outerCandidates[0].sampleHits));
+                return false;
+            }
+            const OuterCandidateEvidence &selectedOuter = outerCandidates.front();
+            schema.uobject.outer = selectedOuter.offset;
+            report.evidence.push_back("resolved UObject::Outer from validated source-layout candidate offset=" +
+                                      std::to_string(selectedOuter.offset) +
+                                      " object_list_index_candidate=" +
+                                      std::to_string(selectedOuter.offset == indexedOuterOffset &&
+                                                     indexedOuterOffset != firstOuterOffset));
         }
-        const auto betterOuterEvidence = [](const OuterCandidateEvidence &left, const OuterCandidateEvidence &right)
-        {
-            if (left.validObjects != right.validObjects)
-                return left.validObjects > right.validObjects;
-            return left.sampleHits > right.sampleHits;
-        };
-        std::sort(outerCandidates.begin(), outerCandidates.end(), betterOuterEvidence);
-        for (const auto &candidate : outerCandidates)
-        {
-            report.evidence.push_back("UObject::Outer source-layout candidate offset=" +
-                                      std::to_string(candidate.offset) + " valid_objects=" +
-                                      std::to_string(candidate.validObjects) + " sampled_objects=" +
-                                      std::to_string(candidate.sampleHits) + " null_objects=" +
-                                      std::to_string(candidate.nullHits));
-        }
-        if (outerCandidates.empty() || outerCandidates.front().validObjects < 3)
-        {
-            report.failures.push_back("UObject::Outer source-layout candidates were rejected; standard_offset=" +
-                                      std::to_string(firstOuterOffset) +
-                                      " indexed_offset=" + std::to_string(indexedOuterOffset) +
-                                      " best_valid_objects=" +
-                                      std::to_string(outerCandidates.empty() ? 0 : outerCandidates.front().validObjects));
-            return false;
-        }
-        if (outerCandidates.size() > 1 &&
-            outerCandidates[0].validObjects == outerCandidates[1].validObjects &&
-            outerCandidates[0].sampleHits == outerCandidates[1].sampleHits)
-        {
-            report.ambiguous = true;
-            report.failures.push_back("UObject::Outer source-layout candidates are ambiguous; offsets=" +
-                                      std::to_string(outerCandidates[0].offset) + "," +
-                                      std::to_string(outerCandidates[1].offset) + " valid_objects=" +
-                                      std::to_string(outerCandidates[0].validObjects) + " sampled_objects=" +
-                                      std::to_string(outerCandidates[0].sampleHits));
-            return false;
-        }
-        const OuterCandidateEvidence &selectedOuter = outerCandidates.front();
-        schema.uobject.outer = selectedOuter.offset;
-        report.evidence.push_back("resolved UObject::Outer from validated source-layout candidate offset=" +
-                                  std::to_string(selectedOuter.offset) +
-                                  " object_list_index_candidate=" +
-                                  std::to_string(selectedOuter.offset == indexedOuterOffset &&
-                                                 indexedOuterOffset != firstOuterOffset));
 
         int32_t bestFlagsOffset = -1;
         int32_t bestFlagsHits = 0;

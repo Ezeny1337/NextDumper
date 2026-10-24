@@ -57,6 +57,19 @@ namespace nextdumper::analysis
         }
     };
 
+    struct UObjectLayoutFields
+    {
+        int32_t Name = -1;
+        int32_t InternalIndex = -1;
+        int32_t Class = -1;
+        int32_t Outer = -1;
+
+        [[nodiscard]] bool Complete() const
+        {
+            return Name >= 0 && InternalIndex >= 0 && Class >= 0 && Outer >= 0;
+        }
+    };
+
     struct ObjectArrayFields
     {
         int32_t ObjectsOffset = 0;
@@ -89,6 +102,7 @@ namespace nextdumper::analysis
         ContractState State = ContractState::Observed;
         NamePoolFields NamePool;
         ObjectArrayFields ObjectArray;
+        UObjectLayoutFields UObject;
         std::vector<EvidenceStep> Evidence;
     };
 } // namespace nextdumper::analysis

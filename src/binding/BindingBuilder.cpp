@@ -334,6 +334,7 @@ namespace nextdumper::binding
                         binding.objects = objectLayout;
                         binding.names = nameLayout;
                         binding.decode = decode;
+                        binding.uobject = hints.uobject;
                         binding.report.staticCandidatesFound = true;
                         binding.report.objectContainerValidated = true;
                         binding.report.nameContainerValidated = true;
