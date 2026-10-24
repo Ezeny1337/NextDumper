@@ -16,10 +16,26 @@ namespace nextdumper::app
         ::nextdumper::binding::NameContainerLayout layout;
         ::nextdumper::binding::DecodePlan decode;
         bool fullBlockBound = false;
-        uintptr_t objectRoot = 0;
-        std::optional<::nextdumper::binding::ObjectContainerLayout> objectLayout;
-        std::optional<::nextdumper::binding::UObjectLayoutHint> uobject;
         size_t contractIndex = 0;
+        std::string evidence;
+
+        [[nodiscard]] bool IsValid() const;
+    };
+
+    struct ObjectBindingProposal
+    {
+        uintptr_t root = 0;
+        ::nextdumper::binding::ObjectContainerLayout layout;
+        size_t contractIndex = 0;
+        std::string evidence;
+
+        [[nodiscard]] bool IsValid() const;
+    };
+
+    struct UObjectBindingProposal
+    {
+        uintptr_t objectRoot = 0;
+        ::nextdumper::binding::UObjectLayoutHint layout;
         std::string evidence;
 
         [[nodiscard]] bool IsValid() const;
@@ -28,4 +44,9 @@ namespace nextdumper::app
     [[nodiscard]] std::optional<NameBindingProposal> MakeNameBindingProposal(
         const ::nextdumper::analysis::AnalysisResult &result,
         const ::nextdumper::binding::DecodePlan &baseDecode);
+    [[nodiscard]] std::optional<ObjectBindingProposal> MakeObjectBindingProposal(
+        const ::nextdumper::analysis::AnalysisResult &result);
+    [[nodiscard]] std::optional<UObjectBindingProposal> MakeUObjectBindingProposal(
+        const ::nextdumper::analysis::AnalysisResult &result,
+        uintptr_t objectRoot);
 } // namespace nextdumper::app

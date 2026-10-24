@@ -130,7 +130,8 @@ namespace nextdumper::ue
 
     // 在进行任何全模块分析之前，使用与 Schema 选择相同的 UObject/FName 探测逻辑
     [[nodiscard]] bool ValidateBindingObjects(const IMemorySource &memory, const RuntimeBinding &binding,
-                                              SchemaResolutionReport &report);
+                                              SchemaResolutionReport &report,
+                                              EngineSchema *objectSchema = nullptr);
 
     struct SchemaSelectionResult
     {

@@ -64,7 +64,8 @@ namespace nextdumper::ue
         return std::make_shared<SchemaProbeSession>(memory, binding, names, moduleBase, moduleEnd);
     }
 
-    bool ValidateBindingObjects(const IMemorySource &memory, const RuntimeBinding &binding, SchemaResolutionReport &report)
+    bool ValidateBindingObjects(const IMemorySource &memory, const RuntimeBinding &binding, SchemaResolutionReport &report,
+                                EngineSchema *objectSchema)
     {
         const SchemaProbeNames names;
         const auto profile = SchemaCatalog::Profiles().front();
@@ -72,7 +73,10 @@ namespace nextdumper::ue
         const schema_probe::SchemaProbeContext probe{memory, binding, profile, names, 0, 0, session->bootstrap, *session};
         EngineSchema schema;
         schema.features = profile.features;
-        return probe.ResolveUObjectSchema(schema, report) && probe.ValidateUObjectSchema(schema, report);
+        const bool validated = probe.ResolveUObjectSchema(schema, report) && probe.ValidateUObjectSchema(schema, report);
+        if (validated && objectSchema)
+            *objectSchema = schema;
+        return validated;
     }
 
     std::shared_ptr<const SchemaProbeBootstrap> CreateSchemaProbeBootstrap(const IMemorySource &memory,
@@ -238,7 +242,18 @@ namespace nextdumper::ue
             return result->resolved && !report.addressSpaceChanged;
         };
         if (!resolveStage(SchemaProbeStage::UObject, [&](auto &r)
-                          { return probe.ResolveUObjectSchema(schema, r) && probe.ValidateUObjectSchema(schema, r); }))
+                          {
+                              if (binding_.objectSchema)
+                              {
+                                  schema.fname = binding_.objectSchema->fname;
+                                  schema.uobject = binding_.objectSchema->uobject;
+                                  schema.features.casePreservingName = binding_.objectSchema->features.casePreservingName;
+                                  schema.features.outlineNumberName = binding_.objectSchema->features.outlineNumberName;
+                                  schema.features.fnameDisplayLayout = binding_.objectSchema->features.fnameDisplayLayout;
+                                  r.evidence.push_back("reused binding-validated UObject/FName physical layout; rediscovery=0");
+                                  return true;
+                              }
+                              return probe.ResolveUObjectSchema(schema, r) && probe.ValidateUObjectSchema(schema, r); }))
             return report;
         if (!resolveStage(SchemaProbeStage::Struct, [&](auto &r)
                           { return probe.ResolveStructSchema(schema, r); }))

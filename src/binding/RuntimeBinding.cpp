@@ -105,7 +105,7 @@ namespace nextdumper::binding
     bool RuntimeBinding::IsValid() const
     {
         return objectRoot.address != 0 && nameRoot.address != 0 && objects.IsValid() && names.IsValid() &&
-               decode.IsValid() && report.objectContainerValidated && report.nameContainerValidated &&
+               decode.IsValid() && objectSchema && report.objectContainerValidated && report.nameContainerValidated &&
                report.semanticValidationPassed;
     }
 } // namespace nextdumper::binding

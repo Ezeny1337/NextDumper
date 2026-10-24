@@ -871,59 +871,86 @@ namespace nextdumper::app
             finishStage("analyzer-locator");
             profileExecutionState->stage = "binding";
 
-            std::optional<NameBindingProposal> proposal;
+            std::optional<NameBindingProposal> nameProposal;
+            std::optional<ObjectBindingProposal> objectProposal;
+            std::optional<UObjectBindingProposal> uobjectProposal;
             if (analysisResult)
-                proposal = MakeNameBindingProposal(*analysisResult, decode);
-            if (!proposal && analysisResult)
             {
-                const char *reason = analysisResult->AddressSpaceChanged
-                                         ? "address-space-changed"
-                                     : (analysisResult->NameStatus == ::nextdumper::analysis::AnalysisStatus::Ambiguous ||
-                                        analysisResult->ObjectStatus == ::nextdumper::analysis::AnalysisStatus::Ambiguous ||
-                                        analysisResult->UObjectStatus == ::nextdumper::analysis::AnalysisStatus::Ambiguous)
-                                         ? "domain-contracts-ambiguous"
-                                         : "no-validated-name-contract-or-boundary";
-                Note("analysis_binding_proposal status=unavailable reason=" + std::string(reason));
+                nameProposal = MakeNameBindingProposal(*analysisResult, decode);
+                objectProposal = MakeObjectBindingProposal(*analysisResult);
+                if (objectProposal)
+                    uobjectProposal = MakeUObjectBindingProposal(*analysisResult, objectProposal->root);
             }
-            if (proposal)
+            if (!nameProposal && !objectProposal && analysisResult)
             {
-                Note("analysis_binding_proposal status=available selected=name-pool root=" + Hex(proposal->root) +
-                     " blocks_offset=" + std::to_string(proposal->layout.pool.blocksOffset) +
-                     " blocks_bit=" + std::to_string(proposal->layout.pool.blocksBit) +
-                     " evidence=" + proposal->evidence);
-                if (proposal->fullBlockBound)
+                Note("analysis_binding_proposal status=unavailable address_space_changed=" +
+                     std::to_string(analysisResult->AddressSpaceChanged) +
+                     " name_status=" + ::nextdumper::analysis::AnalysisStatusName(analysisResult->NameStatus) +
+                     " object_status=" + ::nextdumper::analysis::AnalysisStatusName(analysisResult->ObjectStatus) +
+                     " uobject_status=" + ::nextdumper::analysis::AnalysisStatusName(analysisResult->UObjectStatus));
+            }
+            const auto applyNameProposal = [](::nextdumper::binding::BindingLayoutHints &hints,
+                                              const NameBindingProposal &name)
+            {
+                hints.names = name.layout;
+                hints.nameRoot = name.root;
+                hints.allowFullBlockNameBound = name.fullBlockBound;
+            };
+            if (nameProposal)
+            {
+                Note("analysis_binding_proposal status=available selected=name-pool root=" + Hex(nameProposal->root) +
+                     " blocks_offset=" + std::to_string(nameProposal->layout.pool.blocksOffset) +
+                     " blocks_bit=" + std::to_string(nameProposal->layout.pool.blocksBit) +
+                     " evidence=" + nameProposal->evidence);
+                if (nameProposal->fullBlockBound)
                 {
                     Note(RuntimeLogLevel::Warning,
                          "analysis_binding_proposal name_bound=full-block reason=publication-boundary-unavailable");
                 }
                 const auto duplicate = std::any_of(candidates.nameRoots.begin(), candidates.nameRoots.end(),
                                                    [&](const LocatedAddress &candidate)
-                                                   { return candidate.address == proposal->root; });
+                                                   { return candidate.address == nameProposal->root &&
+                                                            candidate.meaning != AddressMeaning::PointerSlot; });
                 if (!duplicate)
-                    candidates.nameRoots.push_back({proposal->root, AddressMeaning::ResolvedValue, 100, "analysis:NamePool"});
-                ::nextdumper::binding::BindingLayoutHints proposalHints = layoutHints;
-                proposalHints.names = proposal->layout;
-                proposalHints.uobject = proposal->uobject;
-                proposalHints.allowFullBlockNameBound = proposal->fullBlockBound;
-                if (proposal->objectRoot != 0 && proposal->objectLayout)
+                    candidates.nameRoots.push_back({nameProposal->root, AddressMeaning::ResolvedValue, 100, "analysis:NamePool"});
+            }
+            if (objectProposal)
+            {
+                const auto duplicate = std::any_of(candidates.objectRoots.begin(), candidates.objectRoots.end(),
+                                                   [&](const LocatedAddress &candidate)
+                                                   { return candidate.address == objectProposal->root &&
+                                                            candidate.meaning != AddressMeaning::PointerSlot; });
+                if (!duplicate)
                 {
-                    const auto objectDuplicate = std::any_of(
-                        candidates.objectRoots.begin(), candidates.objectRoots.end(),
-                        [&](const LocatedAddress &candidate)
-                        { return candidate.address == proposal->objectRoot; });
-                    if (!objectDuplicate)
-                    {
-                        candidates.objectRoots.push_back({proposal->objectRoot, AddressMeaning::ResolvedValue, 100,
-                                                          "analysis:ObjectArray",
-                                                          ::nextdumper::binding::RootTarget::ObjObjects});
-                    }
-                    proposalHints.objects = *proposal->objectLayout;
-                    Note("analysis_binding_proposal object_root=" + Hex(proposal->objectRoot) +
-                         " item_stride=" + std::to_string(proposal->objectLayout->itemStride) +
-                         " item_index=" + std::to_string(proposal->objectLayout->itemIndexOffset));
+                    candidates.objectRoots.push_back({objectProposal->root, AddressMeaning::ResolvedValue, 100,
+                                                      "analysis:ObjectArray",
+                                                      ::nextdumper::binding::RootTarget::ObjObjects});
                 }
+                Note("analysis_object_proposal status=available root=" + Hex(objectProposal->root) +
+                     " item_stride=" + std::to_string(objectProposal->layout.itemStride) +
+                     " item_index=" + std::to_string(objectProposal->layout.itemIndexOffset));
+            }
+            if (uobjectProposal)
+                Note("analysis_uobject_proposal status=available " + uobjectProposal->evidence);
+
+            if (nameProposal || objectProposal)
+            {
+                ::nextdumper::binding::BindingLayoutHints proposalHints = layoutHints;
+                if (nameProposal)
+                    applyNameProposal(proposalHints, *nameProposal);
+                if (objectProposal)
+                {
+                    proposalHints.objects = objectProposal->layout;
+                    proposalHints.objectRoot = objectProposal->root;
+                }
+                if (uobjectProposal)
+                {
+                    proposalHints.uobject = uobjectProposal->layout;
+                    proposalHints.uobjectRoot = uobjectProposal->objectRoot;
+                }
+                const ::nextdumper::binding::DecodePlan proposalDecode = nameProposal ? nameProposal->decode : decode;
                 BeginMemoryStage("analysis-binding");
-                binding = builder.Build(candidates, proposal->decode, bindingProgress, proposalHints);
+                binding = builder.Build(candidates, proposalDecode, bindingProgress, proposalHints);
                 finishStage("analysis-binding");
                 Note("analysis_binding_proposal status=" + std::string(binding ? "accepted" : "rejected") +
                      " object_candidates=" + std::to_string(candidates.objectRoots.size()) +
@@ -938,11 +965,27 @@ namespace nextdumper::app
             }
             if (!binding)
             {
+                const auto buildWithPreservedName = [&]()
+                {
+                    std::optional<NameBindingProposal> fallbackName;
+                    if (nameProposal && analysisResult)
+                        fallbackName = MakeNameBindingProposal(*analysisResult, decode);
+                    ::nextdumper::binding::BindingLayoutHints fallbackHints = layoutHints;
+                    if (fallbackName)
+                    {
+                        applyNameProposal(fallbackHints, *fallbackName);
+                        Note("analysis_name_fallback status=preserved root=" + Hex(fallbackName->root) +
+                             " full_block=" + std::to_string(fallbackName->fullBlockBound));
+                    }
+                    const ::nextdumper::binding::DecodePlan fallbackDecode = fallbackName ? fallbackName->decode : decode;
+                    return builder.Build(candidates, fallbackDecode, bindingProgress, fallbackHints);
+                };
+                discardFailedProfileDecoders();
                 BeginMemoryStage("analyzer-binding");
-                binding = builder.Build(candidates, decode, bindingProgress, layoutHints);
-                finishStage("analyzer-binding");
+                binding = buildWithPreservedName();
                 if (discardFailedProfileDecoders())
-                    binding = builder.Build(candidates, decode, bindingProgress, layoutHints);
+                    binding = buildWithPreservedName();
+                finishStage("analyzer-binding");
             }
         }
         else

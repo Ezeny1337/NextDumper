@@ -2,10 +2,16 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
 #include <vector>
+
+namespace nextdumper::ue
+{
+    struct EngineSchema;
+}
 
 namespace nextdumper::binding
 {
@@ -140,6 +146,9 @@ namespace nextdumper::binding
         std::optional<ObjectContainerLayout> objects;
         std::optional<NameContainerLayout> names;
         std::optional<UObjectLayoutHint> uobject;
+        std::optional<uintptr_t> objectRoot;
+        std::optional<uintptr_t> nameRoot;
+        std::optional<uintptr_t> uobjectRoot;
         // 仅分析层已验证但无法定位发布边界的名称池使用：读取器按整块上界工作
         bool allowFullBlockNameBound = false;
 
@@ -204,6 +213,7 @@ namespace nextdumper::binding
         NameContainerLayout names;
         DecodePlan decode = DecodePlan::Identity();
         std::optional<UObjectLayoutHint> uobject;
+        std::shared_ptr<const ue::EngineSchema> objectSchema;
         BindingReport report;
         std::vector<CommonObjectInfo> commonObjects;
 

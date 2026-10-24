@@ -191,6 +191,8 @@ namespace nextdumper::binding
         double bestObjectScore = -1.0;
         double bestNameScore = -1.0;
         size_t semanticRejections = 0;
+        const auto appliesTo = [](const std::optional<uintptr_t> &scope, uintptr_t root)
+        { return !scope || *scope == root; };
 
         struct NameCandidates
         {
@@ -204,7 +206,7 @@ namespace nextdumper::binding
             if (progress)
                 progress("binding: probing name root=" + Hex(nameRoot));
             NameCandidates group{nameRoot,
-                                 hints.names
+                                 hints.names && appliesTo(hints.nameRoot, nameRoot)
                                      ? std::vector<std::pair<NameContainerLayout, double>>{{*hints.names, 1.0}}
                                      : nameDiscovery.Discover(nameRoot, decode),
                                  {}};
@@ -274,7 +276,7 @@ namespace nextdumper::binding
                          " target=" + RootTargetName(objectRoot.target) +
                          " depth=" + std::to_string(objectRoot.depth));
             std::vector<std::pair<ObjectContainerLayout, double>> objectLayouts;
-            if (hints.objects)
+            if (hints.objects && appliesTo(hints.objectRoot, objectRoot.address))
             {
                 objectLayouts = {{*hints.objects, 1.0}};
             }
@@ -325,7 +327,7 @@ namespace nextdumper::binding
                             continue;
                         if (nameLayout.kind == NameContainerKind::Pool &&
                             !nameLayout.pool.HasPublicationBoundary() &&
-                            !hints.allowFullBlockNameBound)
+                            !(hints.allowFullBlockNameBound && appliesTo(hints.nameRoot, nameRoot)))
                             continue;
 
                         RuntimeBinding binding;
@@ -334,12 +336,16 @@ namespace nextdumper::binding
                         binding.objects = objectLayout;
                         binding.names = nameLayout;
                         binding.decode = decode;
-                        binding.uobject = hints.uobject;
+                        binding.uobject = hints.uobject && appliesTo(hints.uobjectRoot, objectRoot.address)
+                                              ? hints.uobject
+                                              : std::nullopt;
                         binding.report.staticCandidatesFound = true;
                         binding.report.objectContainerValidated = true;
                         binding.report.nameContainerValidated = true;
                         ue::SchemaResolutionReport semantics;
-                        binding.report.semanticValidationPassed = ue::ValidateBindingObjects(memory_, binding, semantics);
+                        auto objectSchema = std::make_shared<ue::EngineSchema>();
+                        binding.report.semanticValidationPassed =
+                            ue::ValidateBindingObjects(memory_, binding, semantics, objectSchema.get());
                         if (!binding.report.semanticValidationPassed)
                         {
                             ++semanticRejections;
@@ -354,6 +360,7 @@ namespace nextdumper::binding
                             }
                             continue;
                         }
+                        binding.objectSchema = std::move(objectSchema);
                         binding.report.evidence.insert(binding.report.evidence.end(), semantics.evidence.begin(), semantics.evidence.end());
                         binding.report.evidence.push_back("object_root=" + Hex(objectRoot.address));
                         binding.report.evidence.push_back("name_root=" + Hex(nameRoot));

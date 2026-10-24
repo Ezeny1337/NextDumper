@@ -35,11 +35,20 @@ namespace nextdumper::app
                (layout.pool.HasPublicationBoundary() || fullBlockBound);
     }
 
+    bool ObjectBindingProposal::IsValid() const
+    {
+        return root != 0 && layout.IsValid();
+    }
+
+    bool UObjectBindingProposal::IsValid() const
+    {
+        return objectRoot != 0 && layout.IsValid();
+    }
+
     std::optional<NameBindingProposal> MakeNameBindingProposal(const AnalysisResult &result,
                                                                const DecodePlan &baseDecode)
     {
-        if (result.AddressSpaceChanged || result.NameStatus == AnalysisStatus::Ambiguous ||
-            result.ObjectStatus == AnalysisStatus::Ambiguous || result.UObjectStatus == AnalysisStatus::Ambiguous)
+        if (result.AddressSpaceChanged || result.NameStatus == AnalysisStatus::Ambiguous)
             return std::nullopt;
         for (const auto &validation : result.NameValidations)
         {
@@ -107,62 +116,78 @@ namespace nextdumper::app
                 proposal.evidence += " current_offset=" + std::to_string(*currentOffset) +
                                      " cursor_offset=" + std::to_string(*cursorOffset);
             }
-            for (const auto &objectContract : result.ObjectArrays)
-            {
-                if (objectContract.State != ContractState::Validated ||
-                    !objectContract.ObjectArray.Complete())
-                    continue;
-                const auto &objectFields = objectContract.ObjectArray;
-                ::nextdumper::binding::ObjectContainerLayout objectLayout;
-                if (objectFields.Fixed)
-                {
-                    objectLayout.kind = ::nextdumper::binding::ObjectContainerKind::Fixed;
-                    objectLayout.objectsOffset = objectFields.ObjectsOffset;
-                    objectLayout.numElementsOffset = objectFields.NumElementsOffset;
-                    objectLayout.itemObjectOffset = objectFields.ItemObjectOffset;
-                    objectLayout.itemStride = objectFields.ItemStride;
-                    objectLayout.itemIndexOffset = objectFields.ItemIndexOffset;
-                    objectLayout.packedPointers = objectFields.PackedPointers;
-                    objectLayout.chunkFieldsValidated = true;
-                }
-                else
-                {
-                    objectLayout.kind = ::nextdumper::binding::ObjectContainerKind::Chunked;
-                    objectLayout.objectsOffset = objectFields.ObjectsOffset;
-                    objectLayout.maxElementsOffset = objectFields.MaxElementsOffset;
-                    objectLayout.numElementsOffset = objectFields.NumElementsOffset;
-                    objectLayout.maxChunksOffset = objectFields.MaxChunksOffset;
-                    objectLayout.numChunksOffset = objectFields.NumChunksOffset;
-                    objectLayout.elementsPerChunk = objectFields.ElementsPerChunk;
-                    objectLayout.itemObjectOffset = objectFields.ItemObjectOffset;
-                    objectLayout.itemStride = objectFields.ItemStride;
-                    objectLayout.itemIndexOffset = objectFields.ItemIndexOffset;
-                    objectLayout.packedPointers = objectFields.PackedPointers;
-                    objectLayout.chunkFieldsValidated = true;
-                }
-                if (!objectLayout.IsValid())
-                    continue;
-                proposal.objectRoot = objectContract.Root;
-                proposal.objectLayout = objectLayout;
-                for (const auto &uobjectContract : result.UObjectLayouts)
-                {
-                    if (uobjectContract.ObjectRoot != objectContract.Root || !uobjectContract.UObject.Complete())
-                        continue;
-                    proposal.uobject = ::nextdumper::binding::UObjectLayoutHint{
-                        uobjectContract.UObject.Name, uobjectContract.UObject.InternalIndex,
-                        uobjectContract.UObject.Class, uobjectContract.UObject.Outer};
-                    proposal.evidence += " uobject_offsets=name:" + std::to_string(uobjectContract.UObject.Name) +
-                                         " index:" + std::to_string(uobjectContract.UObject.InternalIndex) +
-                                         " class:" + std::to_string(uobjectContract.UObject.Class) +
-                                         " outer:" + std::to_string(uobjectContract.UObject.Outer);
-                    break;
-                }
-                proposal.evidence += " object_root=" + common::Hex(objectContract.Root) +
-                                     " object_count=" + std::to_string(objectContract.Observation.Count) +
-                                     " object_item_stride=" + std::to_string(objectFields.ItemStride);
-                break;
-            }
             return proposal;
+        }
+        return std::nullopt;
+    }
+
+    std::optional<ObjectBindingProposal> MakeObjectBindingProposal(const AnalysisResult &result)
+    {
+        if (result.AddressSpaceChanged || result.ObjectStatus == AnalysisStatus::Ambiguous)
+            return std::nullopt;
+        for (size_t index = 0; index < result.ObjectArrays.size(); ++index)
+        {
+            const auto &contract = result.ObjectArrays[index];
+            if (contract.State != ContractState::Validated || !contract.ObjectArray.Complete())
+                continue;
+            const auto &fields = contract.ObjectArray;
+            ObjectBindingProposal proposal;
+            proposal.root = contract.Root;
+            proposal.contractIndex = index;
+            if (fields.Fixed)
+            {
+                proposal.layout.kind = ::nextdumper::binding::ObjectContainerKind::Fixed;
+                proposal.layout.objectsOffset = fields.ObjectsOffset;
+                proposal.layout.numElementsOffset = fields.NumElementsOffset;
+                proposal.layout.itemObjectOffset = fields.ItemObjectOffset;
+                proposal.layout.itemStride = fields.ItemStride;
+                proposal.layout.itemIndexOffset = fields.ItemIndexOffset;
+                proposal.layout.packedPointers = fields.PackedPointers;
+            }
+            else
+            {
+                proposal.layout.kind = ::nextdumper::binding::ObjectContainerKind::Chunked;
+                proposal.layout.objectsOffset = fields.ObjectsOffset;
+                proposal.layout.maxElementsOffset = fields.MaxElementsOffset;
+                proposal.layout.numElementsOffset = fields.NumElementsOffset;
+                proposal.layout.maxChunksOffset = fields.MaxChunksOffset;
+                proposal.layout.numChunksOffset = fields.NumChunksOffset;
+                proposal.layout.elementsPerChunk = fields.ElementsPerChunk;
+                proposal.layout.itemObjectOffset = fields.ItemObjectOffset;
+                proposal.layout.itemStride = fields.ItemStride;
+                proposal.layout.itemIndexOffset = fields.ItemIndexOffset;
+                proposal.layout.packedPointers = fields.PackedPointers;
+            }
+            proposal.layout.chunkFieldsValidated = true;
+            if (!proposal.IsValid())
+                continue;
+            proposal.evidence = "object_root=" + common::Hex(contract.Root) +
+                                " object_count=" + std::to_string(contract.Observation.Count) +
+                                " object_item_stride=" + std::to_string(fields.ItemStride);
+            return proposal;
+        }
+        return std::nullopt;
+    }
+
+    std::optional<UObjectBindingProposal> MakeUObjectBindingProposal(const AnalysisResult &result,
+                                                                     uintptr_t objectRoot)
+    {
+        if (objectRoot == 0 || result.AddressSpaceChanged || result.ObjectStatus == AnalysisStatus::Ambiguous ||
+            result.UObjectStatus == AnalysisStatus::Ambiguous)
+            return std::nullopt;
+        for (const auto &contract : result.UObjectLayouts)
+        {
+            if (contract.ObjectRoot != objectRoot || !contract.UObject.Complete())
+                continue;
+            UObjectBindingProposal proposal;
+            proposal.objectRoot = objectRoot;
+            proposal.layout = {contract.UObject.Name, contract.UObject.InternalIndex,
+                               contract.UObject.Class, contract.UObject.Outer};
+            proposal.evidence = "uobject_offsets=name:" + std::to_string(contract.UObject.Name) +
+                                " index:" + std::to_string(contract.UObject.InternalIndex) +
+                                " class:" + std::to_string(contract.UObject.Class) +
+                                " outer:" + std::to_string(contract.UObject.Outer);
+            return proposal.IsValid() ? std::optional<UObjectBindingProposal>(std::move(proposal)) : std::nullopt;
         }
         return std::nullopt;
     }
