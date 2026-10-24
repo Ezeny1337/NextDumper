@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <string>
+#include <utility>
 
 #include "nextdumper/analysis/CodeWindow.hpp"
 #include "nextdumper/analysis/FunctionIndex.hpp"
@@ -13,6 +14,37 @@
 
 namespace nextdumper::analysis
 {
+    namespace
+    {
+        const char *ContractStateName(ContractState state)
+        {
+            switch (state)
+            {
+            case ContractState::Observed:
+                return "observed";
+            case ContractState::Validated:
+                return "validated";
+            case ContractState::Unsupported:
+                return "unsupported";
+            }
+            return "observed";
+        }
+
+        const char *NameKeySourceName(NameTextFamily family)
+        {
+            switch (family)
+            {
+            case NameTextFamily::Identity:
+                return "none";
+            case NameTextFamily::ByteXor:
+                return "constant";
+            case NameTextFamily::LengthSchedule:
+                return "length";
+            }
+            return "unknown";
+        }
+    } // namespace
+
     const char *AnalysisStatusName(AnalysisStatus status)
     {
         switch (status)
@@ -25,6 +57,8 @@ namespace nextdumper::analysis
             return "partial";
         case AnalysisStatus::Observed:
             return "observed";
+        case AnalysisStatus::Validated:
+            return "validated";
         case AnalysisStatus::Complete:
             return "complete";
         }
@@ -47,8 +81,9 @@ namespace nextdumper::analysis
         return "info";
     }
 
-    AnalysisSession::AnalysisSession(const MemoryView &memory, const module::ModuleImage &module) noexcept
-        : memory_(memory), module_(module)
+    AnalysisSession::AnalysisSession(const MemoryView &memory, const module::ModuleImage &module,
+                                     AnalysisSessionOptions options) noexcept
+        : memory_(memory), module_(module), options_(std::move(options))
     {
     }
 
@@ -212,16 +247,39 @@ namespace nextdumper::analysis
             NameContractScanOptions options;
             const NameContractScanResult scan = ScanNameContracts(image, functions, *decoder, options);
             result.Coverage.ScannedInstructions = scan.Instructions;
+            result.Coverage.Complete = scan.Error.empty() && !scan.BudgetExhausted;
             if (!scan.Error.empty())
             {
                 result.Diagnostics.push_back({DiagnosticSeverity::Warning, "ANALYSIS_CONTRACT_SCAN_FAILED",
                                               "reason=" + scan.Error});
             }
             for (const Contract &contract : scan.Contracts)
-            {
                 result.Contracts.push_back(contract);
+
+            NamePoolValidationOptions validationOptions;
+            validationOptions.RootHints = options_.NameRootHints;
+            size_t validatedContracts = 0;
+            for (size_t index = 0; index < result.Contracts.size(); ++index)
+            {
+                Contract &contract = result.Contracts[index];
                 const NamePoolFields &fields = contract.NamePool;
-                const std::string root = contract.Root == 0 ? "unresolved" : common::Hex(contract.Root);
+                NamePoolValidation validation;
+                validation.ContractIndex = index;
+                if (contract.Kind == ContractKind::NamePool)
+                    validation = ValidateNamePool(memory_, contract, index, validationOptions);
+                else
+                    validation.Failure = "contract-kind";
+
+                contract.State = validation.IsValidated() ? ContractState::Validated
+                                 : validation.RootUsable  ? ContractState::Unsupported
+                                                          : ContractState::Observed;
+                if (validation.IsValidated())
+                    ++validatedContracts;
+                result.NameValidations.push_back(validation);
+
+                const std::string root = validation.Root != 0 ? common::Hex(validation.Root)
+                                         : contract.Root == 0 ? "unresolved"
+                                                              : common::Hex(contract.Root);
                 result.Diagnostics.push_back(
                     {DiagnosticSeverity::Info, "ANALYSIS_CONTRACT",
                      "target=NamePool root=" + root +
@@ -233,7 +291,57 @@ namespace nextdumper::analysis
                          " length_shift=" + std::to_string(fields.LengthShift) +
                          " wide_mask=" + std::to_string(fields.WideMask) +
                          " complete=" + std::to_string(fields.Complete()) +
-                         " state=observed evidence_sites=" + std::to_string(contract.Evidence.size())});
+                         " state=" + ContractStateName(contract.State) +
+                         " evidence_sites=" + std::to_string(contract.Evidence.size())});
+
+                if (validation.Decoder)
+                {
+                    const NameTextDecoder &decoderValue = *validation.Decoder;
+                    result.Diagnostics.push_back(
+                        {DiagnosticSeverity::Info, "ANALYSIS_DECODER",
+                         "family=" + std::string(NameTextFamilyName(decoderValue.Family)) +
+                             " key=" + std::to_string(decoderValue.Key) +
+                             " key_source=" + NameKeySourceName(decoderValue.Family) +
+                             " known_pairs=" + std::to_string(validation.ReservedMatched) + "/" +
+                             std::to_string(validation.ReservedPairs) +
+                             " consistency=" + std::to_string(validation.ReservedMatched) + "/" +
+                             std::to_string(validation.ReservedPairs) +
+                             " samples=" + std::to_string(validation.Block0Valid + validation.HighBlockValid) + "/" +
+                             std::to_string(validation.Block0Samples + validation.HighBlockSamples) +
+                             " status=" + (validation.DecoderValidated ? "validated" : "observed")});
+                }
+
+                if (validation.IsValidated())
+                {
+                    result.Diagnostics.push_back(
+                        {DiagnosticSeverity::Info, "ANALYSIS_VALIDATION",
+                         "target=NamePool root=" + root +
+                             " blocks=" + common::Hex(validation.BlocksAddress) +
+                             " block0=" + common::Hex(validation.Block0) +
+                             " current_block=" + std::to_string(validation.CurrentBlock) +
+                             " byte_cursor=" + std::to_string(validation.ByteCursor) +
+                             " block_size=" + std::to_string(validation.BlockSize) +
+                             " allocated_blocks=" + std::to_string(validation.AllocatedBlocks) +
+                             " reserved=" + std::to_string(validation.ReservedMatched) + "/" +
+                             std::to_string(validation.ReservedPairs) +
+                             " block0_samples=" + std::to_string(validation.Block0Valid) + "/" +
+                             std::to_string(validation.Block0Samples) +
+                             " high_block_samples=" + std::to_string(validation.HighBlockValid) + "/" +
+                             std::to_string(validation.HighBlockSamples) +
+                             " attempts=" + std::to_string(validation.AttemptedRoots) + " state=validated"});
+                }
+                else
+                {
+                    std::string message = "target=NamePool root=" + root +
+                                          " reason=" + validation.Failure +
+                                          " attempts=" + std::to_string(validation.AttemptedRoots);
+                    if (!validation.FailureDetail.empty())
+                        message += " detail=" + validation.FailureDetail;
+                    if (!validation.FirstEntryHex.empty())
+                        message += " raw_entry0=" + validation.FirstEntryHex;
+                    result.Diagnostics.push_back({DiagnosticSeverity::Warning, "ANALYSIS_VALIDATION_FAILED",
+                                                  std::move(message)});
+                }
             }
             result.Diagnostics.push_back(
                 {scan.Contracts.empty() ? DiagnosticSeverity::Warning : DiagnosticSeverity::Info,
@@ -250,8 +358,8 @@ namespace nextdumper::analysis
 
             if (!result.Contracts.empty())
             {
-                result.Status = AnalysisStatus::Observed;
-                result.Reason = "name-contracts-observed";
+                result.Status = validatedContracts != 0 ? AnalysisStatus::Validated : AnalysisStatus::Observed;
+                result.Reason = validatedContracts != 0 ? "name-contracts-validated" : "name-contracts-observed";
             }
             else if (imageHeaderReadable)
             {
@@ -265,7 +373,6 @@ namespace nextdumper::analysis
             result.Reason = "no-name-contracts";
         }
 
-        result.Coverage.Complete = false;
         return result;
     }
 } // namespace nextdumper::analysis

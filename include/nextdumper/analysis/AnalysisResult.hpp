@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "nextdumper/analysis/Contract.hpp"
+#include "nextdumper/analysis/ContractValidator.hpp"
 
 namespace nextdumper::analysis
 {
@@ -15,6 +16,7 @@ namespace nextdumper::analysis
         Unsupported,
         Partial,
         Observed,
+        Validated,
         Complete,
     };
 
@@ -50,6 +52,7 @@ namespace nextdumper::analysis
         AnalysisStatus Status = AnalysisStatus::Failed;
         std::string Reason;
         std::vector<Contract> Contracts;
+        std::vector<NamePoolValidation> NameValidations;
         AnalysisCoverage Coverage;
         std::vector<Diagnostic> Diagnostics;
     };

@@ -3,6 +3,7 @@
 
 #include "nextdumper/memory/ProcessInfo.hpp"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <exception>
@@ -814,15 +815,22 @@ namespace nextdumper::app
                                             std::string(AnalysisModeName(config_.analysis)));
             BeginMemoryStage("analysis-probe");
             AnalysisMemoryView analysisMemory(*memory_);
-            ::nextdumper::analysis::AnalysisSession session(analysisMemory, context_.Module());
+            ::nextdumper::analysis::AnalysisSessionOptions analysisOptions;
+            if (binding && binding->nameRoot.address != 0)
+                analysisOptions.NameRootHints.push_back(binding->nameRoot.address);
+            ::nextdumper::analysis::AnalysisSession session(analysisMemory, context_.Module(), std::move(analysisOptions));
             const ::nextdumper::analysis::AnalysisResult result = session.Run();
             finishStage("analysis-probe");
+            const auto validated = std::count_if(result.NameValidations.begin(), result.NameValidations.end(),
+                                                 [](const auto &validation)
+                                                 { return validation.IsValidated(); });
 
             Note(RuntimeLogLevel::Info,
                  "analysis_probe mode=" + std::string(AnalysisModeName(config_.analysis)) +
                      " status=" + ::nextdumper::analysis::AnalysisStatusName(result.Status) +
                      " reason=" + result.Reason +
                      " contracts=" + std::to_string(result.Contracts.size()) +
+                     " validated=" + std::to_string(validated) +
                      " segments=" + std::to_string(result.Coverage.ModuleSegments) +
                      " executable_segments=" + std::to_string(result.Coverage.ExecutableSegments) +
                      " planned_bytes=" + std::to_string(result.Coverage.PlannedBytes) +
