@@ -236,7 +236,9 @@ namespace nextdumper::binding
                         const auto &nameReport = group.reports[nameIndex];
                         if (!nameReport.accepted)
                             continue;
-                        if (nameLayout.kind == NameContainerKind::Pool && !nameLayout.pool.HasPublicationBoundary())
+                        if (nameLayout.kind == NameContainerKind::Pool &&
+                            !nameLayout.pool.HasPublicationBoundary() &&
+                            !hints.allowFullBlockNameBound)
                             continue;
 
                         RuntimeBinding binding;

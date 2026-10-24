@@ -880,6 +880,11 @@ namespace nextdumper::app
                      " blocks_offset=" + std::to_string(proposal->layout.pool.blocksOffset) +
                      " blocks_bit=" + std::to_string(proposal->layout.pool.blocksBit) +
                      " evidence=" + proposal->evidence);
+                if (proposal->fullBlockBound)
+                {
+                    Note(RuntimeLogLevel::Warning,
+                         "analysis_binding_proposal name_bound=full-block reason=publication-boundary-unavailable");
+                }
                 const auto duplicate = std::any_of(candidates.nameRoots.begin(), candidates.nameRoots.end(),
                                                    [&](const LocatedAddress &candidate)
                                                    { return candidate.address == proposal->root; });
@@ -887,6 +892,7 @@ namespace nextdumper::app
                     candidates.nameRoots.push_back({proposal->root, AddressMeaning::ResolvedValue, 100, "analysis:NamePool"});
                 ::nextdumper::binding::BindingLayoutHints proposalHints = layoutHints;
                 proposalHints.names = proposal->layout;
+                proposalHints.allowFullBlockNameBound = proposal->fullBlockBound;
                 BeginMemoryStage("analysis-binding");
                 binding = builder.Build(candidates, proposal->decode, bindingProgress, proposalHints);
                 finishStage("analysis-binding");

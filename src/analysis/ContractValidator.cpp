@@ -424,45 +424,37 @@ namespace nextdumper::analysis
                                                           uint64_t reservedBytes, size_t allocated,
                                                           const NameTextDecoder &decoder)
         {
-            const int32_t lastOffset = fields.BlocksOffset - 8;
-            if (lastOffset < 0)
+            const int32_t standardOffset = fields.BlocksOffset - 8;
+            if (standardOffset < 0)
                 return std::nullopt;
             const uint32_t stride = static_cast<uint32_t>(fields.EntryStride);
             std::vector<BoundaryCandidate> best;
             int bestScore = -1;
-            for (int32_t offset = 0; offset <= lastOffset; offset += 4)
+            const auto consider = [&](int32_t offset, uint32_t current, uint32_t cursor) -> bool
             {
-                const auto currentAddress = AddOffset(root, offset);
-                const auto cursorAddress = AddOffset(root, offset + 4);
-                uint32_t current = 0;
-                uint32_t cursor = 0;
-                if (!currentAddress || !cursorAddress ||
-                    !ReadExact(memory, *currentAddress, &current, sizeof(current)) ||
-                    !ReadExact(memory, *cursorAddress, &cursor, sizeof(cursor)))
-                    continue;
                 if (current >= maxBlocks || cursor == 0 || cursor > blockSize || cursor % stride != 0)
-                    continue;
-                // 只有单一分配块时当前块才会是 0，且发布字节数必须覆盖保留名
+                    return false;
+                // 只有单一分配块时当前块才会是 0，且发布字节数必须覆盖已读取前缀
                 if (current == 0 && (reservedBytes > cursor || allocated > 1))
-                    continue;
+                    return false;
                 if (allocated != 0 && current >= allocated)
-                    continue;
+                    return false;
                 uintptr_t currentBlock = 0;
                 if (!ReadBlockPointer(memory, blocksAddress, current, currentBlock))
-                    continue;
+                    return false;
                 EntryRead entry;
                 std::string failure;
                 if (!ReadEntry(memory, fields, currentBlock, entry, failure))
-                    continue;
+                    return false;
                 if (entry.Length != 0)
                 {
                     std::vector<uint8_t> text = entry.Text;
                     if (!decoder.Apply(text, entry.Length, entry.Wide) || !PlausibleText(text, entry.Wide))
-                        continue;
+                        return false;
                 }
 
                 int score = entry.Length > 0 ? 3 : 2;
-                if (offset == lastOffset)
+                if (offset == standardOffset)
                     score += 2;
                 if (current > 0)
                     score += 2;
@@ -474,8 +466,37 @@ namespace nextdumper::analysis
                     best.clear();
                 }
                 if (score == bestScore)
-                    best.push_back({offset, current, cursor, score, offset == lastOffset});
+                    best.push_back({offset, current, cursor, score, offset == standardOffset});
+                return true;
+            };
+            const auto tryOffset = [&](int32_t offset) -> bool
+            {
+                const auto address = AddOffset(root, offset);
+                std::array<uint32_t, 2> pair{};
+                if (!address || !ReadExact(memory, *address, pair.data(), sizeof(pair)))
+                    return false;
+                return consider(offset, pair[0], pair[1]);
+            };
+
+            // 标准位置优先，保持 clean/profile 的快速路径
+            if (tryOffset(standardOffset))
+            {
+                for (const BoundaryCandidate &candidate : best)
+                {
+                    if (candidate.Standard)
+                        return candidate;
+                }
             }
+
+            // 商业构建可能把边界移到根对象前后；先扫根前 4KB，再扫 Blocks 数组及尾部
+            for (int32_t offset = -0x1000; offset <= -4; offset += 4)
+                tryOffset(offset);
+            const int64_t windowEnd = std::min<int64_t>(
+                static_cast<int64_t>(fields.BlocksOffset) +
+                    static_cast<int64_t>(maxBlocks) * static_cast<int64_t>(sizeof(uintptr_t)) + 64,
+                int64_t{1} << 20);
+            for (int32_t offset = 0; static_cast<int64_t>(offset) <= windowEnd; offset += 4)
+                tryOffset(offset);
 
             if (best.empty())
                 return std::nullopt;
@@ -590,6 +611,14 @@ namespace nextdumper::analysis
                 Fail(validation, "known-names", std::move(detail));
                 return false;
             }
+            if (match->Walked != 0 && match->Plausible * 4 < match->Walked * 3)
+            {
+                Fail(validation, "known-plausible-ratio",
+                     "plausible=" + std::to_string(match->Plausible) + "/" +
+                         std::to_string(match->Walked) +
+                         " names=" + match->NamesPreview);
+                return false;
+            }
             validation.Decoder = match->Decoder;
             validation.KnownMatched = match->Matched;
             validation.KnownPlausible = match->Plausible;
@@ -617,7 +646,7 @@ namespace nextdumper::analysis
                 validation.ByteCursor = boundary->ByteCursor;
                 validation.CurrentBlockOffset = boundary->Offset;
                 validation.ByteCursorOffset = boundary->Offset + 4;
-                validation.BoundaryDetail = boundary->Standard ? "standard" : "discovered";
+                validation.BoundaryDetail = boundary->Standard ? "standard" : "extended";
                 if (validation.CurrentBlock == 0 && validation.ByteCursor < consumed)
                 {
                     Fail(validation, "publication-boundary-behind-reserved",
@@ -677,6 +706,20 @@ namespace nextdumper::analysis
             {
                 // 无发布边界时不读取额外块，避免把未初始化条目误判为布局失败
                 validation.BoundaryDetail = "unavailable" + DumpWords(memory, root, fields.BlocksOffset);
+                const auto dumpTail = [&](uint64_t slots, const char *label)
+                {
+                    const int64_t offset = static_cast<int64_t>(fields.BlocksOffset) +
+                                           static_cast<int64_t>(slots) *
+                                               static_cast<int64_t>(sizeof(uintptr_t));
+                    const auto address = AddOffset(root, offset);
+                    if (address)
+                        validation.BoundaryDetail += std::string(" ") + label + "=" +
+                                                     DumpWords(memory, *address, 64);
+                };
+                // UE 的 FNameMaxBlockBits 为 13，边界字段若在 Blocks 数组之后则位于 8192 个槽之后
+                dumpTail(std::min<uint64_t>(maxBlocks, 8192), "tail8k");
+                if (maxBlocks > 8192)
+                    dumpTail(maxBlocks, "tailmax");
             }
             validation.Block0Samples = block0Samples.Tested;
             validation.Block0Valid = block0Samples.Valid;

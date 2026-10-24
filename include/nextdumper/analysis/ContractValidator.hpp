@@ -57,7 +57,7 @@ namespace nextdumper::analysis
 
         [[nodiscard]] bool IsBindable() const
         {
-            return IsValidated() && BoundaryReadable;
+            return IsValidated();
         }
     };
 

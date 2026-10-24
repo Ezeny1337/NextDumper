@@ -115,6 +115,8 @@ namespace nextdumper::binding
     {
         std::optional<ObjectContainerLayout> objects;
         std::optional<NameContainerLayout> names;
+        // 仅分析层已验证但无法定位发布边界的名称池使用：读取器按整块上界工作
+        bool allowFullBlockNameBound = false;
 
         [[nodiscard]] bool IsValid() const
         {

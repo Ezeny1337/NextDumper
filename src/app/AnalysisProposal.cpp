@@ -28,7 +28,8 @@ namespace nextdumper::app
 
     bool NameBindingProposal::IsValid() const
     {
-        return root != 0 && layout.IsValid() && layout.pool.HasPublicationBoundary() && decode.IsValid();
+        return root != 0 && layout.IsValid() && decode.IsValid() &&
+               (layout.pool.HasPublicationBoundary() || fullBlockBound);
     }
 
     std::optional<NameBindingProposal> MakeNameBindingProposal(const AnalysisResult &result,
@@ -44,18 +45,30 @@ namespace nextdumper::app
                 continue;
 
             const NamePoolFields &fields = contract.NamePool;
-            const auto currentOffset = RelativeOffset(validation.CurrentBlockOffset, fields.BlocksOffset);
-            const auto cursorOffset = RelativeOffset(validation.ByteCursorOffset, fields.BlocksOffset);
-            if (!currentOffset || !cursorOffset)
-                continue;
+            std::optional<int32_t> currentOffset;
+            std::optional<int32_t> cursorOffset;
+            if (validation.BoundaryReadable)
+            {
+                currentOffset = RelativeOffset(validation.CurrentBlockOffset, fields.BlocksOffset);
+                cursorOffset = RelativeOffset(validation.ByteCursorOffset, fields.BlocksOffset);
+                if (!currentOffset || !cursorOffset)
+                    continue;
+            }
 
             NameBindingProposal proposal;
             proposal.root = validation.Root;
             proposal.layout.kind = NameContainerKind::Pool;
             auto &pool = proposal.layout.pool;
             pool.blocksOffset = fields.BlocksOffset;
-            pool.currentBlockFromBlocks = *currentOffset;
-            pool.byteCursorFromBlocks = *cursorOffset;
+            if (currentOffset && cursorOffset)
+            {
+                pool.currentBlockFromBlocks = *currentOffset;
+                pool.byteCursorFromBlocks = *cursorOffset;
+            }
+            else
+            {
+                proposal.fullBlockBound = true;
+            }
             pool.blocksBit = fields.BlocksBit;
             pool.entryStride = fields.EntryStride;
             pool.entryHeaderOffset = fields.HeaderOffset;
@@ -74,7 +87,7 @@ namespace nextdumper::app
                 const size_t length = wide ? bytes.size() / sizeof(char16_t) : bytes.size();
                 return decoder.Apply(bytes, length, wide);
             };
-            if (!proposal.decode.IsValid())
+            if (!proposal.decode.IsValid() || !proposal.IsValid())
                 continue;
 
             proposal.contractIndex = validation.ContractIndex;
@@ -82,8 +95,12 @@ namespace nextdumper::app
                                 " known_names=" + std::to_string(validation.KnownMatched) +
                                 " plausible=" + std::to_string(validation.KnownPlausible) + "/" +
                                 std::to_string(validation.KnownWalked) +
-                                " boundary_current=" + std::to_string(*currentOffset) +
-                                " boundary_cursor=" + std::to_string(*cursorOffset);
+                                " boundary=" + std::string(proposal.fullBlockBound ? "full-block" : "located");
+            if (currentOffset && cursorOffset)
+            {
+                proposal.evidence += " current_offset=" + std::to_string(*currentOffset) +
+                                     " cursor_offset=" + std::to_string(*cursorOffset);
+            }
             return proposal;
         }
         return std::nullopt;
