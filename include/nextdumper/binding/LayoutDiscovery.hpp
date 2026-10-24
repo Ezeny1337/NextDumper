@@ -20,6 +20,12 @@ namespace nextdumper::binding
         std::string description;
     };
 
+    struct StandardObjectLayoutResult
+    {
+        std::vector<std::pair<ObjectContainerLayout, double>> Layouts;
+        std::vector<std::string> Evidence;
+    };
+
     class ObjectLayoutDiscovery
     {
     public:
@@ -29,6 +35,12 @@ namespace nextdumper::binding
             uintptr_t root,
             const DecodePlan &decode,
             int32_t maxCandidates = 64) const;
+
+        [[nodiscard]] StandardObjectLayoutResult DiscoverStandard(
+            uintptr_t root,
+            RootTarget target,
+            const DecodePlan &decode,
+            int32_t maxCandidates = 16) const;
 
     private:
         [[nodiscard]] bool ReadPointer(uintptr_t address, uintptr_t &value) const;

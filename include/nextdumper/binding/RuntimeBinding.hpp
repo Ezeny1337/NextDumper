@@ -16,12 +16,21 @@ namespace nextdumper::binding
         ResolvedValue,
     };
 
+    enum class RootTarget : uint8_t
+    {
+        Unknown,
+        GUObjectArray,
+        ObjObjects,
+        NamePool,
+    };
+
     struct LocatedAddress
     {
         uintptr_t address = 0;
         AddressMeaning meaning = AddressMeaning::Direct;
         uint8_t confidence = 0;
         std::string source;
+        RootTarget target = RootTarget::Unknown;
     };
 
     enum class ObjectContainerKind
@@ -43,6 +52,8 @@ namespace nextdumper::binding
         int32_t itemStride = -1;
         int32_t itemIndexOffset = -1;
         bool packedPointers = false;
+        // 由对象契约探针按实际数据验证过 chunk 字段布局，读取器不再套用固定的 UE 字段顺序
+        bool chunkFieldsValidated = false;
 
         [[nodiscard]] bool IsValid() const;
     };

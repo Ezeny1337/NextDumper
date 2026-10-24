@@ -114,7 +114,7 @@ namespace nextdumper::binding
             return report;
         }
 
-        if (layout.kind == ObjectContainerKind::Chunked)
+        if (layout.kind == ObjectContainerKind::Chunked && !layout.chunkFieldsValidated)
         {
             // UE 5.6 的 FChunkedFixedUObjectArray 嵌在 FUObjectArray 中
             // 字段顺序为：Objects、PreAllocatedObjects、MaxElements、NumElements、MaxChunks、NumChunks

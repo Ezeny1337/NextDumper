@@ -11,6 +11,22 @@ namespace nextdumper::binding
     {
         using ::nextdumper::common::Hex;
 
+        const char *RootTargetName(RootTarget target)
+        {
+            switch (target)
+            {
+            case RootTarget::Unknown:
+                return "unknown";
+            case RootTarget::GUObjectArray:
+                return "guobjectarray";
+            case RootTarget::ObjObjects:
+                return "objobjects";
+            case RootTarget::NamePool:
+                return "namepool";
+            }
+            return "unknown";
+        }
+
         const char *ObjectKindName(ObjectContainerKind kind)
         {
             return kind == ObjectContainerKind::Chunked ? "chunked" : "fixed";
@@ -33,7 +49,8 @@ namespace nextdumper::binding
                    " item_object_offset=" + std::to_string(layout.itemObjectOffset) +
                    " item_stride=" + std::to_string(layout.itemStride) +
                    " packed_pointers=" + std::to_string(layout.packedPointers) +
-                   " item_index_offset=" + std::to_string(layout.itemIndexOffset);
+                   " item_index_offset=" + std::to_string(layout.itemIndexOffset) +
+                   " chunk_fields_validated=" + std::to_string(layout.chunkFieldsValidated);
         }
 
         std::string DescribeNameLayout(const NameContainerLayout &layout)
@@ -89,6 +106,41 @@ namespace nextdumper::binding
         return roots;
     }
 
+    std::vector<BindingBuilder::ResolvedObjectRoot> BindingBuilder::ResolveObjectRoots(
+        const std::vector<LocatedAddress> &candidates) const
+    {
+        std::vector<ResolvedObjectRoot> roots;
+        const auto add = [&roots](uintptr_t address, RootTarget target)
+        {
+            if (address == 0)
+                return;
+            for (ResolvedObjectRoot &root : roots)
+            {
+                if (root.address != address)
+                    continue;
+                if (root.target == RootTarget::Unknown && target != RootTarget::Unknown)
+                    root.target = target;
+                return;
+            }
+            roots.push_back({address, target});
+        };
+
+        for (const LocatedAddress &candidate : candidates)
+        {
+            if (candidate.address == 0)
+                continue;
+            if (candidate.meaning == AddressMeaning::Direct || candidate.meaning == AddressMeaning::ResolvedValue)
+                add(candidate.address, candidate.target);
+            if (candidate.meaning == AddressMeaning::PointerSlot || candidate.meaning == AddressMeaning::Direct)
+            {
+                uintptr_t value = 0;
+                if (memory_.Read(candidate.address, value))
+                    add(value, candidate.target);
+            }
+        }
+        return roots;
+    }
+
     std::optional<RuntimeBinding> BindingBuilder::Build(const BindingCandidates &candidates,
                                                         const DecodePlan &decode,
                                                         const std::function<void(const std::string &)> &progress,
@@ -102,7 +154,7 @@ namespace nextdumper::binding
         }
 
         const uint64_t generation = memory_.AddressSpaceGeneration();
-        const auto objectRoots = ResolveRoots(candidates.objectRoots);
+        const auto objectRoots = ResolveObjectRoots(candidates.objectRoots);
         const auto nameRoots = ResolveRoots(candidates.nameRoots);
         if (progress)
             progress("binding_roots candidates_objects=" + std::to_string(candidates.objectRoots.size()) +
@@ -200,27 +252,46 @@ namespace nextdumper::binding
                    left.entryLengthShift == right.entryLengthShift && left.entryWideMask == right.entryWideMask;
         };
 
-        for (uintptr_t objectRoot : objectRoots)
+        for (const ResolvedObjectRoot &objectRoot : objectRoots)
         {
             if (progress)
-                progress("binding: probing object root=" + Hex(objectRoot));
-            const auto objectLayouts = hints.objects
-                                           ? std::vector<std::pair<ObjectContainerLayout, double>>{{*hints.objects, 1.0}}
-                                           : objectDiscovery.Discover(objectRoot, decode);
+                progress("binding: probing object root=" + Hex(objectRoot.address) +
+                         " target=" + RootTargetName(objectRoot.target));
+            std::vector<std::pair<ObjectContainerLayout, double>> objectLayouts;
+            if (hints.objects)
+            {
+                objectLayouts = {{*hints.objects, 1.0}};
+            }
+            else
+            {
+                if (objectRoot.target != RootTarget::Unknown)
+                {
+                    const StandardObjectLayoutResult standard =
+                        objectDiscovery.DiscoverStandard(objectRoot.address, objectRoot.target, decode);
+                    for (const std::string &line : standard.Evidence)
+                    {
+                        if (progress)
+                            progress("binding_object_standard " + line);
+                    }
+                    objectLayouts = standard.Layouts;
+                }
+                if (objectLayouts.empty())
+                    objectLayouts = objectDiscovery.Discover(objectRoot.address, decode);
+            }
             size_t acceptedObjectLayouts = 0;
             for (const auto &[objectLayout, objectScore] : objectLayouts)
             {
-                const LayoutProbeReport objectReport = objectProbe.Validate(objectRoot, objectLayout, decode);
+                const LayoutProbeReport objectReport = objectProbe.Validate(objectRoot.address, objectLayout, decode);
                 if (progress)
                 {
-                    progress("binding_object_candidate root=" + Hex(objectRoot) + " " +
+                    progress("binding_object_candidate root=" + Hex(objectRoot.address) + " " +
                              DescribeObjectLayout(objectLayout) + " score=" + std::to_string(objectScore) +
                              " accepted=" + std::to_string(objectReport.accepted) +
                              " tested=" + std::to_string(objectReport.tested) + " valid=" + std::to_string(objectReport.valid));
                     for (const auto &failure : objectReport.failures)
-                        progress("binding_object_failure root=" + Hex(objectRoot) + " " + failure);
+                        progress("binding_object_failure root=" + Hex(objectRoot.address) + " " + failure);
                     for (const auto &evidence : objectReport.evidence)
-                        progress("binding_object_evidence root=" + Hex(objectRoot) + " " + evidence);
+                        progress("binding_object_evidence root=" + Hex(objectRoot.address) + " " + evidence);
                 }
                 if (!objectReport.accepted)
                     continue;
@@ -242,7 +313,7 @@ namespace nextdumper::binding
                             continue;
 
                         RuntimeBinding binding;
-                        binding.objectRoot = LocatedAddress{objectRoot, AddressMeaning::ResolvedValue, 90, "runtime-probe"};
+                        binding.objectRoot = LocatedAddress{objectRoot.address, AddressMeaning::ResolvedValue, 90, "runtime-probe", objectRoot.target};
                         binding.nameRoot = LocatedAddress{nameRoot, AddressMeaning::ResolvedValue, 90, "runtime-probe"};
                         binding.objects = objectLayout;
                         binding.names = nameLayout;
@@ -257,7 +328,7 @@ namespace nextdumper::binding
                             ++semanticRejections;
                             if (progress)
                             {
-                                progress("binding_semantics status=rejected object_root=" + Hex(objectRoot) +
+                                progress("binding_semantics status=rejected object_root=" + Hex(objectRoot.address) +
                                          " name_root=" + Hex(nameRoot));
                                 for (const auto &failure : semantics.failures)
                                     progress("binding_semantics failure=" + failure);
@@ -267,7 +338,7 @@ namespace nextdumper::binding
                             continue;
                         }
                         binding.report.evidence.insert(binding.report.evidence.end(), semantics.evidence.begin(), semantics.evidence.end());
-                        binding.report.evidence.push_back("object_root=" + Hex(objectRoot));
+                        binding.report.evidence.push_back("object_root=" + Hex(objectRoot.address));
                         binding.report.evidence.push_back("name_root=" + Hex(nameRoot));
                         binding.report.evidence.push_back("object_layout_candidates=" + std::to_string(objectLayouts.size()));
                         binding.report.evidence.push_back("selected_object_layout: " + DescribeObjectLayout(objectLayout));
@@ -313,7 +384,8 @@ namespace nextdumper::binding
                 }
             }
             if (progress)
-                progress("binding_object_root root=" + Hex(objectRoot) +
+                progress("binding_object_root root=" + Hex(objectRoot.address) +
+                         " target=" + RootTargetName(objectRoot.target) +
                          " candidates=" + std::to_string(objectLayouts.size()) +
                          " accepted=" + std::to_string(acceptedObjectLayouts) +
                          " rejected=" + std::to_string(objectLayouts.size() - acceptedObjectLayouts));

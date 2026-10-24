@@ -9,10 +9,30 @@
 #include <map>
 #include <tuple>
 
+#include "nextdumper/common/Hex.hpp"
+
 namespace nextdumper::binding
 {
     namespace
     {
+        using ::nextdumper::common::Hex;
+
+        const char *RootTargetName(RootTarget target)
+        {
+            switch (target)
+            {
+            case RootTarget::Unknown:
+                return "unknown";
+            case RootTarget::GUObjectArray:
+                return "guobjectarray";
+            case RootTarget::ObjObjects:
+                return "objobjects";
+            case RootTarget::NamePool:
+                return "namepool";
+            }
+            return "unknown";
+        }
+
         std::optional<uintptr_t> Add(uintptr_t base, uintptr_t offset)
         {
             if (base > UINTPTR_MAX - offset)
@@ -258,6 +278,270 @@ namespace nextdumper::binding
                             AddUniqueObjectCandidate(result, std::move(layout), 0.35 + 0.65 * chunkShape.confidence, maxCandidates);
                         }
                     }
+                }
+            }
+        }
+        return result;
+    }
+
+    StandardObjectLayoutResult ObjectLayoutDiscovery::DiscoverStandard(uintptr_t root,
+                                                                       RootTarget target,
+                                                                       const DecodePlan &decode,
+                                                                       int32_t maxCandidates) const
+    {
+        StandardObjectLayoutResult result;
+        if (root == 0 || maxCandidates <= 0)
+            return result;
+
+        std::vector<int32_t> chunkOffsets;
+        switch (target)
+        {
+        case RootTarget::ObjObjects:
+            chunkOffsets = {0};
+            break;
+        case RootTarget::GUObjectArray:
+            chunkOffsets = {16, 24, 0, 32};
+            break;
+        case RootTarget::Unknown:
+            chunkOffsets = {0, 16, 24};
+            break;
+        case RootTarget::NamePool:
+            return result;
+        }
+
+        constexpr int32_t kElementsPerChunk = 64 * 1024;
+        struct FieldLayout
+        {
+            int32_t maxElements;
+            int32_t count;
+            int32_t maxChunks;
+            int32_t numChunks;
+            const char *name;
+        };
+        constexpr std::array<FieldLayout, 3> kFieldLayouts = {{
+            {16, 20, 24, 28, "stock"},
+            {24, 28, 32, 36, "plus8"},
+            {32, 36, 40, 44, "plus16"},
+        }};
+        constexpr std::array<int32_t, 16> kSamples = {0, 1, 2, 4, 8, 16, 32, 64,
+                                                      128, 256, 512, 1024, 2048, 4096, 8192, 16384};
+
+        struct Shape
+        {
+            int32_t stride = 0;
+            int32_t indexOffset = 0;
+            int32_t tested = 0;
+            int32_t empty = 0;
+            int32_t valid = 0;
+            double confidence = 0.0;
+        };
+
+        for (const int32_t chunkOffset : chunkOffsets)
+        {
+            const auto chunkArray = Add(root, static_cast<uintptr_t>(chunkOffset));
+            if (!chunkArray)
+                continue;
+            uintptr_t rawObjects = 0;
+            if (!ReadPointer(*chunkArray, rawObjects))
+                continue;
+            const uintptr_t objects = decode.objectStorage(rawObjects, *chunkArray);
+            if (!IsReadablePointer(memory_, objects))
+                continue;
+
+            for (const FieldLayout &fieldLayout : kFieldLayouts)
+            {
+                const auto maxAddress = Add(*chunkArray, static_cast<uintptr_t>(fieldLayout.maxElements));
+                const auto countAddress = Add(*chunkArray, static_cast<uintptr_t>(fieldLayout.count));
+                const auto maxChunksAddress = Add(*chunkArray, static_cast<uintptr_t>(fieldLayout.maxChunks));
+                const auto numChunksAddress = Add(*chunkArray, static_cast<uintptr_t>(fieldLayout.numChunks));
+                int32_t rawMax = 0;
+                int32_t rawCount = 0;
+                int32_t rawMaxChunks = 0;
+                int32_t rawNumChunks = 0;
+                if (!maxAddress || !countAddress || !maxChunksAddress || !numChunksAddress ||
+                    !ReadInt32(memory_, *maxAddress, rawMax) || !ReadInt32(memory_, *countAddress, rawCount) ||
+                    !ReadInt32(memory_, *maxChunksAddress, rawMaxChunks) ||
+                    !ReadInt32(memory_, *numChunksAddress, rawNumChunks))
+                    continue;
+                const int32_t maxElements = decode.objectCount(rawMax, *maxAddress);
+                const int32_t count = decode.objectCount(rawCount, *countAddress);
+                const int32_t maxChunks = decode.objectCount(rawMaxChunks, *maxChunksAddress);
+                const int32_t numChunks = decode.objectCount(rawNumChunks, *numChunksAddress);
+
+                std::string prefix = "root=" + Hex(root) + " target=" + RootTargetName(target) +
+                                     " chunk_offset=" + std::to_string(chunkOffset) +
+                                     " field_layout=" + fieldLayout.name +
+                                     " objects=" + Hex(objects) +
+                                     " count=" + std::to_string(count) +
+                                     " max_elements=" + std::to_string(maxElements) +
+                                     " max_chunks=" + std::to_string(maxChunks) +
+                                     " num_chunks=" + std::to_string(numChunks);
+                if (count < 64 || count > 0x08000000 || maxElements < count || maxElements > 0x08000000 ||
+                    maxChunks <= 0 || maxChunks > 0x1000 || numChunks <= 0 || numChunks > maxChunks)
+                {
+                    result.Evidence.push_back(prefix + " status=rejected reason=field-relations");
+                    continue;
+                }
+
+                std::vector<int32_t> elementsPerChunkValues = {kElementsPerChunk};
+                if (maxElements % maxChunks == 0)
+                {
+                    const int32_t derived = maxElements / maxChunks;
+                    if (derived != kElementsPerChunk && derived >= 0x1000 && derived <= 0x200000)
+                        elementsPerChunkValues.push_back(derived);
+                }
+
+                for (const int32_t elementsPerChunk : elementsPerChunkValues)
+                {
+                    if (elementsPerChunk <= 0 || maxElements % elementsPerChunk != 0 ||
+                        maxElements / elementsPerChunk != maxChunks ||
+                        static_cast<int64_t>(numChunks) * elementsPerChunk < count)
+                        continue;
+
+                    std::vector<Shape> shapes;
+                    for (const int32_t stride : {24, 16, 32})
+                    {
+                        for (const int32_t indexOffset : {12, 36})
+                        {
+                            Shape shape;
+                            shape.stride = stride;
+                            shape.indexOffset = indexOffset;
+                            const auto validateIndex = [&](int32_t index)
+                            {
+                                if (index < 0 || index >= count)
+                                    return;
+                                ++shape.tested;
+                                const int32_t chunkIndex = index / elementsPerChunk;
+                                const int32_t withinChunk = index % elementsPerChunk;
+                                if (chunkIndex >= numChunks)
+                                    return;
+                                const auto chunkSlot = Scaled(objects, chunkIndex, static_cast<int32_t>(sizeof(uintptr_t)));
+                                if (!chunkSlot)
+                                    return;
+                                uintptr_t rawChunk = 0;
+                                if (!ReadPointer(*chunkSlot, rawChunk))
+                                    return;
+                                const uintptr_t chunk = decode.objectChunk(rawChunk, *chunkSlot);
+                                if (chunk == 0 || !memory_.IsReadable(chunk, sizeof(uintptr_t)))
+                                    return;
+                                const auto itemAddress = Scaled(chunk, withinChunk, stride);
+                                if (!itemAddress)
+                                    return;
+                                uintptr_t rawObject = 0;
+                                if (!ReadPointer(*itemAddress, rawObject))
+                                    return;
+                                const uintptr_t object = decode.objectPointer(rawObject, *itemAddress);
+                                if (object == 0)
+                                {
+                                    ++shape.empty;
+                                    return;
+                                }
+                                if (!IsLikelyObject(memory_, object))
+                                    return;
+                                const auto indexAddress = Add(object, static_cast<uintptr_t>(indexOffset));
+                                int32_t reportedIndex = 0;
+                                if (!indexAddress || !ReadInt32(memory_, *indexAddress, reportedIndex) ||
+                                    decode.objectIndex(reportedIndex, *indexAddress) != index)
+                                    return;
+
+                                const auto classAddress = Add(object, 16);
+                                const auto nameAddress = Add(object, 24);
+                                const auto displayAddress = Add(object, 28);
+                                const auto numberAddress = Add(object, 32);
+                                uintptr_t classPointer = 0;
+                                int32_t comparisonIndex = 0;
+                                int32_t displayIndex = 0;
+                                int32_t number = 0;
+                                if (!classAddress || !nameAddress || !displayAddress || !numberAddress ||
+                                    !ReadPointer(*classAddress, classPointer) ||
+                                    !ReadInt32(memory_, *nameAddress, comparisonIndex) ||
+                                    !ReadInt32(memory_, *displayAddress, displayIndex) ||
+                                    !ReadInt32(memory_, *numberAddress, number))
+                                    return;
+                                if (classPointer == 0 || !IsLikelyObject(memory_, classPointer))
+                                    return;
+                                if (comparisonIndex == 0 && displayIndex == 0)
+                                    return;
+                                const auto classDisplay = Add(classPointer, 28);
+                                int32_t classDisplayIndex = 0;
+                                if (!classDisplay || !ReadInt32(memory_, *classDisplay, classDisplayIndex))
+                                    return;
+
+                                const auto outer32 = Add(object, 32);
+                                const auto outer36 = Add(object, 36);
+                                bool outerValid = false;
+                                for (const auto &outerAddress : {outer36, outer32})
+                                {
+                                    if (!outerAddress)
+                                        continue;
+                                    uintptr_t outer = 0;
+                                    if (ReadPointer(*outerAddress, outer) && (outer == 0 || IsLikelyObject(memory_, outer)))
+                                    {
+                                        outerValid = true;
+                                        break;
+                                    }
+                                }
+                                if (!outerValid)
+                                    return;
+                                ++shape.valid;
+                            };
+
+                            for (const int32_t index : kSamples)
+                                validateIndex(index);
+                            const std::array<int32_t, 6> tailSamples = {
+                                count - 1, count / 2, std::min(count - 1, elementsPerChunk - 1),
+                                std::min(count - 1, elementsPerChunk), std::min(count - 1, 2 * elementsPerChunk - 1),
+                                std::min(count - 1, 2 * elementsPerChunk)};
+                            for (const int32_t index : tailSamples)
+                                validateIndex(index);
+
+                            const int32_t nonEmpty = shape.tested - shape.empty;
+                            shape.confidence = nonEmpty > 0 ? static_cast<double>(shape.valid) / nonEmpty : 0.0;
+                            if (shape.valid >= 5 && nonEmpty >= 5 && shape.confidence >= 0.80)
+                                shapes.push_back(shape);
+                        }
+                    }
+
+                    prefix += " elements_per_chunk=" + std::to_string(elementsPerChunk);
+                    if (shapes.empty())
+                    {
+                        result.Evidence.push_back(prefix + " status=rejected reason=no-consistent-item-shape");
+                        continue;
+                    }
+                    std::sort(shapes.begin(), shapes.end(), [](const Shape &left, const Shape &right)
+                              {
+                                  if ((left.indexOffset == 12) != (right.indexOffset == 12))
+                                      return left.indexOffset == 12;
+                                  if (left.valid != right.valid)
+                                      return left.valid > right.valid;
+                                  return left.confidence > right.confidence; });
+                    const Shape &best = shapes.front();
+                    ObjectContainerLayout layout;
+                    layout.kind = ObjectContainerKind::Chunked;
+                    layout.objectsOffset = chunkOffset;
+                    layout.maxElementsOffset = chunkOffset + fieldLayout.maxElements;
+                    layout.numElementsOffset = chunkOffset + fieldLayout.count;
+                    layout.maxChunksOffset = chunkOffset + fieldLayout.maxChunks;
+                    layout.numChunksOffset = chunkOffset + fieldLayout.numChunks;
+                    layout.elementsPerChunk = elementsPerChunk;
+                    layout.itemObjectOffset = 0;
+                    layout.itemStride = best.stride;
+                    layout.itemIndexOffset = best.indexOffset;
+                    layout.packedPointers = false;
+                    layout.chunkFieldsValidated = true;
+                    if (!layout.IsValid())
+                    {
+                        result.Evidence.push_back(prefix + " status=rejected reason=layout-invalid");
+                        continue;
+                    }
+                    AddUniqueObjectCandidate(result.Layouts, layout, 0.90 + 0.10 * best.confidence, maxCandidates);
+                    result.Evidence.push_back(prefix + " item_stride=" + std::to_string(best.stride) +
+                                              " item_index=" + std::to_string(best.indexOffset) +
+                                              " valid=" + std::to_string(best.valid) +
+                                              " tested=" + std::to_string(best.tested) +
+                                              " empty=" + std::to_string(best.empty) +
+                                              " confidence=" + std::to_string(best.confidence) +
+                                              " status=accepted");
                 }
             }
         }

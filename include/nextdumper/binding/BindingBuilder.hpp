@@ -27,7 +27,15 @@ namespace nextdumper::binding
                                                           const BindingLayoutHints &hints = {}) const;
 
     private:
+        struct ResolvedObjectRoot
+        {
+            uintptr_t address = 0;
+            RootTarget target = RootTarget::Unknown;
+        };
+
         [[nodiscard]] std::vector<uintptr_t> ResolveRoots(const std::vector<LocatedAddress> &candidates) const;
+        [[nodiscard]] std::vector<ResolvedObjectRoot> ResolveObjectRoots(
+            const std::vector<LocatedAddress> &candidates) const;
 
         const IMemorySource &memory_;
     };

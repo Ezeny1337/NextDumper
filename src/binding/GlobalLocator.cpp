@@ -32,6 +32,18 @@ namespace nextdumper::binding
             return EArch::Unknown;
         }
 
+        RootTarget TargetForSymbol(const std::string &symbol)
+        {
+            if (symbol == "GUObjectArray" || symbol == "GObjects")
+                return RootTarget::GUObjectArray;
+            if (symbol == "ObjObjects")
+                return RootTarget::ObjObjects;
+            if (symbol == "NamePoolData" || symbol == "GNameBlocksDebug" ||
+                symbol == "GFNameTableForDebuggerVisualizers_MT")
+                return RootTarget::NamePool;
+            return RootTarget::Unknown;
+        }
+
         class LocatorPhases
         {
         public:
@@ -61,10 +73,11 @@ namespace nextdumper::binding
     {
         if (address == 0)
             return {};
+        const RootTarget target = TargetForSymbol(symbol);
         if (symbol == "GUObjectArray" || symbol == "NamePoolData")
-            return {{address, AddressMeaning::Direct, 80, "symbol:" + symbol}};
-        return {{address, AddressMeaning::Direct, 70, "symbol:" + symbol + ":direct"},
-                {address, AddressMeaning::PointerSlot, 70, "symbol:" + symbol + ":pointer-slot"}};
+            return {{address, AddressMeaning::Direct, 80, "symbol:" + symbol, target}};
+        return {{address, AddressMeaning::Direct, 70, "symbol:" + symbol + ":direct", target},
+                {address, AddressMeaning::PointerSlot, 70, "symbol:" + symbol + ":pointer-slot", target}};
     }
 
     BindingCandidates GlobalLocator::LocateSymbols(const std::vector<std::string> &objectSymbols,
@@ -150,23 +163,30 @@ namespace nextdumper::binding
                 phases.Finish("analysis-failed");
                 return;
             }
-            const auto append = [](auto &out, const analyzer::LocateResult &located)
+            const auto append = [](auto &out, const analyzer::LocateResult &located, RootTarget target)
             {
                 for (const auto &candidate : located.Candidates)
                 {
-                    if (candidate.Address == 0 || std::any_of(out.begin(), out.end(), [&](const auto &item)
-                                                              { return item.address == candidate.Address && item.meaning == AddressMeaning::Direct; }))
+                    if (candidate.Address == 0)
                         continue;
+                    const auto existing = std::find_if(out.begin(), out.end(), [&](const auto &item)
+                                                       { return item.address == candidate.Address && item.meaning == AddressMeaning::Direct; });
+                    if (existing != out.end())
+                    {
+                        if (existing->target == RootTarget::Unknown)
+                            existing->target = target;
+                        continue;
+                    }
                     out.push_back({static_cast<uintptr_t>(candidate.Address), AddressMeaning::Direct,
                                    static_cast<uint8_t>(std::clamp(candidate.Confidence, 0.0f, 1.0f) * 100.0f),
-                                   std::string("analyzer:") + located.Target});
+                                   std::string("analyzer:") + located.Target, target});
                 }
             };
-            append(result.objectRoots, analysis.Find(analyzer::Targets::GUObjectArray));
+            append(result.objectRoots, analysis.Find(analyzer::Targets::GUObjectArray), RootTarget::GUObjectArray);
             phases.Finish("resolve-GUObjectArray");
-            append(result.objectRoots, analysis.Find(analyzer::Targets::ObjObjects));
+            append(result.objectRoots, analysis.Find(analyzer::Targets::ObjObjects), RootTarget::ObjObjects);
             phases.Finish("resolve-ObjObjects");
-            append(result.nameRoots, analysis.Find(analyzer::Targets::Names));
+            append(result.nameRoots, analysis.Find(analyzer::Targets::Names), RootTarget::NamePool);
             phases.Finish("resolve-Names");
         };
         analyze();
