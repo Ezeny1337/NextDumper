@@ -80,6 +80,7 @@ target_compile_features(ue_analysis PUBLIC cxx_std_20)
 target_compile_options(ue_analysis PRIVATE -Wall -Wextra -Wpedantic -Werror -fexceptions)
 
 add_library(nextdumper_core STATIC
+    src/app/AnalysisProposal.cpp
     src/app/CompatibilityDiagnosis.cpp
     src/app/MemoryPerformanceLog.cpp
     src/app/RuntimeSession.cpp

@@ -313,6 +313,11 @@ namespace nextdumper::analysis
 
                 if (validation.IsValidated())
                 {
+                    if (!validation.BoundaryReadable)
+                    {
+                        result.Diagnostics.push_back({DiagnosticSeverity::Warning, "ANALYSIS_BOUNDARY_UNAVAILABLE",
+                                                      "target=NamePool root=" + root + " " + validation.BoundaryDetail});
+                    }
                     result.Diagnostics.push_back(
                         {DiagnosticSeverity::Info, "ANALYSIS_VALIDATION",
                          "target=NamePool root=" + root +
@@ -322,6 +327,9 @@ namespace nextdumper::analysis
                              " byte_cursor=" + std::to_string(validation.ByteCursor) +
                              " block_size=" + std::to_string(validation.BlockSize) +
                              " allocated_blocks=" + std::to_string(validation.AllocatedBlocks) +
+                             " boundary=" + (validation.BoundaryReadable ? validation.BoundaryDetail : "unavailable") +
+                             " current_offset=" + std::to_string(validation.CurrentBlockOffset) +
+                             " cursor_offset=" + std::to_string(validation.ByteCursorOffset) +
                              " reserved=" + std::to_string(validation.ReservedMatched) + "/" +
                              std::to_string(validation.ReservedPairs) +
                              " block0_samples=" + std::to_string(validation.Block0Valid) + "/" +
@@ -337,6 +345,13 @@ namespace nextdumper::analysis
                                           " attempts=" + std::to_string(validation.AttemptedRoots);
                     if (!validation.FailureDetail.empty())
                         message += " detail=" + validation.FailureDetail;
+                    if (validation.AllocatedBlocks != 0)
+                        message += " allocated_blocks=" + std::to_string(validation.AllocatedBlocks);
+                    if (!validation.BoundaryDetail.empty())
+                        message += " boundary=" + validation.BoundaryDetail;
+                    if (validation.CurrentBlockOffset >= 0)
+                        message += " current_offset=" + std::to_string(validation.CurrentBlockOffset) +
+                                   " cursor_offset=" + std::to_string(validation.ByteCursorOffset);
                     if (!validation.FirstEntryHex.empty())
                         message += " raw_entry0=" + validation.FirstEntryHex;
                     result.Diagnostics.push_back({DiagnosticSeverity::Warning, "ANALYSIS_VALIDATION_FAILED",

@@ -8,6 +8,7 @@
 #include <fstream>
 #include <exception>
 #include <new>
+#include <optional>
 #include <span>
 #include <sstream>
 #include <utility>
@@ -16,6 +17,7 @@
 
 #include "nextdumper/analysis/AnalysisSession.hpp"
 #include "nextdumper/analysis/MemoryView.hpp"
+#include "nextdumper/app/AnalysisProposal.hpp"
 #include "nextdumper/binding/CommonObjectCollector.hpp"
 #include "nextdumper/binding/BindingBuilder.hpp"
 #include "nextdumper/binding/GlobalLocator.hpp"
@@ -809,6 +811,7 @@ namespace nextdumper::app
         if (discardFailedProfileDecoders())
             binding = builder.Build(candidates, decode, bindingProgress, layoutHints);
 
+        std::optional<::nextdumper::analysis::AnalysisResult> analysisResult;
         const auto runAnalysisProbe = [&]()
         {
             Note(RuntimeLogLevel::Info, "analysis_probe status=start mode=" +
@@ -819,7 +822,8 @@ namespace nextdumper::app
             if (binding && binding->nameRoot.address != 0)
                 analysisOptions.NameRootHints.push_back(binding->nameRoot.address);
             ::nextdumper::analysis::AnalysisSession session(analysisMemory, context_.Module(), std::move(analysisOptions));
-            const ::nextdumper::analysis::AnalysisResult result = session.Run();
+            analysisResult = session.Run();
+            const ::nextdumper::analysis::AnalysisResult &result = *analysisResult;
             finishStage("analysis-probe");
             const auto validated = std::count_if(result.NameValidations.begin(), result.NameValidations.end(),
                                                  [](const auto &validation)
@@ -861,12 +865,50 @@ namespace nextdumper::app
             BeginMemoryStage("analyzer-locator");
             candidates = locator.LocateAnalysis(candidates, progress);
             finishStage("analyzer-locator");
-            BeginMemoryStage("analyzer-binding");
             profileExecutionState->stage = "binding";
-            binding = builder.Build(candidates, decode, bindingProgress, layoutHints);
-            finishStage("analyzer-binding");
-            if (discardFailedProfileDecoders())
+
+            std::optional<NameBindingProposal> proposal;
+            if (analysisResult)
+                proposal = MakeNameBindingProposal(*analysisResult, decode);
+            if (!proposal && analysisResult)
+            {
+                Note("analysis_binding_proposal status=unavailable reason=no-validated-name-contract-or-boundary");
+            }
+            if (proposal)
+            {
+                Note("analysis_binding_proposal status=available selected=name-pool root=" + Hex(proposal->root) +
+                     " blocks_offset=" + std::to_string(proposal->layout.pool.blocksOffset) +
+                     " blocks_bit=" + std::to_string(proposal->layout.pool.blocksBit) +
+                     " evidence=" + proposal->evidence);
+                const auto duplicate = std::any_of(candidates.nameRoots.begin(), candidates.nameRoots.end(),
+                                                   [&](const LocatedAddress &candidate)
+                                                   { return candidate.address == proposal->root; });
+                if (!duplicate)
+                    candidates.nameRoots.push_back({proposal->root, AddressMeaning::ResolvedValue, 100, "analysis:NamePool"});
+                ::nextdumper::binding::BindingLayoutHints proposalHints = layoutHints;
+                proposalHints.names = proposal->layout;
+                BeginMemoryStage("analysis-binding");
+                binding = builder.Build(candidates, proposal->decode, bindingProgress, proposalHints);
+                finishStage("analysis-binding");
+                Note("analysis_binding_proposal status=" + std::string(binding ? "accepted" : "rejected") +
+                     " object_candidates=" + std::to_string(candidates.objectRoots.size()) +
+                     " name_candidates=" + std::to_string(candidates.nameRoots.size()));
+                if (binding)
+                {
+                    Note("binding_assessment source=analysis objects=" +
+                         std::to_string(binding->report.objectContainerValidated) +
+                         " names=" + std::to_string(binding->report.nameContainerValidated) +
+                         " semantics=" + std::to_string(binding->report.semanticValidationPassed));
+                }
+            }
+            if (!binding)
+            {
+                BeginMemoryStage("analyzer-binding");
                 binding = builder.Build(candidates, decode, bindingProgress, layoutHints);
+                finishStage("analyzer-binding");
+                if (discardFailedProfileDecoders())
+                    binding = builder.Build(candidates, decode, bindingProgress, layoutHints);
+            }
         }
         else
             Note("locator_path source=symbols validation=complete");

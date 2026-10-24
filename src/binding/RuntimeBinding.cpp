@@ -44,7 +44,7 @@ namespace nextdumper::binding
         {
             const auto current = relative(*currentBlockFromBlocks);
             const auto cursor = relative(*byteCursorFromBlocks);
-            if (!current || !cursor || *current == 0 || *cursor == 0)
+            if (!current || !cursor || *cursor == 0)
                 return std::nullopt;
             addresses.currentBlock = *current;
             addresses.byteCursor = *cursor;

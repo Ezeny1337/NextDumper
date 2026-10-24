@@ -30,8 +30,11 @@ namespace nextdumper::analysis
         uintptr_t Block0 = 0;
         uint32_t CurrentBlock = 0;
         uint32_t ByteCursor = 0;
+        int32_t CurrentBlockOffset = -1;
+        int32_t ByteCursorOffset = -1;
         uint32_t BlockSize = 0;
         uint32_t AllocatedBlocks = 0;
+        std::string BoundaryDetail;
         size_t ReservedPairs = 0;
         size_t ReservedMatched = 0;
         std::optional<NameTextDecoder> Decoder;
@@ -48,6 +51,11 @@ namespace nextdumper::analysis
         [[nodiscard]] bool IsValidated() const
         {
             return RootUsable && LayoutConsistent && DecoderValidated;
+        }
+
+        [[nodiscard]] bool IsBindable() const
+        {
+            return IsValidated() && BoundaryReadable;
         }
     };
 
