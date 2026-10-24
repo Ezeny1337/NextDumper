@@ -8,7 +8,6 @@ namespace nextdumper::analysis
     namespace
     {
         constexpr size_t kMaxNameLength = 1024;
-        constexpr size_t kMinimumKnownPairs = 8;
 
         uint32_t LengthKey(size_t length)
         {
@@ -34,31 +33,6 @@ namespace nextdumper::analysis
             default:
                 return (len ^ 0xCu) + len;
             }
-        }
-
-        bool MatchPlain(const KnownName &known, const NameTextDecoder &decoder)
-        {
-            if (known.Wide || known.Length != known.Plain.size() || known.Cipher.size() != known.Length)
-                return false;
-            std::vector<uint8_t> text = known.Cipher;
-            if (!decoder.Apply(text, known.Length, false))
-                return false;
-            return text.size() == known.Plain.size() &&
-                   std::memcmp(text.data(), known.Plain.data(), text.size()) == 0;
-        }
-
-        bool MatchesAll(const std::vector<KnownName> &known, const NameTextDecoder &decoder)
-        {
-            size_t compared = 0;
-            for (const KnownName &entry : known)
-            {
-                if (entry.Wide)
-                    continue;
-                if (!MatchPlain(entry, decoder))
-                    return false;
-                ++compared;
-            }
-            return compared >= kMinimumKnownPairs;
         }
     } // namespace
 
@@ -116,49 +90,5 @@ namespace nextdumper::analysis
             }
         }
         return false;
-    }
-
-    NameDecoderSynthesisResult SynthesizeNameDecoder(const std::vector<KnownName> &known)
-    {
-        NameDecoderSynthesisResult result;
-        const size_t pairs = static_cast<size_t>(std::count_if(known.begin(), known.end(),
-                                                               [](const KnownName &entry)
-                                                               { return !entry.Wide; }));
-        result.Pairs = pairs;
-        if (pairs < kMinimumKnownPairs)
-        {
-            result.Detail = "insufficient-known-pairs";
-            return result;
-        }
-
-        NameTextDecoder identity;
-        if (MatchesAll(known, identity))
-        {
-            result.Decoder = identity;
-            result.Detail = "family=identity";
-            return result;
-        }
-
-        for (uint32_t key = 1; key <= 0xFFu; ++key)
-        {
-            NameTextDecoder decoder{NameTextFamily::ByteXor, static_cast<uint8_t>(key)};
-            if (MatchesAll(known, decoder))
-            {
-                result.Decoder = decoder;
-                result.Detail = "family=byte-xor key=" + std::to_string(key);
-                return result;
-            }
-        }
-
-        NameTextDecoder schedule{NameTextFamily::LengthSchedule, 0};
-        if (MatchesAll(known, schedule))
-        {
-            result.Decoder = schedule;
-            result.Detail = "family=length-schedule";
-            return result;
-        }
-
-        result.Detail = "no-consistent-family";
-        return result;
     }
 } // namespace nextdumper::analysis

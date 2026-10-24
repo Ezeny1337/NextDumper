@@ -19,6 +19,7 @@ namespace nextdumper::analysis
         constexpr size_t kMinReservedPairs = 8;
         constexpr size_t kBlock0Samples = 32;
         constexpr size_t kMaxBlockScan = 8192;
+        constexpr size_t kMaxKnownWalk = 64;
 
         constexpr std::array<std::string_view, 16> kReservedNames = {
             "None", "ByteProperty", "IntProperty", "BoolProperty",
@@ -51,6 +52,25 @@ namespace nextdumper::analysis
             uint32_t ByteCursor = 0;
             int Score = 0;
             bool Standard = false;
+        };
+
+        struct WalkedEntry
+        {
+            uintptr_t Address = 0;
+            EntryRead Entry;
+            uint64_t ConsumedBefore = 0;
+        };
+
+        struct SequenceMatch
+        {
+            NameTextDecoder Decoder;
+            size_t Matched = 0;
+            size_t Extras = 0;
+            size_t Walked = 0;
+            uint64_t Consumed = 0;
+            uintptr_t NextAddress = 0;
+            std::string ExtraPreview;
+            bool Strong = false;
         };
 
         std::optional<uintptr_t> AddOffset(uintptr_t base, int64_t offset)
@@ -168,6 +188,113 @@ namespace nextdumper::analysis
                     return false;
             }
             return true;
+        }
+
+        bool MatchesReserved(const EntryRead &entry, const NameTextDecoder &decoder,
+                             std::string_view expected)
+        {
+            if (entry.Length == 0 || entry.Wide || entry.Length != expected.size())
+                return false;
+            std::vector<uint8_t> text = entry.Text;
+            if (!decoder.Apply(text, entry.Length, entry.Wide))
+                return false;
+            return std::memcmp(text.data(), expected.data(), expected.size()) == 0;
+        }
+
+        std::optional<std::string> DecodePrintable(const EntryRead &entry, const NameTextDecoder &decoder)
+        {
+            if (entry.Length == 0 || entry.Wide)
+                return std::nullopt;
+            std::vector<uint8_t> text = entry.Text;
+            if (!decoder.Apply(text, entry.Length, entry.Wide))
+                return std::nullopt;
+            if (!std::all_of(text.begin(), text.end(), [](uint8_t value)
+                             { return value >= 0x20 && value <= 0x7E; }))
+                return std::nullopt;
+            return std::string(text.begin(), text.end());
+        }
+
+        std::optional<SequenceMatch> MatchKnownSequence(const std::vector<WalkedEntry> &entries)
+        {
+            if (entries.empty())
+                return std::nullopt;
+
+            std::optional<SequenceMatch> best;
+            int bestRank = 1000;
+            const auto consider = [&](const NameTextDecoder &decoder, int rank)
+            {
+                SequenceMatch match;
+                match.Decoder = decoder;
+                size_t reserved = 0;
+                for (size_t index = 0; index < entries.size(); ++index)
+                {
+                    const WalkedEntry &walked = entries[index];
+                    const EntryRead &entry = walked.Entry;
+                    if (entry.Length == 0)
+                        break;
+                    if (reserved < kReservedNames.size() &&
+                        MatchesReserved(entry, decoder, kReservedNames[reserved]))
+                    {
+                        ++reserved;
+                        match.Walked = index + 1;
+                        match.Consumed = walked.ConsumedBefore + entry.Size;
+                        match.NextAddress = walked.Address + entry.Size;
+                        if (reserved == kReservedNames.size())
+                            break;
+                        continue;
+                    }
+                    ++match.Extras;
+                    if (match.ExtraPreview.size() < 128)
+                    {
+                        const auto text = DecodePrintable(entry, decoder);
+                        if (text)
+                        {
+                            std::string item = std::to_string(index) + ":" + *text;
+                            if (item.size() > 24)
+                                item.resize(24);
+                            if (!match.ExtraPreview.empty())
+                                match.ExtraPreview += ",";
+                            match.ExtraPreview += item;
+                        }
+                    }
+                }
+                match.Matched = reserved;
+                match.Strong = reserved >= kMinReservedPairs;
+                if (!best || match.Matched > best->Matched ||
+                    (match.Matched == best->Matched && match.Extras < best->Extras) ||
+                    (match.Matched == best->Matched && match.Extras == best->Extras && rank < bestRank))
+                {
+                    best = std::move(match);
+                    bestRank = rank;
+                }
+            };
+
+            consider(NameTextDecoder{}, 0);
+            for (uint32_t key = 1; key <= 0xFFu; ++key)
+                consider({NameTextFamily::ByteXor, static_cast<uint8_t>(key)}, 1);
+            consider({NameTextFamily::LengthSchedule, 0}, 2);
+            return best;
+        }
+
+        std::string DescribePrefix(const std::vector<WalkedEntry> &entries,
+                                   const NameTextDecoder &decoder, size_t limit)
+        {
+            std::string result;
+            const size_t count = std::min(limit, entries.size());
+            for (size_t index = 0; index < count; ++index)
+            {
+                const WalkedEntry &walked = entries[index];
+                const EntryRead &entry = walked.Entry;
+                result += "@" + std::to_string(walked.ConsumedBefore) +
+                          " h=" + common::Hex(entry.Header) +
+                          " len=" + std::to_string(entry.Length) +
+                          " wide=" + std::to_string(entry.Wide) +
+                          " raw=" + HexBytes(entry.Text) + " text=";
+                const auto text = DecodePrintable(entry, decoder);
+                result += text ? *text : "?";
+                result += " | ";
+            }
+            return result;
         }
 
         bool SampleBlock(const MemoryView &memory, const NamePoolFields &fields, uintptr_t block,
@@ -374,64 +501,66 @@ namespace nextdumper::analysis
             validation.BlockSize = static_cast<uint32_t>(blockSize);
             validation.LayoutConsistent = true;
 
-            std::vector<KnownName> known;
+            std::vector<WalkedEntry> walked;
+            uintptr_t prefixAddress = block0;
             uintptr_t entryAddress = block0;
             uint64_t consumed = 0;
-            for (size_t index = 0; index < kReservedNames.size(); ++index)
+            for (size_t index = 0; index < kMaxKnownWalk && consumed < blockSize; ++index)
             {
-                if (consumed >= blockSize)
-                {
-                    Fail(validation, "reserved-entry-unpublished", "index=" + std::to_string(index));
-                    return false;
-                }
                 EntryRead entry;
                 std::string failure;
-                if (!ReadEntry(memory, fields, entryAddress, entry, failure))
-                {
-                    Fail(validation, "reserved-read", "index=" + std::to_string(index) + " " + failure);
-                    return false;
-                }
+                if (!ReadEntry(memory, fields, prefixAddress, entry, failure))
+                    break;
+                if (entry.Length == 0)
+                    break;
+                if (entry.Size == 0 || entry.Size > blockSize - consumed)
+                    break;
                 if (index == 0)
                     validation.FirstEntryHex = HexBytes(entry.Text);
-                validation.ReservedPairs = index + 1;
-                const std::string_view expected = kReservedNames[index];
-                if (entry.Length == 0 || entry.Wide || entry.Length != expected.size() ||
-                    entry.Size == 0 || entry.Size > blockSize - consumed)
-                {
-                    Fail(validation, "reserved-shape",
-                         "index=" + std::to_string(index) +
-                             " expected=" + std::to_string(expected.size()) +
-                             " length=" + std::to_string(entry.Length) +
-                             " wide=" + std::to_string(entry.Wide) +
-                             " header=" + common::Hex(entry.Header) +
-                             " raw=" + HexBytes(entry.Text));
-                    return false;
-                }
-                KnownName item;
-                item.Cipher = entry.Text;
-                item.Plain = std::string(expected);
-                item.Length = entry.Length;
-                item.Wide = entry.Wide;
-                known.push_back(std::move(item));
-                consumed += entry.Size;
-                entryAddress += entry.Size;
+                WalkedEntry item;
+                item.Address = prefixAddress;
+                item.Entry = std::move(entry);
+                item.ConsumedBefore = consumed;
+                const size_t size = item.Entry.Size;
+                walked.push_back(std::move(item));
+                consumed += size;
+                prefixAddress += size;
             }
-            validation.ReservedPairs = known.size();
-            if (validation.ReservedPairs < kMinReservedPairs)
+            if (walked.empty())
             {
-                Fail(validation, "reserved-pairs-insufficient");
+                Fail(validation, "known-prefix-unreadable");
                 return false;
             }
 
-            const NameDecoderSynthesisResult synthesis = SynthesizeNameDecoder(known);
-            if (!synthesis.IsValid())
+            const std::optional<SequenceMatch> match = MatchKnownSequence(walked);
+            if (!match)
             {
-                Fail(validation, "decoder-synthesis", synthesis.Detail + " pairs=" + std::to_string(synthesis.Pairs));
+                Fail(validation, "known-sequence", "walked=" + std::to_string(walked.size()));
                 return false;
             }
-            validation.Decoder = synthesis.Decoder;
-            validation.ReservedMatched = synthesis.Pairs;
-            const NameTextDecoder &decoder = *synthesis.Decoder;
+            validation.KnownWalked = match->Walked;
+            validation.KnownExtras = match->Extras;
+            validation.KnownExtrasPreview = match->ExtraPreview;
+            if (!match->Strong)
+            {
+                std::string detail = "family=" + std::string(NameTextFamilyName(match->Decoder.Family)) +
+                                     " matched=" + std::to_string(match->Matched) + "/" +
+                                     std::to_string(kReservedNames.size()) +
+                                     " extras=" + std::to_string(match->Extras) +
+                                     " preview=" + match->ExtraPreview +
+                                     " prefix=" + DescribePrefix(walked, match->Decoder, 6);
+                if (match->Decoder.Family != NameTextFamily::LengthSchedule)
+                    detail += " schedule_prefix=" +
+                              DescribePrefix(walked, NameTextDecoder{NameTextFamily::LengthSchedule, 0}, 6);
+                Fail(validation, "known-sequence", std::move(detail));
+                return false;
+            }
+            validation.Decoder = match->Decoder;
+            validation.ReservedPairs = match->Matched;
+            validation.ReservedMatched = match->Matched;
+            const NameTextDecoder &decoder = *validation.Decoder;
+            entryAddress = match->NextAddress;
+            consumed = match->Consumed;
 
             const size_t allocated = ScanAllocatedBlocks(memory, *blocksAddress, maxBlocks);
             if (allocated == 0)

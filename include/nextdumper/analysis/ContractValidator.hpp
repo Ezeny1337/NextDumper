@@ -37,6 +37,9 @@ namespace nextdumper::analysis
         std::string BoundaryDetail;
         size_t ReservedPairs = 0;
         size_t ReservedMatched = 0;
+        size_t KnownWalked = 0;
+        size_t KnownExtras = 0;
+        std::string KnownExtrasPreview;
         std::optional<NameTextDecoder> Decoder;
         bool DecoderValidated = false;
         size_t Block0Samples = 0;

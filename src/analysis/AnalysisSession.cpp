@@ -308,7 +308,17 @@ namespace nextdumper::analysis
                              std::to_string(validation.ReservedPairs) +
                              " samples=" + std::to_string(validation.Block0Valid + validation.HighBlockValid) + "/" +
                              std::to_string(validation.Block0Samples + validation.HighBlockSamples) +
+                             " walked=" + std::to_string(validation.KnownWalked) +
+                             " extras=" + std::to_string(validation.KnownExtras) +
                              " status=" + (validation.DecoderValidated ? "validated" : "observed")});
+                    result.Diagnostics.push_back(
+                        {DiagnosticSeverity::Info, "ANALYSIS_KNOWN_SEQUENCE",
+                         "target=NamePool family=" + std::string(NameTextFamilyName(decoderValue.Family)) +
+                             " matched=" + std::to_string(validation.ReservedMatched) + "/" +
+                             std::to_string(validation.ReservedPairs) +
+                             " walked=" + std::to_string(validation.KnownWalked) +
+                             " extras=" + std::to_string(validation.KnownExtras) +
+                             " preview=" + validation.KnownExtrasPreview});
                 }
 
                 if (validation.IsValidated())
