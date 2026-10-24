@@ -456,14 +456,81 @@ namespace nextdumper::analysis
                                                       "root=" + common::Hex(evidence.Root) + " " + evidence.Snapshot});
                     }
                 }
+                for (const ObjectSeedEvidence &seed : objectScan.Seeds)
+                {
+                    std::string seedMessage = "root=" + common::Hex(seed.Root) +
+                                              " storage=" + common::Hex(seed.Storage) +
+                                              " declared=" + std::to_string(seed.DeclaredCount) +
+                                              " count_offset=" + std::to_string(seed.CountOffset) +
+                                              " item_stride=" + std::to_string(seed.ItemStride) +
+                                              " item_index=" + std::to_string(seed.ItemIndexOffset) +
+                                              " prefix=" + std::to_string(seed.PrefixValid) + "/" +
+                                              std::to_string(seed.PrefixTested) +
+                                              " header=0:" + common::Hex(seed.Header0) +
+                                              " 4:" + common::Hex(seed.Header4) +
+                                              " 8:" + common::Hex(seed.Header8) +
+                                              " 12:" + common::Hex(seed.Header12) +
+                                              " 16:" + common::Hex(seed.Header16) +
+                                              " 20:" + common::Hex(seed.Header20) +
+                                              " 24:" + common::Hex(seed.Header24) +
+                                              " 28:" + common::Hex(seed.Header28) +
+                                              " 32:" + common::Hex(seed.Header32);
+                    result.Diagnostics.push_back({DiagnosticSeverity::Info, "ANALYSIS_OBJECT_SEED",
+                                                  std::move(seedMessage)});
+                    if (seed.Calibrated)
+                    {
+                        result.Diagnostics.push_back(
+                            {DiagnosticSeverity::Info, "ANALYSIS_OBJECT_SEED_CALIBRATION",
+                             "root=" + common::Hex(seed.Root) +
+                                 " name_offset=" + std::to_string(seed.NameOffset) +
+                                 " name_hits=" + std::to_string(seed.NameHits) +
+                                 " name_unique=" + std::to_string(seed.NameUnique) +
+                                 " index_offset=" + std::to_string(seed.IndexOffset) +
+                                 " index_hits=" + std::to_string(seed.IndexHits) +
+                                 " class_offset=" + std::to_string(seed.ClassOffset) +
+                                 " class_hits=" + std::to_string(seed.ClassHits) +
+                                 " outer_offset=" + std::to_string(seed.OuterOffset) +
+                                 " outer_hits=" + std::to_string(seed.OuterHits) +
+                                 " detail=" + seed.CalibrationDetail});
+                    }
+                    if (seed.ContinuationAttempted)
+                    {
+                        std::string continuation = "root=" + common::Hex(seed.Root) +
+                                                   " start=" + std::to_string(seed.ContinuationStart) +
+                                                   " end=" + std::to_string(seed.ContinuationEnd) +
+                                                   " continued=" + std::to_string(seed.Continued) +
+                                                   " valid=" + std::to_string(seed.ValidBeyond) +
+                                                   " empty=" + std::to_string(seed.EmptyBeyond) +
+                                                   " invalid=" + std::to_string(seed.InvalidBeyond) +
+                                                   " first_invalid=" + std::to_string(seed.FirstInvalidIndex) +
+                                                   " first_invalid_object=" + common::Hex(seed.FirstInvalidObject) +
+                                                   " last_valid=" + std::to_string(seed.LastValidIndex) +
+                                                   " stop=" + seed.StopReason;
+                        if (!seed.ContinuationSamples.empty())
+                            continuation += " samples=" + seed.ContinuationSamples;
+                        result.Diagnostics.push_back(
+                            {DiagnosticSeverity::Info, "ANALYSIS_OBJECT_SEED_CONTINUATION",
+                             std::move(continuation)});
+                        if (!seed.ContinuationSnapshot.empty())
+                        {
+                            result.Diagnostics.push_back(
+                                {DiagnosticSeverity::Info, "ANALYSIS_OBJECT_SEED_SNAPSHOT",
+                                 "root=" + common::Hex(seed.Root) + " " + seed.ContinuationSnapshot});
+                        }
+                    }
+                }
 
                 std::string message = "scanned_bytes=" + std::to_string(objectScan.ScannedBytes) +
                                       " candidates=" + std::to_string(objectScan.Candidates) +
                                       " parent_candidates=" + std::to_string(objectScan.ParentCandidates) +
                                       " deep_candidates=" + std::to_string(objectScan.DeepCandidates) +
+                                      " seed_roots=" + std::to_string(objectScan.SeedRootsProbed) +
+                                      " seed_candidates=" + std::to_string(objectScan.SeedCandidates) +
+                                      " seeds=" + std::to_string(objectScan.Seeds.size()) +
                                       " contracts=" + std::to_string(objectScan.Contracts.size()) +
                                       " budget_exhausted=" + std::to_string(objectScan.BudgetExhausted) +
-                                      " deep_budget_exhausted=" + std::to_string(objectScan.DeepBudgetExhausted);
+                                      " deep_budget_exhausted=" + std::to_string(objectScan.DeepBudgetExhausted) +
+                                      " seed_budget_exhausted=" + std::to_string(objectScan.SeedBudgetExhausted);
                 if (!objectScan.Error.empty())
                     message += " error=" + objectScan.Error;
                 if (!objectScan.BestRejected.empty())

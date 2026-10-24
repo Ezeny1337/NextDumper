@@ -154,6 +154,12 @@ namespace nextdumper::analysis
             return ReadExact(memory, address, &value, sizeof(value));
         }
 
+        uint32_t ReadDword(const MemoryView &memory, uintptr_t address)
+        {
+            uint32_t value = 0;
+            return ReadExact(memory, address, &value, sizeof(value)) ? value : 0;
+        }
+
         bool ReadFieldValues(const MemoryView &memory, uintptr_t header, const FieldLayout &field,
                              FieldValues &values)
         {
@@ -525,6 +531,432 @@ namespace nextdumper::analysis
                 result += ShortName(samples[index]);
             }
             return result;
+        }
+
+        bool ReadNameAt(const MemoryView &memory, NameResolver &names, uintptr_t object,
+                        int32_t offset, std::string &out)
+        {
+            int32_t raw = 0;
+            const auto address = AddOffset(object, offset);
+            return address && ReadInt32Value(memory, *address, raw) &&
+                   names.Resolve(raw, out) && !out.empty();
+        }
+
+        bool SeedCoreValid(const MemoryView &memory, NameResolver &names, uintptr_t object,
+                           int32_t index, int32_t indexOffset, std::string &name)
+        {
+            if (object == 0 || !IsLikelyObject(memory, object))
+                return false;
+            int32_t reported = 0;
+            const auto address = AddOffset(object, indexOffset);
+            if (!address || !ReadInt32Value(memory, *address, reported) || reported != index)
+                return false;
+            return ReadObjectName(memory, names, object, name);
+        }
+
+        bool TrySeed(const MemoryView &memory, NameResolver &names, uintptr_t root,
+                     const ObjectContractScanOptions &options, ObjectSeedEvidence &seed)
+        {
+            if (root == 0 || (root & (sizeof(uintptr_t) - 1)) != 0 ||
+                !memory.IsReadable(root, 0x24) || memory.IsExecutable(root, sizeof(uintptr_t)))
+                return false;
+            uintptr_t storage = 0;
+            if (!ReadPointerValue(memory, root, storage) || storage == 0 ||
+                (storage & (sizeof(uintptr_t) - 1)) != 0 ||
+                !memory.IsReadable(storage, sizeof(uintptr_t)) ||
+                memory.IsExecutable(storage, sizeof(uintptr_t)))
+                return false;
+
+            struct Match
+            {
+                uint32_t valid = 0;
+                int32_t count = 0;
+                int32_t countOffset = -1;
+                int32_t stride = 0;
+                int32_t indexOffset = -1;
+            };
+            std::optional<Match> best;
+            for (const int32_t countOffset : {12, 8, 16, 20})
+            {
+                const auto countAddress = AddOffset(root, countOffset);
+                int32_t count = 0;
+                if (!countAddress || !ReadInt32Value(memory, *countAddress, count) ||
+                    count < 8 || count > options.MaxSeedCount)
+                    continue;
+                for (const int32_t stride : {24, 16, 8, 32})
+                {
+                    for (const int32_t indexOffset : {12, 36})
+                    {
+                        const int32_t sampleCount = std::min<int32_t>(count, 9);
+                        uint32_t valid = 0;
+                        bool firstValid = false;
+                        for (int32_t index = 0; index < sampleCount; ++index)
+                        {
+                            const auto itemAddress = AddOffset(storage, static_cast<int64_t>(index) * stride);
+                            uintptr_t object = 0;
+                            std::string name;
+                            if (itemAddress && ReadPointerValue(memory, *itemAddress, object) &&
+                                SeedCoreValid(memory, names, object, index, indexOffset, name))
+                            {
+                                ++valid;
+                                if (index == 0)
+                                    firstValid = true;
+                            }
+                        }
+                        if (!firstValid || valid < 6)
+                            continue;
+                        const auto better = [](const Match &candidate, const Match &current)
+                        {
+                            if (candidate.valid != current.valid)
+                                return candidate.valid > current.valid;
+                            if ((candidate.stride == 24) != (current.stride == 24))
+                                return candidate.stride == 24;
+                            if ((candidate.indexOffset == 12) != (current.indexOffset == 12))
+                                return candidate.indexOffset == 12;
+                            if ((candidate.countOffset == 12) != (current.countOffset == 12))
+                                return candidate.countOffset == 12;
+                            return candidate.countOffset < current.countOffset;
+                        };
+                        const Match candidate{valid, count, countOffset, stride, indexOffset};
+                        if (!best || better(candidate, *best))
+                            best = candidate;
+                    }
+                }
+            }
+            if (!best)
+                return false;
+
+            seed = {};
+            seed.Root = root;
+            seed.Storage = storage;
+            seed.DeclaredCount = best->count;
+            seed.CountOffset = best->countOffset;
+            seed.ItemStride = best->stride;
+            seed.ItemIndexOffset = best->indexOffset;
+            const auto readHeader = [&](int32_t offset)
+            {
+                const auto address = AddOffset(root, offset);
+                return address ? ReadDword(memory, *address) : 0u;
+            };
+            seed.Header0 = readHeader(0);
+            seed.Header4 = readHeader(4);
+            seed.Header8 = readHeader(8);
+            seed.Header12 = readHeader(12);
+            seed.Header16 = readHeader(16);
+            seed.Header20 = readHeader(20);
+            seed.Header24 = readHeader(24);
+            seed.Header28 = readHeader(28);
+            seed.Header32 = readHeader(32);
+
+            const int32_t prefixCount = std::min<int32_t>(best->count, 32);
+            for (int32_t index = 0; index < prefixCount; ++index)
+            {
+                const auto itemAddress = AddOffset(storage, static_cast<int64_t>(index) * best->stride);
+                uintptr_t object = 0;
+                std::string name;
+                if (itemAddress && ReadPointerValue(memory, *itemAddress, object) &&
+                    SeedCoreValid(memory, names, object, index, best->indexOffset, name))
+                    ++seed.PrefixValid;
+                ++seed.PrefixTested;
+            }
+            if (seed.PrefixValid < 6 || seed.PrefixValid * 2 < seed.PrefixTested)
+                return false;
+            return true;
+        }
+
+        struct SeedOffsetStat
+        {
+            int32_t offset = -1;
+            uint32_t hits = 0;
+            uint32_t auxiliary = 0;
+            std::string samples;
+        };
+
+        void CalibrateSeed(const MemoryView &memory, NameResolver &names, ObjectSeedEvidence &seed)
+        {
+            seed.Calibrated = true;
+            if (seed.Storage == 0 || seed.ItemStride <= 0 || seed.DeclaredCount <= 0)
+                return;
+
+            struct SeedObject
+            {
+                int32_t index = 0;
+                uintptr_t address = 0;
+            };
+            std::vector<SeedObject> objects;
+            const int32_t limit = std::min<int32_t>(seed.DeclaredCount, 32);
+            for (int32_t index = 0; index < limit; ++index)
+            {
+                const auto itemAddress = AddOffset(seed.Storage, static_cast<int64_t>(index) * seed.ItemStride);
+                uintptr_t object = 0;
+                if (itemAddress && ReadPointerValue(memory, *itemAddress, object) && object != 0 &&
+                    memory.IsReadable(object, sizeof(uintptr_t)))
+                    objects.push_back({index, object});
+            }
+            if (objects.empty())
+                return;
+
+            std::vector<SeedOffsetStat> nameStats;
+            for (int32_t offset = 0; offset <= 0x70; offset += 4)
+            {
+                uint32_t hits = 0;
+                std::unordered_set<std::string> unique;
+                std::vector<std::string> samples;
+                for (const SeedObject &object : objects)
+                {
+                    std::string name;
+                    if (ReadNameAt(memory, names, object.address, offset, name))
+                    {
+                        ++hits;
+                        unique.insert(name);
+                        if (samples.size() < 2)
+                            samples.push_back(name);
+                    }
+                }
+                if (hits != 0)
+                {
+                    SeedOffsetStat stat;
+                    stat.offset = offset;
+                    stat.hits = hits;
+                    stat.auxiliary = static_cast<uint32_t>(unique.size());
+                    stat.samples = BuildShapeSamples(samples);
+                    nameStats.push_back(std::move(stat));
+                }
+            }
+            std::sort(nameStats.begin(), nameStats.end(),
+                      [](const SeedOffsetStat &left, const SeedOffsetStat &right)
+                      {
+                          const uint64_t leftScore = static_cast<uint64_t>(left.auxiliary) * 100 + left.hits;
+                          const uint64_t rightScore = static_cast<uint64_t>(right.auxiliary) * 100 + right.hits;
+                          if (leftScore != rightScore)
+                              return leftScore > rightScore;
+                          return left.offset < right.offset;
+                      });
+            if (!nameStats.empty())
+            {
+                seed.NameOffset = nameStats.front().offset;
+                seed.NameHits = nameStats.front().hits;
+                seed.NameUnique = nameStats.front().auxiliary;
+            }
+
+            std::vector<SeedOffsetStat> indexStats;
+            for (int32_t offset = 0; offset <= 0x80; offset += 4)
+            {
+                uint32_t hits = 0;
+                for (const SeedObject &object : objects)
+                {
+                    int32_t value = 0;
+                    const auto address = AddOffset(object.address, offset);
+                    if (address && ReadInt32Value(memory, *address, value) && value == object.index)
+                        ++hits;
+                }
+                if (hits != 0)
+                {
+                    SeedOffsetStat stat;
+                    stat.offset = offset;
+                    stat.hits = hits;
+                    indexStats.push_back(std::move(stat));
+                }
+            }
+            std::sort(indexStats.begin(), indexStats.end(),
+                      [](const SeedOffsetStat &left, const SeedOffsetStat &right)
+                      {
+                          if (left.hits != right.hits)
+                              return left.hits > right.hits;
+                          if ((left.offset == 36) != (right.offset == 36))
+                              return left.offset == 36;
+                          return left.offset < right.offset;
+                      });
+            if (!indexStats.empty())
+            {
+                seed.IndexOffset = indexStats.front().offset;
+                seed.IndexHits = indexStats.front().hits;
+            }
+
+            std::vector<SeedOffsetStat> classStats;
+            if (seed.NameOffset >= 0)
+            {
+                for (int32_t offset = 8; offset <= 0x70; offset += 4)
+                {
+                    uint32_t hits = 0;
+                    std::vector<std::string> samples;
+                    for (const SeedObject &object : objects)
+                    {
+                        const auto classAddress = AddOffset(object.address, offset);
+                        uintptr_t classPointer = 0;
+                        if (!classAddress || !ReadPointerValue(memory, *classAddress, classPointer) ||
+                            classPointer == 0 || !IsLikelyObject(memory, classPointer))
+                            continue;
+                        std::string className;
+                        if (ReadNameAt(memory, names, classPointer, seed.NameOffset, className))
+                        {
+                            ++hits;
+                            if (samples.size() < 2)
+                                samples.push_back(className);
+                        }
+                    }
+                    if (hits != 0)
+                    {
+                        SeedOffsetStat stat;
+                        stat.offset = offset;
+                        stat.hits = hits;
+                        stat.samples = BuildShapeSamples(samples);
+                        classStats.push_back(std::move(stat));
+                    }
+                }
+                std::sort(classStats.begin(), classStats.end(),
+                          [](const SeedOffsetStat &left, const SeedOffsetStat &right)
+                          {
+                              if (left.hits != right.hits)
+                                  return left.hits > right.hits;
+                              return left.offset < right.offset;
+                          });
+                if (!classStats.empty())
+                {
+                    seed.ClassOffset = classStats.front().offset;
+                    seed.ClassHits = classStats.front().hits;
+                }
+            }
+
+            std::vector<SeedOffsetStat> outerStats;
+            for (int32_t offset = 8; offset <= 0x80; offset += 4)
+            {
+                uint32_t valid = 0;
+                uint32_t nonNull = 0;
+                for (const SeedObject &object : objects)
+                {
+                    const auto outerAddress = AddOffset(object.address, offset);
+                    uintptr_t outer = 0;
+                    if (!outerAddress || !ReadPointerValue(memory, *outerAddress, outer))
+                        continue;
+                    if (outer == 0)
+                        ++valid;
+                    else if (IsLikelyObject(memory, outer))
+                    {
+                        ++valid;
+                        ++nonNull;
+                    }
+                }
+                if (valid != 0)
+                {
+                    SeedOffsetStat stat;
+                    stat.offset = offset;
+                    stat.hits = valid;
+                    stat.auxiliary = nonNull;
+                    outerStats.push_back(std::move(stat));
+                }
+            }
+            std::sort(outerStats.begin(), outerStats.end(),
+                      [](const SeedOffsetStat &left, const SeedOffsetStat &right)
+                      {
+                          if (left.auxiliary != right.auxiliary)
+                              return left.auxiliary > right.auxiliary;
+                          if (left.hits != right.hits)
+                              return left.hits > right.hits;
+                          return left.offset < right.offset;
+                      });
+            if (!outerStats.empty())
+            {
+                seed.OuterOffset = outerStats.front().offset;
+                seed.OuterHits = outerStats.front().hits;
+            }
+
+            const auto appendStats = [](std::string &text, const std::vector<SeedOffsetStat> &stats,
+                                        const char *label, bool showUnique, bool showNonNull)
+            {
+                text += std::string(label) + "=";
+                const size_t count = std::min<size_t>(stats.size(), 2);
+                for (size_t index = 0; index < count; ++index)
+                {
+                    if (index != 0)
+                        text += ",";
+                    text += std::to_string(stats[index].offset) + ":" + std::to_string(stats[index].hits);
+                    if (showUnique)
+                        text += "u" + std::to_string(stats[index].auxiliary);
+                    if (showNonNull)
+                        text += "/" + std::to_string(stats[index].auxiliary) + "nn";
+                    if (!stats[index].samples.empty())
+                        text += "[" + stats[index].samples + "]";
+                }
+            };
+            std::string detail;
+            appendStats(detail, nameStats, "name", true, false);
+            appendStats(detail, indexStats, " index", false, false);
+            appendStats(detail, classStats, " class", false, false);
+            appendStats(detail, outerStats, " outer", false, true);
+            seed.CalibrationDetail = std::move(detail);
+        }
+
+        void ContinueSeed(const MemoryView &memory, NameResolver &names,
+                          const ObjectContractScanOptions &options, ObjectSeedEvidence &seed)
+        {
+            seed.ContinuationAttempted = true;
+            seed.ContinuationStart = seed.DeclaredCount;
+            seed.ContinuationEnd = options.MaxSeedContinuation - 1;
+            if (seed.Storage == 0 || seed.ItemStride <= 0 ||
+                seed.ContinuationStart < 0 || seed.ContinuationStart > seed.ContinuationEnd)
+            {
+                seed.StopReason = "invalid-range";
+                return;
+            }
+
+            std::vector<std::string> samples;
+            for (int32_t index = seed.ContinuationStart; index <= seed.ContinuationEnd; ++index)
+            {
+                const auto itemAddress = AddOffset(seed.Storage, static_cast<int64_t>(index) * seed.ItemStride);
+                if (!itemAddress)
+                {
+                    ++seed.InvalidBeyond;
+                    if (seed.FirstInvalidIndex < 0)
+                        seed.FirstInvalidIndex = index;
+                    seed.StopReason = "overflow";
+                    break;
+                }
+                if (!memory.IsReadable(*itemAddress, sizeof(uintptr_t)))
+                {
+                    ++seed.InvalidBeyond;
+                    if (seed.FirstInvalidIndex < 0)
+                        seed.FirstInvalidIndex = index;
+                    seed.StopReason = "unreadable";
+                    break;
+                }
+                uintptr_t object = 0;
+                if (!ReadPointerValue(memory, *itemAddress, object))
+                {
+                    ++seed.InvalidBeyond;
+                    if (seed.FirstInvalidIndex < 0)
+                        seed.FirstInvalidIndex = index;
+                    continue;
+                }
+                if (object == 0)
+                {
+                    ++seed.EmptyBeyond;
+                    continue;
+                }
+                std::string name;
+                if (SeedCoreValid(memory, names, object, index, seed.ItemIndexOffset, name))
+                {
+                    ++seed.ValidBeyond;
+                    seed.Continued = true;
+                    seed.LastValidIndex = index;
+                    if (samples.size() < 4)
+                        samples.push_back(name);
+                }
+                else
+                {
+                    ++seed.InvalidBeyond;
+                    if (seed.FirstInvalidIndex < 0)
+                    {
+                        seed.FirstInvalidIndex = index;
+                        seed.FirstInvalidObject = object;
+                    }
+                }
+            }
+            if (seed.StopReason.empty())
+                seed.StopReason = "end";
+            seed.ContinuationSamples = BuildShapeSamples(samples);
+            if (seed.FirstInvalidObject != 0)
+                seed.ContinuationSnapshot = ObjectSnapshot(memory, names, seed.FirstInvalidObject);
         }
 
         uint64_t EvidenceScore(const ObjectCandidateEvidence &evidence)
@@ -948,6 +1380,64 @@ namespace nextdumper::analysis
                 result.Rejections.resize(options.MaxRejections);
         };
 
+        std::vector<ObjectSeedEvidence> seeds;
+        std::unordered_set<uintptr_t> seedRoots;
+        const auto probeSeedRoot = [&](uintptr_t root)
+        {
+            if (seedRoots.size() >= options.MaxSeedRoots)
+            {
+                result.SeedBudgetExhausted = true;
+                return;
+            }
+            if (root == 0 || image.Contains(root) || (root & (sizeof(uintptr_t) - 1)) != 0 ||
+                !image.Memory().IsReadable(root, sizeof(uintptr_t)) ||
+                image.Memory().IsExecutable(root, sizeof(uintptr_t)))
+                return;
+            if (!seedRoots.insert(root).second)
+                return;
+            ++result.SeedRootsProbed;
+            uintptr_t storage = 0;
+            if (!ReadPointerValue(image.Memory(), root, storage) || storage == 0 ||
+                !image.Memory().IsReadable(storage, sizeof(uintptr_t)) ||
+                image.Memory().IsExecutable(storage, sizeof(uintptr_t)))
+                return;
+            bool plausible = false;
+            for (const int32_t countOffset : {12, 8, 16, 20})
+            {
+                const auto countAddress = AddOffset(root, countOffset);
+                int32_t count = 0;
+                if (countAddress && ReadInt32Value(image.Memory(), *countAddress, count) &&
+                    count >= 8 && count <= options.MaxSeedCount)
+                {
+                    plausible = true;
+                    break;
+                }
+            }
+            if (!plausible)
+                return;
+            uintptr_t firstObject = 0;
+            std::string firstName;
+            if (!ReadPointerValue(image.Memory(), storage, firstObject) || firstObject == 0 ||
+                (!SeedCoreValid(image.Memory(), names, firstObject, 0, 36, firstName) &&
+                 !SeedCoreValid(image.Memory(), names, firstObject, 0, 12, firstName)))
+                return;
+            ++result.SeedCandidates;
+            ObjectSeedEvidence seed;
+            if (TrySeed(image.Memory(), names, root, options, seed))
+            {
+                const auto duplicate = std::any_of(seeds.begin(), seeds.end(),
+                                                   [&](const ObjectSeedEvidence &existing)
+                                                   {
+                                                       return existing.Storage == seed.Storage &&
+                                                              existing.DeclaredCount == seed.DeclaredCount &&
+                                                              existing.ItemStride == seed.ItemStride &&
+                                                              existing.ItemIndexOffset == seed.ItemIndexOffset;
+                                                   });
+                if (!duplicate)
+                    seeds.push_back(std::move(seed));
+            }
+        };
+
         const auto considerPointer = [&](uintptr_t pointerAddress, uintptr_t rawChunkTable)
         {
             if (rawChunkTable == 0 || !IsInReadableRanges(readableRanges, rawChunkTable, sizeof(uintptr_t)) ||
@@ -959,6 +1449,7 @@ namespace nextdumper::analysis
                 !image.Memory().IsReadable(chunk0, sizeof(uintptr_t)))
                 return;
             ++result.Candidates;
+            probeSeedRoot(rawChunkTable);
             std::optional<ObjectCandidateEvidence> rejected;
             std::optional<ObjectCandidateEvidence> accepted;
             const auto contract = TryCandidate(image.Memory(), names, pointerAddress, rawChunkTable,
@@ -1129,6 +1620,24 @@ namespace nextdumper::analysis
         }
         if (!result.Rejections.empty())
             result.BestRejected = CompactEvidence(result.Rejections.front());
+
+        std::sort(seeds.begin(), seeds.end(),
+                  [](const ObjectSeedEvidence &left, const ObjectSeedEvidence &right)
+                  {
+                      if (left.PrefixValid != right.PrefixValid)
+                          return left.PrefixValid > right.PrefixValid;
+                      if (left.PrefixTested != right.PrefixTested)
+                          return left.PrefixTested > right.PrefixTested;
+                      return left.Root < right.Root;
+                  });
+        if (seeds.size() > options.MaxSeeds)
+            seeds.resize(options.MaxSeeds);
+        for (size_t index = 0; index < seeds.size() && index < options.MaxSeedContinuations; ++index)
+        {
+            CalibrateSeed(image.Memory(), names, seeds[index]);
+            ContinueSeed(image.Memory(), names, options, seeds[index]);
+        }
+        result.Seeds = std::move(seeds);
         return result;
     }
 } // namespace nextdumper::analysis
