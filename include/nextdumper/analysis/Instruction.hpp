@@ -14,14 +14,18 @@ namespace nextdumper::analysis
         LoadLiteral,
         Load,
         Store,
+        LoadPair,
+        StorePair,
         MoveImmediate,
         MoveRegister,
         LogicalShiftRight,
         BitfieldInsert,
+        BitfieldExtract,
         AndImmediate,
         TestBit,
         Call,
         Branch,
+        ConditionalBranch,
         Return,
         Prologue,
     };
@@ -53,6 +57,7 @@ namespace nextdumper::analysis
         InstructionKind Kind = InstructionKind::Other;
 
         int Dest = -1;
+        int Dest2 = -1;
         int Base = -1;
         int Source = -1;
 

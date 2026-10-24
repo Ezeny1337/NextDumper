@@ -45,7 +45,7 @@ namespace nextdumper::analysis
             if (len < 1)
                 return false;
 
-            const uint32_t levels = (1u << (len - 1)) - 1;
+            const uint32_t levels = (1u << len) - 1;
             if ((imms & levels) == levels)
                 return false;
 
@@ -152,9 +152,17 @@ namespace nextdumper::analysis
                     out.Value = address + static_cast<uint64_t>(Signed((word >> 5) & 0x3fff, 14) * 4);
                     return true;
                 }
-                if ((word & 0xff000010) == 0x54000000 || (word & 0x7e000000) == 0x34000000)
+                if ((word & 0xff000010) == 0x54000000)
                 {
-                    out.Kind = InstructionKind::Branch;
+                    out.Kind = InstructionKind::ConditionalBranch;
+                    out.Value = address + static_cast<uint64_t>(Signed((word >> 5) & 0x7ffff, 19) * 4);
+                    return true;
+                }
+                if ((word & 0x7e000000) == 0x34000000)
+                {
+                    out.Kind = InstructionKind::ConditionalBranch;
+                    out.Base = Register(word & 31);
+                    out.Value = address + static_cast<uint64_t>(Signed((word >> 5) & 0x7ffff, 19) * 4);
                     return true;
                 }
                 if ((word & 0x1f000000) == 0x10000000)
@@ -181,30 +189,40 @@ namespace nextdumper::analysis
                     const uint64_t immediate = uint64_t{(word >> 10) & 4095} << (shift ? 12 : 0);
                     out.Dest = rd;
                     out.Base = rn;
-                    if (operation == 0 && setFlags == 0 && rn >= 0)
+                    if (operation == 0 && rn >= 0)
                     {
                         out.Kind = InstructionKind::AddImmediate;
                         out.Value = immediate;
                     }
                     else
                     {
-                        out.bClobbersAll = true;
+                        // SUB/SUBS/CMP 或基于 SP 的 ADD：标志位与 SP 运算不会使无关的寄存器数据流失效
+                        out.Kind = InstructionKind::Other;
                     }
+                    (void)setFlags;
                     return true;
                 }
-                if ((word & 0x7f200000) == 0x0b200000)
+                if ((word & 0x1f200000) == 0x0b200000 || (word & 0x1f200000) == 0x0b000000)
                 {
-                    out.Kind = InstructionKind::AddExtendedRegister;
+                    const bool extended = (word & 0x00200000) != 0;
+                    const uint32_t operation = (word >> 30) & 1;
+                    const uint32_t setFlags = (word >> 29) & 1;
                     out.Dest = rd;
                     out.Base = rn;
                     out.Source = Register((word >> 16) & 31);
-                    out.Extend = ExtendFromBits((word >> 13) & 7);
-                    out.Shift = static_cast<uint8_t>((word >> 10) & 7);
-                    out.OperandWidth = (out.Extend == ExtendKind::Uxtx || out.Extend == ExtendKind::Sxtx) ? 8 : 4;
-                    return true;
-                }
-                if ((word & 0x7f200000) == 0x0b000000)
-                {
+                    if (operation != 0 || setFlags != 0)
+                    {
+                        out.Kind = InstructionKind::Other;
+                        return true;
+                    }
+                    if (extended)
+                    {
+                        out.Kind = InstructionKind::AddExtendedRegister;
+                        out.Extend = ExtendFromBits((word >> 13) & 7);
+                        out.Shift = static_cast<uint8_t>((word >> 10) & 7);
+                        out.OperandWidth = (out.Extend == ExtendKind::Uxtx || out.Extend == ExtendKind::Sxtx) ? 8 : 4;
+                        return true;
+                    }
                     const uint32_t shift = (word >> 10) & 0x3f;
                     if (!sf && shift >= 32)
                     {
@@ -212,9 +230,6 @@ namespace nextdumper::analysis
                         return true;
                     }
                     out.Kind = InstructionKind::AddShiftedRegister;
-                    out.Dest = rd;
-                    out.Base = rn;
-                    out.Source = Register((word >> 16) & 31);
                     out.ShiftType = ShiftFromBits((word >> 22) & 3);
                     out.Shift = static_cast<uint8_t>(shift);
                     return true;
@@ -238,18 +253,21 @@ namespace nextdumper::analysis
                         out.Shift = static_cast<uint8_t>(immr);
                         return true;
                     }
-                    if (immr > imms)
+                    if (immr <= imms)
                     {
-                        const uint32_t size = sf ? 64u : 32u;
-                        out.Kind = InstructionKind::BitfieldInsert;
+                        out.Kind = InstructionKind::BitfieldExtract;
                         out.Dest = rd;
                         out.Base = rn;
-                        out.Shift = static_cast<uint8_t>((size - immr) & (size - 1));
+                        out.Shift = static_cast<uint8_t>(immr);
                         out.BitWidth = static_cast<uint8_t>(imms + 1);
                         return true;
                     }
+                    const uint32_t size = sf ? 64u : 32u;
+                    out.Kind = InstructionKind::BitfieldInsert;
                     out.Dest = rd;
-                    out.bClobbersAll = true;
+                    out.Base = rn;
+                    out.Shift = static_cast<uint8_t>((size - immr) & (size - 1));
+                    out.BitWidth = static_cast<uint8_t>(imms + 1);
                     return true;
                 }
                 if ((word & 0x1f800000) == 0x12000000)
@@ -311,6 +329,20 @@ namespace nextdumper::analysis
                     out.bSignExtends = operation == 2;
                     out.Kind = InstructionKind::LoadLiteral;
                     out.Value = address + static_cast<uint64_t>(Signed((word >> 5) & 0x7ffff, 19) * 4);
+                    return true;
+                }
+
+                if (!(word & 0x04000000) && (word & 0x3a000000) == 0x28000000)
+                {
+                    const bool wide = (word >> 31) != 0;
+                    const unsigned mode = (word >> 23) & 3;
+                    out.Kind = ((word >> 22) & 1) ? InstructionKind::LoadPair : InstructionKind::StorePair;
+                    out.Dest = Register(word & 31);
+                    out.Dest2 = Register((word >> 10) & 31);
+                    out.Base = Register((word >> 5) & 31);
+                    out.AccessWidth = wide ? 8 : 4;
+                    out.Offset = Signed((word >> 15) & 0x7f, 7) * (wide ? 8 : 4);
+                    out.bWritesBackBase = mode == 1 || mode == 3;
                     return true;
                 }
 

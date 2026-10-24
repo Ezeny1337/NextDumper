@@ -8,6 +8,7 @@
 #include "nextdumper/analysis/FunctionIndex.hpp"
 #include "nextdumper/analysis/ImageModel.hpp"
 #include "nextdumper/analysis/InstructionDecoder.hpp"
+#include "nextdumper/analysis/NameContractScanner.hpp"
 #include "nextdumper/common/Hex.hpp"
 
 namespace nextdumper::analysis
@@ -22,6 +23,8 @@ namespace nextdumper::analysis
             return "unsupported";
         case AnalysisStatus::Partial:
             return "partial";
+        case AnalysisStatus::Observed:
+            return "observed";
         case AnalysisStatus::Complete:
             return "complete";
         }
@@ -204,14 +207,65 @@ namespace nextdumper::analysis
             }
         }
 
-        if (imageHeaderReadable)
+        if (decoder && functions.IsValid())
+        {
+            NameContractScanOptions options;
+            const NameContractScanResult scan = ScanNameContracts(image, functions, *decoder, options);
+            result.Coverage.ScannedInstructions = scan.Instructions;
+            if (!scan.Error.empty())
+            {
+                result.Diagnostics.push_back({DiagnosticSeverity::Warning, "ANALYSIS_CONTRACT_SCAN_FAILED",
+                                              "reason=" + scan.Error});
+            }
+            for (const Contract &contract : scan.Contracts)
+            {
+                result.Contracts.push_back(contract);
+                const NamePoolFields &fields = contract.NamePool;
+                const std::string root = contract.Root == 0 ? "unresolved" : common::Hex(contract.Root);
+                result.Diagnostics.push_back(
+                    {DiagnosticSeverity::Info, "ANALYSIS_CONTRACT",
+                     "target=NamePool root=" + root +
+                         " blocks_offset=" + std::to_string(fields.BlocksOffset) +
+                         " blocks_bit=" + std::to_string(fields.BlocksBit) +
+                         " entry_stride=" + std::to_string(fields.EntryStride) +
+                         " header_offset=" + std::to_string(fields.HeaderOffset) +
+                         " string_offset=" + std::to_string(fields.StringOffset) +
+                         " length_shift=" + std::to_string(fields.LengthShift) +
+                         " wide_mask=" + std::to_string(fields.WideMask) +
+                         " complete=" + std::to_string(fields.Complete()) +
+                         " state=observed evidence_sites=" + std::to_string(contract.Evidence.size())});
+            }
+            result.Diagnostics.push_back(
+                {scan.Contracts.empty() ? DiagnosticSeverity::Warning : DiagnosticSeverity::Info,
+                 scan.Contracts.empty() ? "ANALYSIS_CONTRACT_SCAN_EMPTY" : "ANALYSIS_CONTRACT_SCAN",
+                 "instructions=" + std::to_string(scan.Instructions) +
+                     " function_starts=" + std::to_string(scan.FunctionStarts) +
+                     " contracts=" + std::to_string(scan.Contracts.size()) +
+                     " budget_exhausted=" + std::to_string(scan.BudgetExhausted)});
+            if (scan.BudgetExhausted)
+            {
+                result.Diagnostics.push_back({DiagnosticSeverity::Warning, "ANALYSIS_CONTRACT_SCAN_BUDGET",
+                                              "instruction budget exhausted before the scan completed"});
+            }
+
+            if (!result.Contracts.empty())
+            {
+                result.Status = AnalysisStatus::Observed;
+                result.Reason = "name-contracts-observed";
+            }
+            else if (imageHeaderReadable)
+            {
+                result.Status = AnalysisStatus::Unsupported;
+                result.Reason = "no-name-contracts";
+            }
+        }
+        else if (imageHeaderReadable)
         {
             result.Status = AnalysisStatus::Unsupported;
-            result.Reason = "no-contract-matchers-registered";
+            result.Reason = "no-name-contracts";
         }
+
         result.Coverage.Complete = false;
-        result.Diagnostics.push_back({DiagnosticSeverity::Info, "ANALYSIS_SKELETON",
-                                      "No contract matchers are registered; the session reports coverage only."});
         return result;
     }
 } // namespace nextdumper::analysis

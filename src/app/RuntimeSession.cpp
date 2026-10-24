@@ -810,6 +810,8 @@ namespace nextdumper::app
 
         const auto runAnalysisProbe = [&]()
         {
+            Note(RuntimeLogLevel::Info, "analysis_probe status=start mode=" +
+                                            std::string(AnalysisModeName(config_.analysis)));
             BeginMemoryStage("analysis-probe");
             AnalysisMemoryView analysisMemory(*memory_);
             ::nextdumper::analysis::AnalysisSession session(analysisMemory, context_.Module());
@@ -827,6 +829,7 @@ namespace nextdumper::app
                      " read_bytes=" + std::to_string(result.Coverage.ReadBytes) +
                      " read_failures=" + std::to_string(result.Coverage.ReadFailures) +
                      " functions=" + std::to_string(result.Coverage.FunctionCount) +
+                     " scanned_instructions=" + std::to_string(result.Coverage.ScannedInstructions) +
                      " complete=" + std::to_string(result.Coverage.Complete));
             for (const auto &diagnostic : result.Diagnostics)
             {

@@ -14,6 +14,7 @@ namespace nextdumper::analysis
         Failed,
         Unsupported,
         Partial,
+        Observed,
         Complete,
     };
 
@@ -40,6 +41,7 @@ namespace nextdumper::analysis
         uint64_t ReadBytes = 0;
         uint64_t ReadFailures = 0;
         uint64_t FunctionCount = 0;
+        uint64_t ScannedInstructions = 0;
         bool Complete = false;
     };
 

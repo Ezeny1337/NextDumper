@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "nextdumper/analysis/ImageModel.hpp"
 #include "nextdumper/analysis/MemoryView.hpp"
@@ -29,6 +30,7 @@ namespace nextdumper::analysis
 
         [[nodiscard]] bool StartAt(size_t index, uint64_t &start) const;
         [[nodiscard]] bool Find(uint64_t address, FunctionRange &out) const;
+        [[nodiscard]] bool CopyStarts(std::vector<uint64_t> &starts, std::string &error) const;
 
     private:
         [[nodiscard]] bool ReadStart(size_t index, uint64_t &start) const;

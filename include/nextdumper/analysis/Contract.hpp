@@ -30,6 +30,7 @@ namespace nextdumper::analysis
         WidthTest,
         TextOffset,
         CallArgument,
+        UnresolvedRoot,
     };
 
     struct EvidenceStep
@@ -39,11 +40,29 @@ namespace nextdumper::analysis
         uint64_t Value = 0;
     };
 
+    struct NamePoolFields
+    {
+        int32_t BlocksOffset = -1;
+        int32_t BlocksBit = -1;
+        int32_t EntryStride = 0;
+        int32_t HeaderOffset = 0;
+        int32_t StringOffset = 2;
+        int32_t LengthShift = 0;
+        uint16_t WideMask = 0;
+
+        [[nodiscard]] bool Complete() const
+        {
+            return BlocksOffset >= 0 && BlocksBit > 0 && EntryStride > 0 && HeaderOffset >= 0 &&
+                   StringOffset >= HeaderOffset + 2 && LengthShift > 0 && WideMask != 0;
+        }
+    };
+
     struct Contract
     {
         ContractKind Kind = ContractKind::NamePool;
         uintptr_t Root = 0;
         ContractState State = ContractState::Observed;
+        NamePoolFields NamePool;
         std::vector<EvidenceStep> Evidence;
     };
 } // namespace nextdumper::analysis

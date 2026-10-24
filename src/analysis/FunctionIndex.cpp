@@ -530,6 +530,53 @@ namespace nextdumper::analysis
         return ReadStart(index, start);
     }
 
+    bool FunctionIndex::CopyStarts(std::vector<uint64_t> &starts, std::string &error) const
+    {
+        error.clear();
+        if (!IsValid())
+        {
+            error = "function-index-invalid";
+            return false;
+        }
+        if (table_ > UINTPTR_MAX - kEntryBytes || count_ > (UINTPTR_MAX - table_) / kEntryBytes)
+        {
+            error = "function-table-address-overflow";
+            return false;
+        }
+
+        starts.resize(count_);
+        constexpr size_t kChunkEntries = 1024;
+        std::array<uint8_t, kChunkEntries * kEntryBytes> buffer{};
+        size_t done = 0;
+        while (done < count_)
+        {
+            const size_t chunk = std::min(kChunkEntries, count_ - done);
+            const uint64_t offset = static_cast<uint64_t>(done) * kEntryBytes;
+            const auto read = memory_->ReadBytes(static_cast<uintptr_t>(table_ + offset),
+                                                 buffer.data(), chunk * kEntryBytes);
+            if (!read.Ok())
+            {
+                error = "function-table-read-failed";
+                return false;
+            }
+
+            for (size_t index = 0; index < chunk; ++index)
+            {
+                int32_t delta = 0;
+                std::memcpy(&delta, buffer.data() + index * kEntryBytes, sizeof(delta));
+                const int64_t value = static_cast<int64_t>(section_) + delta;
+                if (value <= 0 || static_cast<uint64_t>(value) > UINTPTR_MAX)
+                {
+                    error = "function-table-start-invalid";
+                    return false;
+                }
+                starts[done + index] = static_cast<uint64_t>(value);
+            }
+            done += chunk;
+        }
+        return true;
+    }
+
     bool FunctionIndex::Find(uint64_t address, FunctionRange &out) const
     {
         if (!IsValid() || address < firstStart_ || address > lastStart_)
