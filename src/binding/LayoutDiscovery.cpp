@@ -56,6 +56,22 @@ namespace nextdumper::binding
             return memory.Read(address, value);
         }
 
+        std::string DescribeRawFields(const IMemorySource &memory, uintptr_t address, int32_t limit = 0x30)
+        {
+            std::string result;
+            for (int32_t offset = 0; offset + static_cast<int32_t>(sizeof(int32_t)) <= limit; offset += 4)
+            {
+                int32_t value = 0;
+                const auto fieldAddress = Add(address, static_cast<uintptr_t>(offset));
+                result += " +" + std::to_string(offset) + "=";
+                if (fieldAddress && ReadInt32(memory, *fieldAddress, value))
+                    result += Hex(static_cast<uint32_t>(value));
+                else
+                    result += "unreadable";
+            }
+            return result;
+        }
+
         bool IsReadablePointer(const IMemorySource &memory, uintptr_t pointer)
         {
             return pointer != 0 && memory.IsReadable(pointer, sizeof(uintptr_t));
@@ -341,12 +357,23 @@ namespace nextdumper::binding
             const auto chunkArray = Add(root, static_cast<uintptr_t>(chunkOffset));
             if (!chunkArray)
                 continue;
+            const std::string rootPrefix = "root=" + Hex(root) + " target=" + RootTargetName(target) +
+                                           " chunk_offset=" + std::to_string(chunkOffset);
             uintptr_t rawObjects = 0;
             if (!ReadPointer(*chunkArray, rawObjects))
+            {
+                result.Evidence.push_back(rootPrefix + " status=rejected reason=objects-field-unreadable raw=" +
+                                          DescribeRawFields(memory_, *chunkArray));
                 continue;
+            }
             const uintptr_t objects = decode.objectStorage(rawObjects, *chunkArray);
             if (!IsReadablePointer(memory_, objects))
+            {
+                result.Evidence.push_back(rootPrefix + " objects=" + Hex(objects) +
+                                          " status=rejected reason=chunk-table-unreadable raw=" +
+                                          DescribeRawFields(memory_, *chunkArray));
                 continue;
+            }
 
             for (const FieldLayout &fieldLayout : kFieldLayouts)
             {
@@ -362,7 +389,12 @@ namespace nextdumper::binding
                     !ReadInt32(memory_, *maxAddress, rawMax) || !ReadInt32(memory_, *countAddress, rawCount) ||
                     !ReadInt32(memory_, *maxChunksAddress, rawMaxChunks) ||
                     !ReadInt32(memory_, *numChunksAddress, rawNumChunks))
+                {
+                    result.Evidence.push_back(rootPrefix + " field_layout=" + fieldLayout.name +
+                                              " status=rejected reason=field-unreadable raw=" +
+                                              DescribeRawFields(memory_, *chunkArray));
                     continue;
+                }
                 const int32_t maxElements = decode.objectCount(rawMax, *maxAddress);
                 const int32_t count = decode.objectCount(rawCount, *countAddress);
                 const int32_t maxChunks = decode.objectCount(rawMaxChunks, *maxChunksAddress);

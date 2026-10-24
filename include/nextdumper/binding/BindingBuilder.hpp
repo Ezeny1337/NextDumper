@@ -31,6 +31,7 @@ namespace nextdumper::binding
         {
             uintptr_t address = 0;
             RootTarget target = RootTarget::Unknown;
+            int depth = 0;
         };
 
         [[nodiscard]] std::vector<uintptr_t> ResolveRoots(const std::vector<LocatedAddress> &candidates) const;

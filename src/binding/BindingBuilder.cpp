@@ -109,10 +109,11 @@ namespace nextdumper::binding
     std::vector<BindingBuilder::ResolvedObjectRoot> BindingBuilder::ResolveObjectRoots(
         const std::vector<LocatedAddress> &candidates) const
     {
+        constexpr int kMaxPointerDepth = 3;
         std::vector<ResolvedObjectRoot> roots;
-        const auto add = [&roots](uintptr_t address, RootTarget target)
+        const auto add = [&roots](uintptr_t address, RootTarget target, int depth)
         {
-            if (address == 0)
+            if (address == 0 || depth > kMaxPointerDepth)
                 return;
             for (ResolvedObjectRoot &root : roots)
             {
@@ -120,9 +121,11 @@ namespace nextdumper::binding
                     continue;
                 if (root.target == RootTarget::Unknown && target != RootTarget::Unknown)
                     root.target = target;
+                if (depth < root.depth)
+                    root.depth = depth;
                 return;
             }
-            roots.push_back({address, target});
+            roots.push_back({address, target, depth});
         };
 
         for (const LocatedAddress &candidate : candidates)
@@ -130,13 +133,25 @@ namespace nextdumper::binding
             if (candidate.address == 0)
                 continue;
             if (candidate.meaning == AddressMeaning::Direct || candidate.meaning == AddressMeaning::ResolvedValue)
-                add(candidate.address, candidate.target);
+                add(candidate.address, candidate.target, 0);
             if (candidate.meaning == AddressMeaning::PointerSlot || candidate.meaning == AddressMeaning::Direct)
             {
                 uintptr_t value = 0;
                 if (memory_.Read(candidate.address, value))
-                    add(value, candidate.target);
+                    add(value, candidate.target, 1);
             }
+        }
+
+        // analyzer 的 ObjObjects/GUObjectArray 候选可能是指针槽；有限追踪解引用链
+        for (size_t index = 0; index < roots.size(); ++index)
+        {
+            if (roots[index].depth >= kMaxPointerDepth)
+                continue;
+            uintptr_t value = 0;
+            if (!memory_.Read(roots[index].address, value) || value == 0 ||
+                !memory_.IsReadable(value, sizeof(uintptr_t)))
+                continue;
+            add(value, roots[index].target, roots[index].depth + 1);
         }
         return roots;
     }
@@ -256,7 +271,8 @@ namespace nextdumper::binding
         {
             if (progress)
                 progress("binding: probing object root=" + Hex(objectRoot.address) +
-                         " target=" + RootTargetName(objectRoot.target));
+                         " target=" + RootTargetName(objectRoot.target) +
+                         " depth=" + std::to_string(objectRoot.depth));
             std::vector<std::pair<ObjectContainerLayout, double>> objectLayouts;
             if (hints.objects)
             {
@@ -386,6 +402,7 @@ namespace nextdumper::binding
             if (progress)
                 progress("binding_object_root root=" + Hex(objectRoot.address) +
                          " target=" + RootTargetName(objectRoot.target) +
+                         " depth=" + std::to_string(objectRoot.depth) +
                          " candidates=" + std::to_string(objectLayouts.size()) +
                          " accepted=" + std::to_string(acceptedObjectLayouts) +
                          " rejected=" + std::to_string(objectLayouts.size() - acceptedObjectLayouts));
