@@ -214,6 +214,7 @@ namespace nextdumper::ue::schema_probe
             int32_t displayNoneHits = 0;
             int32_t numberReadable = 0;
             int32_t nonZeroNumberHits = 0;
+            int32_t numberIndexHits = 0;
             int32_t uniqueNames = 0;
 
             [[nodiscard]] FNamePhysicalLayout PhysicalLayout() const
@@ -250,8 +251,48 @@ namespace nextdumper::ue::schema_probe
             return result;
         }();
         const int32_t pointerSize = static_cast<int32_t>(sizeof(uintptr_t));
+        const auto asciiEqualIgnoreCase = [](const std::string &left, const std::string &right)
+        {
+            if (left.size() != right.size())
+                return false;
+            for (size_t index = 0; index < left.size(); ++index)
+            {
+                const auto lower = [](char value)
+                {
+                    return value >= 'A' && value <= 'Z' ? static_cast<char>(value - 'A' + 'a') : value;
+                };
+                if (lower(left[index]) != lower(right[index]))
+                    return false;
+            }
+            return true;
+        };
+        struct KnownFieldSpan
+        {
+            int32_t offset = -1;
+            int32_t size = 0;
+        };
+        std::vector<KnownFieldSpan> knownFieldSpans;
+        if (hasUObjectHint)
+        {
+            knownFieldSpans.push_back({uobjectHint->classPointer, static_cast<int32_t>(sizeof(uintptr_t))});
+            knownFieldSpans.push_back({uobjectHint->internalIndex, static_cast<int32_t>(sizeof(int32_t))});
+            knownFieldSpans.push_back({uobjectHint->outer, static_cast<int32_t>(sizeof(uintptr_t))});
+        }
+        const auto overlapsKnownField = [&](int32_t offset, int32_t size)
+        {
+            for (const KnownFieldSpan &span : knownFieldSpans)
+            {
+                if (span.offset < 0 || span.size <= 0)
+                    continue;
+                if (offset < span.offset + span.size && span.offset < offset + size)
+                    return true;
+            }
+            return false;
+        };
         for (FNameLayoutCandidate candidate : layoutSeeds)
         {
+            if (hasUObjectHint && overlapsKnownField(schema.uobject.name, candidate.size))
+                continue;
             const int32_t nameEnd = schema.uobject.name + candidate.size;
             const std::array<int32_t, 2> outerOffsets = {
                 (nameEnd + pointerSize - 1) / pointerSize * pointerSize,
@@ -348,9 +389,9 @@ namespace nextdumper::ue::schema_probe
                         if (displayName && !displayName->empty())
                         {
                             ++candidate.displayHits;
-                            if (*displayName == "None")
+                            if (asciiEqualIgnoreCase(*displayName, "None"))
                                 ++candidate.displayNoneHits;
-                            else if (displayName == comparisonName)
+                            else if (comparisonName && asciiEqualIgnoreCase(*displayName, *comparisonName))
                                 ++candidate.displayConsistentHits;
                             else
                                 ++candidate.displayMismatchHits;
@@ -367,12 +408,24 @@ namespace nextdumper::ue::schema_probe
                         ++candidate.numberReadable;
                         if (number != 0)
                             ++candidate.nonZeroNumberHits;
+                        if (number == static_cast<uint32_t>(index))
+                            ++candidate.numberIndexHits;
                     }
                 }
             }
             candidate.uniqueNames = static_cast<int32_t>(candidateNamesSeen.size());
-            if (candidate.validObjects >= 3)
-                fnameCandidates.push_back(candidate);
+            if (candidate.displayMismatchHits > 0)
+                continue;
+            if (candidate.numberIndexHits * 2 > static_cast<int32_t>(samples.size()))
+                continue;
+            if (hasUObjectHint)
+            {
+                if (candidate.comparisonHits < 8)
+                    continue;
+            }
+            else if (candidate.validObjects < 3)
+                continue;
+            fnameCandidates.push_back(candidate);
         }
         if (fnameCandidates.empty())
         {
@@ -394,11 +447,24 @@ namespace nextdumper::ue::schema_probe
         }
         fnameCandidates = std::move(uniqueFNameCandidates);
 
-        const auto fnameScore = [](const FNameLayoutCandidate &candidate)
+        const auto fnameScore = [hasUObjectHint, &schema](const FNameLayoutCandidate &candidate)
         {
-            return candidate.validObjects * 100 + candidate.sampleHits * 25 + candidate.comparisonHits * 10 +
-                   candidate.uniqueNames * 5 + candidate.displayConsistentHits * 2 + candidate.displayHits +
-                   candidate.nullHits;
+            int score = candidate.comparisonHits * 10 + candidate.uniqueNames * 5 +
+                        candidate.numberReadable * 4 + candidate.displayConsistentHits * 2;
+            if (hasUObjectHint)
+            {
+                // profile 只做低权重先验；运行时 number/display 证据优先，避免再次出现把 InternalIndex 当 display
+                if (candidate.casePreserving == schema.features.casePreservingName)
+                    score += 100;
+                if (candidate.outlineNumber == schema.features.outlineNumberName)
+                    score += 200;
+            }
+            else
+            {
+                score += candidate.validObjects * 100 + candidate.sampleHits * 25 +
+                         candidate.displayHits + candidate.nullHits;
+            }
+            return score;
         };
         const auto betterFNameEvidence = [](const FNameLayoutCandidate &left, const FNameLayoutCandidate &right)
         {
@@ -433,7 +499,7 @@ namespace nextdumper::ue::schema_probe
                                                     { return !candidate.casePreserving; });
         const auto casePreserving = std::find_if(fnameCandidates.begin(), fnameCandidates.end(),
                                                  hasConsistentDisplayEvidence);
-        if (nonCasePreserving != fnameCandidates.end() &&
+        if (!hasUObjectHint && nonCasePreserving != fnameCandidates.end() &&
             (casePreserving == fnameCandidates.end() ||
              fnameScore(*nonCasePreserving) >= fnameScore(*casePreserving)))
         {
@@ -491,7 +557,8 @@ namespace nextdumper::ue::schema_probe
                                   " display_mismatch=" + std::to_string(selectedFName.displayMismatchHits) +
                                   " display_none=" + std::to_string(selectedFName.displayNoneHits) +
                                   " number_readable=" + std::to_string(selectedFName.numberReadable) +
-                                  " unique_names=" + std::to_string(selectedFName.uniqueNames));
+                                  " unique_names=" + std::to_string(selectedFName.uniqueNames) +
+                                  " source=" + std::string(hasUObjectHint ? "analysis-constrained" : "candidate"));
 
         // Class 是一个指针字段，其指向的目标本身就是一个可读的 UObject
         // 评分候选偏移量时，应同时结合指针的有效性以及通过上述定位到的字段解码目标对象名称的能力
@@ -754,6 +821,16 @@ namespace nextdumper::ue::schema_probe
             return false;
         }
         size_t valid = 0;
+        size_t indexFailures = 0;
+        size_t nameFailures = 0;
+        size_t classFailures = 0;
+        size_t outerFailures = 0;
+        size_t classStoreFailures = 0;
+        size_t outerStoreFailures = 0;
+        size_t classNameFailures = 0;
+        size_t metaClassFailures = 0;
+        size_t metaStoreFailures = 0;
+        size_t metaNameFailures = 0;
         std::unordered_set<std::string> objectNames, classNames;
         const auto inStore = [&](uintptr_t address)
         {
@@ -769,15 +846,68 @@ namespace nextdumper::ue::schema_probe
             const auto cls = model.Class(address);
             const auto name = model.Name(address);
             const auto outer = model.Outer(address);
-            if (!internalIndex || *internalIndex != index || !name || name->empty() || !cls || !outer ||
-                !memory_.IsReadable(*cls, extent) || !inStore(*cls) ||
-                (*outer && (!memory_.IsReadable(*outer, extent) || !inStore(*outer))))
+            if (!internalIndex || *internalIndex != index)
+            {
+                ++indexFailures;
                 continue;
+            }
+            if (!name || name->empty())
+            {
+                ++nameFailures;
+                continue;
+            }
+            if (!cls)
+            {
+                ++classFailures;
+                continue;
+            }
+            if (!outer)
+            {
+                ++outerFailures;
+                continue;
+            }
+            if (!memory_.IsReadable(*cls, extent))
+            {
+                ++classFailures;
+                continue;
+            }
+            if (!inStore(*cls))
+            {
+                ++classStoreFailures;
+                continue;
+            }
+            if (*outer && (!memory_.IsReadable(*outer, extent) || !inStore(*outer)))
+            {
+                ++outerStoreFailures;
+                continue;
+            }
             const auto className = model.Name(*cls);
-            const auto metaClass = model.Class(*cls);
-            if (!className || className->empty() || !metaClass || !memory_.IsReadable(*metaClass, extent) ||
-                !inStore(*metaClass) || model.Name(*metaClass) != std::optional<std::string>("Class"))
+            if (!className || className->empty())
+            {
+                ++classNameFailures;
                 continue;
+            }
+            const auto metaClass = model.Class(*cls);
+            if (!metaClass)
+            {
+                ++metaClassFailures;
+                continue;
+            }
+            if (!memory_.IsReadable(*metaClass, extent))
+            {
+                ++metaClassFailures;
+                continue;
+            }
+            if (!inStore(*metaClass))
+            {
+                ++metaStoreFailures;
+                continue;
+            }
+            if (model.Name(*metaClass) != std::optional<std::string>("Class"))
+            {
+                ++metaNameFailures;
+                continue;
+            }
             ++valid;
             objectNames.insert(*name);
             classNames.insert(*className);
@@ -785,7 +915,17 @@ namespace nextdumper::ue::schema_probe
         const size_t tested = bootstrap_->objectSamples.size();
         const bool accepted = valid >= 5 && valid * 5 >= tested * 4 && objectNames.size() >= 3 && classNames.size() >= 2;
         report.evidence.push_back("UObject/name association tested=" + std::to_string(tested) + " valid=" + std::to_string(valid) +
-                                  " distinct_names=" + std::to_string(objectNames.size()) + " distinct_classes=" + std::to_string(classNames.size()));
+                                  " distinct_names=" + std::to_string(objectNames.size()) + " distinct_classes=" + std::to_string(classNames.size()) +
+                                  " stages index=" + std::to_string(indexFailures) +
+                                  " name=" + std::to_string(nameFailures) +
+                                  " class=" + std::to_string(classFailures) +
+                                  " outer=" + std::to_string(outerFailures) +
+                                  " cls_store=" + std::to_string(classStoreFailures) +
+                                  " outer_store=" + std::to_string(outerStoreFailures) +
+                                  " cls_name=" + std::to_string(classNameFailures) +
+                                  " meta=" + std::to_string(metaClassFailures) +
+                                  " meta_store=" + std::to_string(metaStoreFailures) +
+                                  " meta_name=" + std::to_string(metaNameFailures));
         if (!accepted)
             report.failures.push_back("UObject names, class identities and outers did not agree with the object store");
         return accepted;
