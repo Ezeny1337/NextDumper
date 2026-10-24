@@ -893,6 +893,23 @@ namespace nextdumper::app
                 ::nextdumper::binding::BindingLayoutHints proposalHints = layoutHints;
                 proposalHints.names = proposal->layout;
                 proposalHints.allowFullBlockNameBound = proposal->fullBlockBound;
+                if (proposal->objectRoot != 0 && proposal->objectLayout)
+                {
+                    const auto objectDuplicate = std::any_of(
+                        candidates.objectRoots.begin(), candidates.objectRoots.end(),
+                        [&](const LocatedAddress &candidate)
+                        { return candidate.address == proposal->objectRoot; });
+                    if (!objectDuplicate)
+                    {
+                        candidates.objectRoots.push_back({proposal->objectRoot, AddressMeaning::ResolvedValue, 100,
+                                                          "analysis:ObjectArray",
+                                                          ::nextdumper::binding::RootTarget::ObjObjects});
+                    }
+                    proposalHints.objects = *proposal->objectLayout;
+                    Note("analysis_binding_proposal object_root=" + Hex(proposal->objectRoot) +
+                         " item_stride=" + std::to_string(proposal->objectLayout->itemStride) +
+                         " item_index=" + std::to_string(proposal->objectLayout->itemIndexOffset));
+                }
                 BeginMemoryStage("analysis-binding");
                 binding = builder.Build(candidates, proposal->decode, bindingProgress, proposalHints);
                 finishStage("analysis-binding");

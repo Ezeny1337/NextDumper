@@ -57,12 +57,37 @@ namespace nextdumper::analysis
         }
     };
 
+    struct ObjectArrayFields
+    {
+        int32_t ObjectsOffset = 0;
+        int32_t MaxElementsOffset = -1;
+        int32_t NumElementsOffset = -1;
+        int32_t MaxChunksOffset = -1;
+        int32_t NumChunksOffset = -1;
+        int32_t ElementsPerChunk = 0;
+        int32_t ItemStride = 0;
+        int32_t ItemObjectOffset = -1;
+        int32_t ItemIndexOffset = -1;
+        bool PackedPointers = false;
+        uint32_t Count = 0;
+        uint32_t MaxElements = 0;
+        uint32_t Chunks = 0;
+
+        [[nodiscard]] bool Complete() const
+        {
+            return ObjectsOffset >= 0 && MaxElementsOffset >= 0 && NumElementsOffset >= 0 &&
+                   MaxChunksOffset >= 0 && NumChunksOffset >= 0 && ElementsPerChunk > 0 &&
+                   ItemStride > 0 && ItemObjectOffset >= 0 && ItemIndexOffset >= 0 && Count > 0;
+        }
+    };
+
     struct Contract
     {
         ContractKind Kind = ContractKind::NamePool;
         uintptr_t Root = 0;
         ContractState State = ContractState::Observed;
         NamePoolFields NamePool;
+        ObjectArrayFields ObjectArray;
         std::vector<EvidenceStep> Evidence;
     };
 } // namespace nextdumper::analysis

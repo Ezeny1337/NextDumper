@@ -16,6 +16,8 @@ namespace nextdumper::app
         ::nextdumper::binding::NameContainerLayout layout;
         ::nextdumper::binding::DecodePlan decode;
         bool fullBlockBound = false;
+        uintptr_t objectRoot = 0;
+        std::optional<::nextdumper::binding::ObjectContainerLayout> objectLayout;
         size_t contractIndex = 0;
         std::string evidence;
 

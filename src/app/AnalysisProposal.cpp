@@ -4,12 +4,15 @@
 #include <span>
 #include <utility>
 
+#include "nextdumper/common/Hex.hpp"
+
 namespace nextdumper::app
 {
     namespace
     {
         using ::nextdumper::analysis::AnalysisResult;
         using ::nextdumper::analysis::ContractKind;
+        using ::nextdumper::analysis::ContractState;
         using ::nextdumper::analysis::NamePoolFields;
         using ::nextdumper::analysis::NameTextDecoder;
         using ::nextdumper::analysis::NameTextFamilyName;
@@ -100,6 +103,35 @@ namespace nextdumper::app
             {
                 proposal.evidence += " current_offset=" + std::to_string(*currentOffset) +
                                      " cursor_offset=" + std::to_string(*cursorOffset);
+            }
+            for (const auto &objectContract : result.Contracts)
+            {
+                if (objectContract.Kind != ContractKind::ObjectArray ||
+                    objectContract.State != ContractState::Validated ||
+                    !objectContract.ObjectArray.Complete())
+                    continue;
+                const auto &objectFields = objectContract.ObjectArray;
+                ::nextdumper::binding::ObjectContainerLayout objectLayout;
+                objectLayout.kind = ::nextdumper::binding::ObjectContainerKind::Chunked;
+                objectLayout.objectsOffset = objectFields.ObjectsOffset;
+                objectLayout.maxElementsOffset = objectFields.MaxElementsOffset;
+                objectLayout.numElementsOffset = objectFields.NumElementsOffset;
+                objectLayout.maxChunksOffset = objectFields.MaxChunksOffset;
+                objectLayout.numChunksOffset = objectFields.NumChunksOffset;
+                objectLayout.elementsPerChunk = objectFields.ElementsPerChunk;
+                objectLayout.itemObjectOffset = objectFields.ItemObjectOffset;
+                objectLayout.itemStride = objectFields.ItemStride;
+                objectLayout.itemIndexOffset = objectFields.ItemIndexOffset;
+                objectLayout.packedPointers = objectFields.PackedPointers;
+                objectLayout.chunkFieldsValidated = true;
+                if (!objectLayout.IsValid())
+                    continue;
+                proposal.objectRoot = objectContract.Root;
+                proposal.objectLayout = objectLayout;
+                proposal.evidence += " object_root=" + common::Hex(objectContract.Root) +
+                                     " object_count=" + std::to_string(objectFields.Count) +
+                                     " object_item_stride=" + std::to_string(objectFields.ItemStride);
+                break;
             }
             return proposal;
         }

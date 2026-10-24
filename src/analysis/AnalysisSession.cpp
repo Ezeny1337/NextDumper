@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -10,6 +11,7 @@
 #include "nextdumper/analysis/ImageModel.hpp"
 #include "nextdumper/analysis/InstructionDecoder.hpp"
 #include "nextdumper/analysis/NameContractScanner.hpp"
+#include "nextdumper/analysis/ObjectContractScanner.hpp"
 #include "nextdumper/common/Hex.hpp"
 
 namespace nextdumper::analysis
@@ -259,6 +261,8 @@ namespace nextdumper::analysis
             NamePoolValidationOptions validationOptions;
             validationOptions.RootHints = options_.NameRootHints;
             size_t validatedContracts = 0;
+            std::optional<Contract> objectScanNameContract;
+            std::optional<NamePoolValidation> objectScanNameValidation;
             for (size_t index = 0; index < result.Contracts.size(); ++index)
             {
                 Contract &contract = result.Contracts[index];
@@ -273,9 +277,16 @@ namespace nextdumper::analysis
                 contract.State = validation.IsValidated() ? ContractState::Validated
                                  : validation.RootUsable  ? ContractState::Unsupported
                                                           : ContractState::Observed;
-                if (validation.IsValidated())
-                    ++validatedContracts;
                 result.NameValidations.push_back(validation);
+                if (validation.IsValidated())
+                {
+                    ++validatedContracts;
+                    if (!objectScanNameContract && validation.Decoder && validation.Root != 0)
+                    {
+                        objectScanNameContract = contract;
+                        objectScanNameValidation = validation;
+                    }
+                }
 
                 const std::string root = validation.Root != 0 ? common::Hex(validation.Root)
                                          : contract.Root == 0 ? "unresolved"
@@ -368,6 +379,47 @@ namespace nextdumper::analysis
                                                   std::move(message)});
                 }
             }
+            if (objectScanNameContract && objectScanNameValidation && objectScanNameValidation->Decoder)
+            {
+                ObjectContractScanOptions objectOptions;
+                const ObjectContractScanResult objectScan =
+                    ScanObjectContracts(image, objectScanNameValidation->Root,
+                                        objectScanNameContract->NamePool,
+                                        *objectScanNameValidation->Decoder, objectOptions);
+                result.Coverage.ReadBytes += objectScan.ScannedBytes;
+                for (const Contract &contract : objectScan.Contracts)
+                {
+                    result.Contracts.push_back(contract);
+                    const ObjectArrayFields &fields = contract.ObjectArray;
+                    result.Diagnostics.push_back(
+                        {DiagnosticSeverity::Info, "ANALYSIS_OBJECT_CONTRACT",
+                         "target=ObjectArray root=" + common::Hex(contract.Root) +
+                             " count=" + std::to_string(fields.Count) +
+                             " max_elements=" + std::to_string(fields.MaxElements) +
+                             " chunks=" + std::to_string(fields.Chunks) +
+                             " elements_per_chunk=" + std::to_string(fields.ElementsPerChunk) +
+                             " item_stride=" + std::to_string(fields.ItemStride) +
+                             " item_index=" + std::to_string(fields.ItemIndexOffset) +
+                             " field_offsets=" + std::to_string(fields.MaxElementsOffset) + "/" +
+                             std::to_string(fields.NumElementsOffset) + "/" +
+                             std::to_string(fields.MaxChunksOffset) + "/" +
+                             std::to_string(fields.NumChunksOffset) +
+                             " state=validated"});
+                }
+                std::string message = "scanned_bytes=" + std::to_string(objectScan.ScannedBytes) +
+                                      " candidates=" + std::to_string(objectScan.Candidates) +
+                                      " contracts=" + std::to_string(objectScan.Contracts.size()) +
+                                      " budget_exhausted=" + std::to_string(objectScan.BudgetExhausted);
+                if (!objectScan.Error.empty())
+                    message += " error=" + objectScan.Error;
+                if (!objectScan.BestRejected.empty())
+                    message += " best_rejected=" + objectScan.BestRejected;
+                result.Diagnostics.push_back(
+                    {objectScan.Contracts.empty() ? DiagnosticSeverity::Warning : DiagnosticSeverity::Info,
+                     objectScan.Contracts.empty() ? "ANALYSIS_OBJECT_SCAN_EMPTY" : "ANALYSIS_OBJECT_SCAN",
+                     std::move(message)});
+            }
+
             result.Diagnostics.push_back(
                 {scan.Contracts.empty() ? DiagnosticSeverity::Warning : DiagnosticSeverity::Info,
                  scan.Contracts.empty() ? "ANALYSIS_CONTRACT_SCAN_EMPTY" : "ANALYSIS_CONTRACT_SCAN",
