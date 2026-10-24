@@ -407,11 +407,63 @@ namespace nextdumper::analysis
                              std::to_string(fields.NumChunksOffset) +
                              " state=validated"});
                 }
+                const auto formatObjectCandidate = [](const ObjectCandidateEvidence &evidence, bool accepted)
+                {
+                    std::string message = "accepted=" + std::to_string(accepted ? 1 : 0) +
+                                          " root=" + common::Hex(evidence.Root) +
+                                          " storage=" + common::Hex(evidence.Storage) +
+                                          " count=" + std::to_string(evidence.Count) +
+                                          " max_elements=" + std::to_string(evidence.MaxElements) +
+                                          " max_chunks=" + std::to_string(evidence.MaxChunks) +
+                                          " num_chunks=" + std::to_string(evidence.NumChunks) +
+                                          " field=" + evidence.Field +
+                                          " mode=" + std::string(evidence.Fixed ? "fixed" : "chunked") +
+                                          " per_chunk=" + std::to_string(evidence.ElementsPerChunk) +
+                                          " item_stride=" + std::to_string(evidence.ItemStride) +
+                                          " item_index=" + std::to_string(evidence.ItemIndexOffset) +
+                                          " first_object=" + common::Hex(evidence.FirstObject) +
+                                          " tested=" + std::to_string(evidence.Tested) +
+                                          " empty=" + std::to_string(evidence.Empty) +
+                                          " core=" + std::to_string(evidence.CoreValid) + "/" +
+                                          std::to_string(evidence.Tested - evidence.Empty) +
+                                          " shaped=" + std::to_string(evidence.Shaped) +
+                                          " names=" + std::to_string(evidence.NameDecoded) +
+                                          " in_range=" + std::to_string(evidence.IndexInRange) +
+                                          " class_hits=" + std::to_string(evidence.ClassHits) +
+                                          " outer_hits=" + std::to_string(evidence.OuterHits) +
+                                          " full=" + std::to_string(evidence.FullValid) +
+                                          " max_valid_index=" + std::to_string(evidence.MaxValidIndex) +
+                                          " stage=" + evidence.Stage +
+                                          " sample_index=" + std::to_string(evidence.FailureIndex);
+                    if (!evidence.Detail.empty())
+                        message += " detail=" + evidence.Detail;
+                    if (!evidence.SampleNames.empty())
+                        message += " samples=" + evidence.SampleNames;
+                    return message;
+                };
+                for (const ObjectCandidateEvidence &evidence : objectScan.Accepted)
+                {
+                    result.Diagnostics.push_back({DiagnosticSeverity::Info, "ANALYSIS_OBJECT_CANDIDATE",
+                                                  formatObjectCandidate(evidence, true)});
+                }
+                for (const ObjectCandidateEvidence &evidence : objectScan.Rejections)
+                {
+                    result.Diagnostics.push_back({DiagnosticSeverity::Info, "ANALYSIS_OBJECT_CANDIDATE",
+                                                  formatObjectCandidate(evidence, false)});
+                    if (!evidence.Snapshot.empty())
+                    {
+                        result.Diagnostics.push_back({DiagnosticSeverity::Info, "ANALYSIS_OBJECT_SNAPSHOT",
+                                                      "root=" + common::Hex(evidence.Root) + " " + evidence.Snapshot});
+                    }
+                }
+
                 std::string message = "scanned_bytes=" + std::to_string(objectScan.ScannedBytes) +
                                       " candidates=" + std::to_string(objectScan.Candidates) +
                                       " parent_candidates=" + std::to_string(objectScan.ParentCandidates) +
+                                      " deep_candidates=" + std::to_string(objectScan.DeepCandidates) +
                                       " contracts=" + std::to_string(objectScan.Contracts.size()) +
-                                      " budget_exhausted=" + std::to_string(objectScan.BudgetExhausted);
+                                      " budget_exhausted=" + std::to_string(objectScan.BudgetExhausted) +
+                                      " deep_budget_exhausted=" + std::to_string(objectScan.DeepBudgetExhausted);
                 if (!objectScan.Error.empty())
                     message += " error=" + objectScan.Error;
                 if (!objectScan.BestRejected.empty())
