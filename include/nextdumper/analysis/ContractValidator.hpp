@@ -35,11 +35,10 @@ namespace nextdumper::analysis
         uint32_t BlockSize = 0;
         uint32_t AllocatedBlocks = 0;
         std::string BoundaryDetail;
-        size_t ReservedPairs = 0;
-        size_t ReservedMatched = 0;
+        size_t KnownMatched = 0;
+        size_t KnownPlausible = 0;
         size_t KnownWalked = 0;
-        size_t KnownExtras = 0;
-        std::string KnownExtrasPreview;
+        std::string KnownNamesPreview;
         std::optional<NameTextDecoder> Decoder;
         bool DecoderValidated = false;
         size_t Block0Samples = 0;

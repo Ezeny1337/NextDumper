@@ -302,23 +302,22 @@ namespace nextdumper::analysis
                          "family=" + std::string(NameTextFamilyName(decoderValue.Family)) +
                              " key=" + std::to_string(decoderValue.Key) +
                              " key_source=" + NameKeySourceName(decoderValue.Family) +
-                             " known_pairs=" + std::to_string(validation.ReservedMatched) + "/" +
-                             std::to_string(validation.ReservedPairs) +
-                             " consistency=" + std::to_string(validation.ReservedMatched) + "/" +
-                             std::to_string(validation.ReservedPairs) +
+                             " known_pairs=" + std::to_string(validation.KnownMatched) +
+                             " plausible=" + std::to_string(validation.KnownPlausible) + "/" +
+                             std::to_string(validation.KnownWalked) +
+                             " consistency=" + std::to_string(validation.KnownMatched) + "/" +
+                             std::to_string(validation.KnownMatched) +
                              " samples=" + std::to_string(validation.Block0Valid + validation.HighBlockValid) + "/" +
                              std::to_string(validation.Block0Samples + validation.HighBlockSamples) +
                              " walked=" + std::to_string(validation.KnownWalked) +
-                             " extras=" + std::to_string(validation.KnownExtras) +
                              " status=" + (validation.DecoderValidated ? "validated" : "observed")});
                     result.Diagnostics.push_back(
-                        {DiagnosticSeverity::Info, "ANALYSIS_KNOWN_SEQUENCE",
+                        {DiagnosticSeverity::Info, "ANALYSIS_KNOWN_NAMES",
                          "target=NamePool family=" + std::string(NameTextFamilyName(decoderValue.Family)) +
-                             " matched=" + std::to_string(validation.ReservedMatched) + "/" +
-                             std::to_string(validation.ReservedPairs) +
-                             " walked=" + std::to_string(validation.KnownWalked) +
-                             " extras=" + std::to_string(validation.KnownExtras) +
-                             " preview=" + validation.KnownExtrasPreview});
+                             " matched=" + std::to_string(validation.KnownMatched) +
+                             " plausible=" + std::to_string(validation.KnownPlausible) + "/" +
+                             std::to_string(validation.KnownWalked) +
+                             " names=" + validation.KnownNamesPreview});
                 }
 
                 if (validation.IsValidated())
@@ -340,8 +339,9 @@ namespace nextdumper::analysis
                              " boundary=" + (validation.BoundaryReadable ? validation.BoundaryDetail : "unavailable") +
                              " current_offset=" + std::to_string(validation.CurrentBlockOffset) +
                              " cursor_offset=" + std::to_string(validation.ByteCursorOffset) +
-                             " reserved=" + std::to_string(validation.ReservedMatched) + "/" +
-                             std::to_string(validation.ReservedPairs) +
+                             " known_names=" + std::to_string(validation.KnownMatched) +
+                             " known_plausible=" + std::to_string(validation.KnownPlausible) + "/" +
+                             std::to_string(validation.KnownWalked) +
                              " block0_samples=" + std::to_string(validation.Block0Valid) + "/" +
                              std::to_string(validation.Block0Samples) +
                              " high_block_samples=" + std::to_string(validation.HighBlockValid) + "/" +

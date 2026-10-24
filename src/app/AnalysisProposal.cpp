@@ -79,8 +79,9 @@ namespace nextdumper::app
 
             proposal.contractIndex = validation.ContractIndex;
             proposal.evidence = "decoder=" + std::string(NameTextFamilyName(decoder.Family)) +
-                                " known_pairs=" + std::to_string(validation.ReservedMatched) + "/" +
-                                std::to_string(validation.ReservedPairs) +
+                                " known_names=" + std::to_string(validation.KnownMatched) +
+                                " plausible=" + std::to_string(validation.KnownPlausible) + "/" +
+                                std::to_string(validation.KnownWalked) +
                                 " boundary_current=" + std::to_string(*currentOffset) +
                                 " boundary_cursor=" + std::to_string(*cursorOffset);
             return proposal;

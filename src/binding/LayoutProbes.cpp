@@ -3,10 +3,12 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <iterator>
 #include <limits>
 #include <optional>
 
 #include "nextdumper/common/Hex.hpp"
+#include "nextdumper/common/UeHardcodedNames.hpp"
 
 namespace nextdumper::binding
 {
@@ -331,8 +333,7 @@ namespace nextdumper::binding
             int knownNames = 0;
             const char *stopReason = "sample-limit";
             const size_t blockSize = (size_t{1} << layout.pool.blocksBit) * static_cast<size_t>(layout.pool.entryStride);
-            constexpr std::array<const char *, 8> known = {"None", "ByteProperty", "IntProperty", "BoolProperty",
-                                                           "FloatProperty", "ObjectProperty", "NameProperty", "DelegateProperty"};
+            constexpr auto &known = ::nextdumper::common::kUeHardcodedNames;
             report.accepted = false;
             report.tested = 0;
             report.valid = 0;
@@ -371,7 +372,7 @@ namespace nextdumper::binding
                     break;
                 }
                 ++report.valid;
-                knownNames += std::find(known.begin(), known.end(), text) != known.end() ? 1 : 0;
+                knownNames += std::find(std::begin(known), std::end(known), std::string_view(text)) != std::end(known) ? 1 : 0;
                 const auto next = Add(entry, advance);
                 if (!next)
                 {
