@@ -24,6 +24,7 @@ namespace nextdumper::analysis
         std::vector<Contract> Contracts;
         uint64_t ScannedBytes = 0;
         uint64_t Candidates = 0;
+        uint64_t ParentCandidates = 0;
         bool BudgetExhausted = false;
         std::string Error;
         std::string BestRejected;

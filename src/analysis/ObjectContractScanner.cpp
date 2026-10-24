@@ -495,8 +495,43 @@ namespace nextdumper::analysis
                     if (!IsInReadableRanges(readableRanges, rawChunkTable, sizeof(uintptr_t)))
                         continue;
                     const auto pointerAddress = AddOffset(*chunkAddress, static_cast<int64_t>(position));
-                    if (pointerAddress)
-                        considerPointer(*pointerAddress, rawChunkTable);
+                    if (!pointerAddress)
+                        continue;
+                    considerPointer(*pointerAddress, rawChunkTable);
+
+                    // analyzer 的全局可能指向 FUObjectArray 父结构，Objects 位于其成员偏移
+                    if (rawChunkTable < 0x10000 ||
+                        !IsInReadableRanges(readableRanges, rawChunkTable, sizeof(uintptr_t)) ||
+                        !image.Memory().IsReadable(rawChunkTable, sizeof(uintptr_t)) ||
+                        image.Memory().IsExecutable(rawChunkTable, sizeof(uintptr_t)))
+                        continue;
+                    for (const int32_t parentOffset : {0, 16, 24, 32})
+                    {
+                        const auto parentSlot = AddOffset(rawChunkTable, parentOffset);
+                        uintptr_t parentObjects = 0;
+                        if (!parentSlot || !ReadPointerValue(image.Memory(), *parentSlot, parentObjects) ||
+                            parentObjects == 0 ||
+                            !IsInReadableRanges(readableRanges, parentObjects, sizeof(uintptr_t)) ||
+                            !image.Memory().IsReadable(parentObjects, sizeof(uintptr_t)) ||
+                            image.Memory().IsExecutable(parentObjects, sizeof(uintptr_t)))
+                            continue;
+                        bool plausibleCount = false;
+                        for (const int32_t countOffset : {20, 28, 36})
+                        {
+                            const auto countAddress = AddOffset(*parentSlot, countOffset);
+                            int32_t count = 0;
+                            if (countAddress && ReadInt32Value(image.Memory(), *countAddress, count) &&
+                                count >= static_cast<int32_t>(options.MinCount) && count <= 0x08000000)
+                            {
+                                plausibleCount = true;
+                                break;
+                            }
+                        }
+                        if (!plausibleCount)
+                            continue;
+                        ++result.ParentCandidates;
+                        considerPointer(*parentSlot, parentObjects);
+                    }
                 }
                 offset += want;
             }

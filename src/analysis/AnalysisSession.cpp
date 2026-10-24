@@ -408,6 +408,7 @@ namespace nextdumper::analysis
                 }
                 std::string message = "scanned_bytes=" + std::to_string(objectScan.ScannedBytes) +
                                       " candidates=" + std::to_string(objectScan.Candidates) +
+                                      " parent_candidates=" + std::to_string(objectScan.ParentCandidates) +
                                       " contracts=" + std::to_string(objectScan.Contracts.size()) +
                                       " budget_exhausted=" + std::to_string(objectScan.BudgetExhausted);
                 if (!objectScan.Error.empty())
