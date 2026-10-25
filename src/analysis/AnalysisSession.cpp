@@ -525,6 +525,91 @@ namespace nextdumper::analysis
                     }
                 }
 
+                for (const ObjectStoreEvidence &storeEvidence : objectScan.StoreEvidence)
+                {
+                    std::string refSlots;
+                    for (const uintptr_t slot : storeEvidence.ReferenceSamples)
+                    {
+                        if (!refSlots.empty())
+                            refSlots += ",";
+                        refSlots += common::Hex(slot);
+                    }
+                    std::string chunkPointers;
+                    for (const uintptr_t chunk : storeEvidence.ChunkPointers)
+                    {
+                        if (!chunkPointers.empty())
+                            chunkPointers += ",";
+                        chunkPointers += common::Hex(chunk);
+                    }
+                    result.Diagnostics.push_back(
+                        {storeEvidence.Result == "contract" ? DiagnosticSeverity::Info : DiagnosticSeverity::Warning,
+                         "ANALYSIS_OBJECT_STORE",
+                         "order=" + std::to_string(storeEvidence.Order) +
+                             " root=" + common::Hex(storeEvidence.Root) +
+                             " mode=" + (storeEvidence.Fixed ? "fixed" : "chunked") +
+                             " refs=" + std::to_string(storeEvidence.ReferenceCount) +
+                             " ref_slots=" + refSlots +
+                             " item_stride=" + std::to_string(storeEvidence.ItemStride) +
+                             " item_index=" + std::to_string(storeEvidence.ItemIndexOffset) +
+                             " prefix=" + std::to_string(storeEvidence.PrefixValid) + "/" +
+                             std::to_string(storeEvidence.PrefixTested) +
+                             " chunks=" + std::to_string(storeEvidence.ChunkCount) +
+                             " chunk_ptrs=" + chunkPointers +
+                             " budget_left=" + std::to_string(storeEvidence.FullScanBudgetAtStart) +
+                             " headers=" + std::to_string(storeEvidence.HeaderCount) +
+                             " max_count=" + std::to_string(storeEvidence.MaxHeaderCount) +
+                             " full_scans=" + std::to_string(storeEvidence.FullScanCount) +
+                             " result=" + storeEvidence.Result});
+                    for (const ObjectFullScanEvidence &scanEvidence : storeEvidence.FullScans)
+                    {
+                        std::string scanMessage =
+                            "store=" + common::Hex(storeEvidence.Root) +
+                            " capacity=" + std::to_string(scanEvidence.Capacity) +
+                            " tested=" + std::to_string(scanEvidence.Tested) +
+                            " valid=" + std::to_string(scanEvidence.Valid) +
+                            " empty=" + std::to_string(scanEvidence.Empty) +
+                            " invalid=" + std::to_string(scanEvidence.Invalid) +
+                            " invalid_between=" + std::to_string(scanEvidence.InvalidBetweenValid) +
+                            " derived=" + std::to_string(scanEvidence.DerivedCount) +
+                            " gates=" + (scanEvidence.GatesPassed ? "passed" : "failed");
+                        if (!scanEvidence.GatesPassed)
+                            scanMessage += " gate_failure=" + scanEvidence.GateFailure;
+                        result.Diagnostics.push_back(
+                            {scanEvidence.GatesPassed ? DiagnosticSeverity::Info : DiagnosticSeverity::Warning,
+                             "ANALYSIS_OBJECT_FULL_SCAN", std::move(scanMessage)});
+                    }
+                    for (const ObjectHeaderEvidence &headerEvidence : storeEvidence.Headers)
+                    {
+                        result.Diagnostics.push_back(
+                            {DiagnosticSeverity::Info, "ANALYSIS_OBJECT_HEADER",
+                             "store=" + common::Hex(storeEvidence.Root) +
+                                 " base=" + common::Hex(headerEvidence.Base) +
+                                 " objects_offset=" + std::to_string(headerEvidence.ObjectsOffset) +
+                                 " count=" + std::to_string(headerEvidence.Count) + "@" +
+                                 std::to_string(headerEvidence.CountOffset) +
+                                 " max_chunks=" + std::to_string(headerEvidence.MaxChunks) + "@" +
+                                 std::to_string(headerEvidence.MaxChunksOffset) +
+                                 " num_chunks=" + std::to_string(headerEvidence.NumChunks) + "@" +
+                                 std::to_string(headerEvidence.NumChunksOffset) +
+                                 " max_elements=" + std::to_string(headerEvidence.MaxElements) + "@" +
+                                 std::to_string(headerEvidence.MaxElementsOffset) +
+                                 " capacity=" + std::to_string(headerEvidence.Capacity) +
+                                 " budget_left=" + std::to_string(headerEvidence.FullScanBudgetLeft) +
+                                 " result=" + ObjectHeaderOutcomeName(headerEvidence.Outcome)});
+                    }
+                }
+                if (objectScan.SeedRootsProbed > 0)
+                {
+                    result.Diagnostics.push_back(
+                        {DiagnosticSeverity::Info, "ANALYSIS_OBJECT_PROBE",
+                         "probed=" + std::to_string(objectScan.SeedRootsProbed) +
+                             " chunk_no_storage=" + std::to_string(objectScan.ChunkNoStorage) +
+                             " chunk_layout_unresolved=" + std::to_string(objectScan.ChunkLayoutUnresolved) +
+                             " chunk_prefix_failed=" + std::to_string(objectScan.ChunkPrefixFailed) +
+                             " fixed_layout_unresolved=" + std::to_string(objectScan.FixedLayoutUnresolved) +
+                             " fixed_prefix_failed=" + std::to_string(objectScan.FixedPrefixFailed)});
+                }
+
                 std::string message = "scanned_bytes=" + std::to_string(objectScan.ScannedBytes) +
                                       " candidates=" + std::to_string(objectScan.Candidates) +
                                       " discovered_roots=" + std::to_string(objectScan.DiscoveredRoots) +
@@ -541,6 +626,8 @@ namespace nextdumper::analysis
                                       " contracts_ambiguous=" + std::to_string(objectScan.ContractsAmbiguous) +
                                       " uobject_layouts=" + std::to_string(objectScan.UObjectLayouts.size()) +
                                       " name_evidence=" + std::to_string(objectScanNameContract ? 1 : 0) +
+                                      " store_evidence=" + std::to_string(objectScan.StoreEvidence.size()) +
+                                      " stores_unlogged=" + std::to_string(objectScan.StoresUnlogged) +
                                       " budget_exhausted=" + std::to_string(objectScan.BudgetExhausted) +
                                       " seed_budget_exhausted=" + std::to_string(objectScan.SeedBudgetExhausted);
                 if (!objectScan.Error.empty())

@@ -12,12 +12,29 @@
 
 namespace nextdumper::analysis
 {
+    const char *ObjectHeaderOutcomeName(ObjectHeaderOutcome outcome)
+    {
+        switch (outcome)
+        {
+        case ObjectHeaderOutcome::Validated:
+            return "validated";
+        case ObjectHeaderOutcome::DerivedExceedsCount:
+            return "derived-exceeds-count";
+        case ObjectHeaderOutcome::FullScanRejected:
+            return "full-scan-rejected";
+        case ObjectHeaderOutcome::BudgetStarved:
+            return "budget-starved";
+        }
+        return "unknown";
+    }
+
     namespace
     {
         constexpr int32_t kElementsPerChunk = 64 * 1024;
         constexpr int32_t kMaxChunks = 8;
         constexpr int32_t kHeaderWindow = 0x60;
         constexpr size_t kReadChunkBytes = 64 * 1024;
+        constexpr size_t kMaxFullScanEvidence = 4;
 
         std::optional<uintptr_t> AddOffset(uintptr_t base, int64_t offset)
         {
@@ -303,9 +320,18 @@ namespace nextdumper::analysis
             ScanStats Prefix;
         };
 
+        enum class StoreProbeRejection
+        {
+            None,
+            NoStorage,
+            LayoutUnresolved,
+            PrefixFailed,
+        };
+
         std::optional<StoreObservation> ProbeChunkStore(const MemoryView &memory, uintptr_t root,
                                                         const std::vector<uintptr_t> &references,
-                                                        size_t sampleCount)
+                                                        size_t sampleCount,
+                                                        StoreProbeRejection &rejection)
         {
             StoreObservation store;
             store.Root = root;
@@ -317,16 +343,26 @@ namespace nextdumper::analysis
                 if (!slot || !ReadPointer(memory, *slot, chunk) || chunk == 0 ||
                     (chunk & (sizeof(uintptr_t) - 1)) != 0 ||
                     !memory.IsReadable(chunk, sizeof(uintptr_t)) || memory.IsExecutable(chunk, sizeof(uintptr_t)))
+                {
+                    if (store.Chunks.empty())
+                        rejection = StoreProbeRejection::NoStorage;
                     break;
+                }
                 if (store.Chunks.empty())
                 {
                     const auto layouts = RecoverLayouts(memory, chunk, sampleCount);
                     if (layouts.size() != 1)
+                    {
+                        rejection = StoreProbeRejection::LayoutUnresolved;
                         return std::nullopt;
+                    }
                     store.Layout = layouts.front();
                     const auto prefix = ValidateLayout(memory, chunk, store.Layout, 0, sampleCount);
                     if (!prefix)
+                    {
+                        rejection = StoreProbeRejection::PrefixFailed;
                         return std::nullopt;
+                    }
                     store.Prefix = *prefix;
                 }
                 else
@@ -351,11 +387,15 @@ namespace nextdumper::analysis
 
         std::optional<StoreObservation> ProbeFixedStore(const MemoryView &memory, uintptr_t root,
                                                         const std::vector<uintptr_t> &references,
-                                                        size_t sampleCount)
+                                                        size_t sampleCount,
+                                                        StoreProbeRejection &rejection)
         {
             const auto layouts = RecoverLayouts(memory, root, sampleCount);
             if (layouts.size() != 1)
+            {
+                rejection = StoreProbeRejection::LayoutUnresolved;
                 return std::nullopt;
+            }
             StoreObservation store;
             store.Root = root;
             store.Fixed = true;
@@ -364,7 +404,10 @@ namespace nextdumper::analysis
             store.References = references;
             const auto prefix = ValidateLayout(memory, root, store.Layout, 0, sampleCount);
             if (!prefix)
+            {
+                rejection = StoreProbeRejection::PrefixFailed;
                 return std::nullopt;
+            }
             store.Prefix = *prefix;
             return store;
         }
@@ -454,6 +497,12 @@ namespace nextdumper::analysis
                             continue;
                         for (int32_t maxChunksOffset = 0; maxChunksOffset < kHeaderWindow; maxChunksOffset += 4)
                         {
+                            if (remainingSteps == 0)
+                            {
+                                stepBudgetExhausted = true;
+                                return headers;
+                            }
+                            --remainingSteps;
                             const int32_t maxChunks = values[maxChunksOffset / 4];
                             if (maxChunks <= numChunks || maxChunks > 64 ||
                                 (store.Fixed && maxChunks > 1))
@@ -534,15 +583,39 @@ namespace nextdumper::analysis
                                : store.Chunks.size() * static_cast<uint64_t>(kElementsPerChunk);
         }
 
-        std::optional<ScanStats> ScanFullStore(const MemoryView &memory, const StoreObservation &store,
-                                               int32_t capacity, size_t maxSamples,
-                                               uint64_t &remainingBudget)
+        struct FullScanOutcome
+        {
+            ScanStats Stats;
+            bool Passed = false;
+        };
+
+        // 与 ScanFullStore 门禁同源的单因枚举，多因并存时并列输出，仅用于诊断
+        std::string GateFailureReason(const ScanStats &stats)
+        {
+            std::string reason;
+            const auto append = [&](const char *part)
+            {
+                if (!reason.empty())
+                    reason += "+";
+                reason += part;
+            };
+            if (stats.Valid < 8)
+                append("insufficient-valid");
+            if (stats.InvalidBetweenValid > stats.Valid)
+                append("invalid-ratio");
+            if (stats.DerivedCount <= 0)
+                append("no-derived");
+            return reason;
+        }
+
+        FullScanOutcome ScanFullStore(const MemoryView &memory, const StoreObservation &store,
+                                      int32_t capacity, size_t maxSamples, uint64_t &remainingBudget)
         {
             remainingBudget -= RequiredScanItems(store, capacity);
-            ScanStats stats;
+            FullScanOutcome outcome;
             if (store.Fixed)
             {
-                ScanItems(memory, store.Root, store.Layout, 0, capacity, 0, maxSamples, stats);
+                ScanItems(memory, store.Root, store.Layout, 0, capacity, 0, maxSamples, outcome.Stats);
             }
             else
             {
@@ -550,12 +623,12 @@ namespace nextdumper::analysis
                 {
                     ScanItems(memory, store.Chunks[chunkIndex], store.Layout,
                               static_cast<int32_t>(chunkIndex) * kElementsPerChunk,
-                              kElementsPerChunk, chunkIndex, maxSamples, stats);
+                              kElementsPerChunk, chunkIndex, maxSamples, outcome.Stats);
                 }
             }
-            if (stats.Valid < 8 || stats.InvalidBetweenValid > stats.Valid || stats.DerivedCount <= 0)
-                return std::nullopt;
-            return stats;
+            outcome.Passed = !(outcome.Stats.Valid < 8 || outcome.Stats.InvalidBetweenValid > outcome.Stats.Valid ||
+                               outcome.Stats.DerivedCount <= 0);
+            return outcome;
         }
 
         struct OffsetStat
@@ -767,6 +840,37 @@ namespace nextdumper::analysis
             return seed;
         }
 
+        struct HeaderOutcomeRecord
+        {
+            ObjectHeaderOutcome Outcome = ObjectHeaderOutcome::DerivedExceedsCount;
+            uint64_t BudgetLeft = 0;
+            int64_t Capacity = 0;
+        };
+
+        std::string SummarizeHeaderOutcomes(const std::vector<HeaderOutcomeRecord> &outcomes)
+        {
+            std::string summary;
+            const auto append = [&](ObjectHeaderOutcome outcome)
+            {
+                const size_t count = std::count_if(outcomes.begin(), outcomes.end(),
+                                                   [outcome](const HeaderOutcomeRecord &record)
+                                                   { return record.Outcome == outcome; });
+                if (count == 0)
+                    return;
+                if (!summary.empty())
+                    summary += " ";
+                summary += ObjectHeaderOutcomeName(outcome);
+                summary += "=" + std::to_string(count);
+            };
+            append(ObjectHeaderOutcome::Validated);
+            append(ObjectHeaderOutcome::DerivedExceedsCount);
+            append(ObjectHeaderOutcome::FullScanRejected);
+            append(ObjectHeaderOutcome::BudgetStarved);
+            if (summary.empty())
+                summary = "unevaluated";
+            return summary;
+        }
+
         struct DiscoveredRoot
         {
             uintptr_t Target = 0;
@@ -885,6 +989,7 @@ namespace nextdumper::analysis
 
         uint64_t headerStepBudget = options.MaxHeaderSteps;
         uint64_t fullScanBudget = options.MaxFullScanItems;
+        uint64_t storeOrder = 0;
         for (DiscoveredRoot &root : roots)
         {
             if (processingBudgetExhausted)
@@ -895,34 +1000,99 @@ namespace nextdumper::analysis
             std::vector<StoreObservation> stores;
             if (root.ChunkLike)
             {
-                if (auto chunked = ProbeChunkStore(memory, root.Target, root.References, options.MaxSamples))
+                StoreProbeRejection rejection = StoreProbeRejection::None;
+                if (auto chunked = ProbeChunkStore(memory, root.Target, root.References, options.MaxSamples, rejection))
                 {
                     ++result.ChunkStores;
                     stores.push_back(std::move(*chunked));
                 }
+                else
+                {
+                    switch (rejection)
+                    {
+                    case StoreProbeRejection::NoStorage:
+                        ++result.ChunkNoStorage;
+                        break;
+                    case StoreProbeRejection::LayoutUnresolved:
+                        ++result.ChunkLayoutUnresolved;
+                        break;
+                    case StoreProbeRejection::PrefixFailed:
+                        ++result.ChunkPrefixFailed;
+                        break;
+                    case StoreProbeRejection::None:
+                        break;
+                    }
+                }
             }
             if (root.FixedLike)
             {
-                if (auto fixed = ProbeFixedStore(memory, root.Target, root.References, options.MaxSamples))
+                StoreProbeRejection rejection = StoreProbeRejection::None;
+                if (auto fixed = ProbeFixedStore(memory, root.Target, root.References, options.MaxSamples, rejection))
                 {
                     ++result.FixedStores;
                     stores.push_back(std::move(*fixed));
+                }
+                else
+                {
+                    switch (rejection)
+                    {
+                    case StoreProbeRejection::LayoutUnresolved:
+                        ++result.FixedLayoutUnresolved;
+                        break;
+                    case StoreProbeRejection::PrefixFailed:
+                        ++result.FixedPrefixFailed;
+                        break;
+                    case StoreProbeRejection::NoStorage:
+                    case StoreProbeRejection::None:
+                        break;
+                    }
                 }
             }
 
             for (const StoreObservation &store : stores)
             {
                 ++result.SeedCandidates;
+                ObjectStoreEvidence storeEvidence;
+                storeEvidence.Root = store.Root;
+                storeEvidence.Fixed = store.Fixed;
+                storeEvidence.Order = storeOrder++;
+                storeEvidence.ItemStride = store.Layout.Stride;
+                storeEvidence.ItemIndexOffset = store.Layout.IndexOffset;
+                storeEvidence.PrefixValid = static_cast<uint32_t>(store.Prefix.Valid);
+                storeEvidence.PrefixTested = static_cast<uint32_t>(store.Prefix.Tested);
+                storeEvidence.ChunkCount = static_cast<int32_t>(store.Chunks.size());
+                storeEvidence.ChunkPointers = store.Chunks;
+                storeEvidence.ReferenceCount = store.References.size();
+                storeEvidence.ReferenceSamples.assign(
+                    store.References.begin(),
+                    store.References.begin() + static_cast<ptrdiff_t>(std::min<size_t>(4, store.References.size())));
+                storeEvidence.FullScanBudgetAtStart = fullScanBudget;
+                const auto finishStoreEvidence = [&](std::string storeResult)
+                {
+                    storeEvidence.Result = std::move(storeResult);
+                    if (result.StoreEvidence.size() < options.MaxStoreEvidence)
+                        result.StoreEvidence.push_back(std::move(storeEvidence));
+                    else
+                        ++result.StoresUnlogged;
+                };
+
                 bool headerStepExhausted = false;
                 bool headerOverflow = false;
                 const auto headers = RecoverHeaders(memory, store, headerStepBudget,
                                                     options.MaxHeaderCandidates,
                                                     headerStepExhausted, headerOverflow);
                 result.HeaderCandidates += headers.size();
+                storeEvidence.HeaderCount = headers.size();
+                for (const HeaderCandidate &header : headers)
+                    storeEvidence.MaxHeaderCount = std::max(storeEvidence.MaxHeaderCount, header.Count);
                 if (headerOverflow)
+                {
+                    finishStoreEvidence("candidate-overflow");
                     continue;
+                }
                 if (headerStepExhausted)
                 {
+                    finishStoreEvidence("header-budget-exhausted");
                     result.SeedBudgetExhausted = true;
                     processingBudgetExhausted = true;
                     break;
@@ -933,9 +1103,11 @@ namespace nextdumper::analysis
                     ScanStats Full;
                 };
                 std::vector<ValidatedHeader> validated;
-                std::optional<ScanStats> fullStats;
+                std::vector<HeaderOutcomeRecord> headerOutcomes;
+                std::optional<FullScanOutcome> fullStats;
                 int32_t scannedCapacity = -1;
                 int32_t failedCapacity = -1;
+                ObjectHeaderOutcome failedCapacityOutcome = ObjectHeaderOutcome::FullScanRejected;
                 bool fullScanExhausted = false;
                 for (const HeaderCandidate &header : headers)
                 {
@@ -943,7 +1115,10 @@ namespace nextdumper::analysis
                                                      ? header.MaxElements
                                                      : static_cast<int32_t>(store.Chunks.size()) * kElementsPerChunk;
                     if (scanCapacity == failedCapacity)
+                    {
+                        headerOutcomes.push_back({failedCapacityOutcome, fullScanBudget, scanCapacity});
                         continue;
+                    }
                     if (!fullStats || scannedCapacity != scanCapacity)
                     {
                         const uint64_t required = RequiredScanItems(store, scanCapacity);
@@ -955,29 +1130,97 @@ namespace nextdumper::analysis
                                 break;
                             }
                             failedCapacity = scanCapacity;
+                            failedCapacityOutcome = ObjectHeaderOutcome::BudgetStarved;
+                            headerOutcomes.push_back(
+                                {ObjectHeaderOutcome::BudgetStarved, fullScanBudget, scanCapacity});
                             continue;
                         }
-                        fullStats = ScanFullStore(memory, store, scanCapacity, options.MaxSamples, fullScanBudget);
+                        const FullScanOutcome scan =
+                            ScanFullStore(memory, store, scanCapacity, options.MaxSamples, fullScanBudget);
+                        fullStats = scan;
                         scannedCapacity = scanCapacity;
-                        if (!fullStats)
+                        {
+                            ObjectFullScanEvidence scanEvidence;
+                            scanEvidence.Scanned = true;
+                            scanEvidence.Capacity = scanCapacity;
+                            scanEvidence.Tested = scan.Stats.Tested;
+                            scanEvidence.Valid = scan.Stats.Valid;
+                            scanEvidence.Empty = scan.Stats.Empty;
+                            scanEvidence.Invalid = scan.Stats.Invalid;
+                            scanEvidence.InvalidBetweenValid = scan.Stats.InvalidBetweenValid;
+                            scanEvidence.DerivedCount = scan.Stats.DerivedCount;
+                            scanEvidence.GatesPassed = scan.Passed;
+                            if (!scan.Passed)
+                                scanEvidence.GateFailure = GateFailureReason(scan.Stats);
+                            if (storeEvidence.FullScans.size() < kMaxFullScanEvidence)
+                                storeEvidence.FullScans.push_back(std::move(scanEvidence));
+                            ++storeEvidence.FullScanCount;
+                        }
+                        if (!scan.Passed)
                         {
                             failedCapacity = scanCapacity;
+                            failedCapacityOutcome = ObjectHeaderOutcome::FullScanRejected;
+                            headerOutcomes.push_back(
+                                {ObjectHeaderOutcome::FullScanRejected, fullScanBudget, scanCapacity});
                             continue;
                         }
                     }
-                    if (fullStats->DerivedCount > header.Count)
+                    if (fullStats->Stats.DerivedCount > header.Count)
+                    {
+                        headerOutcomes.push_back(
+                            {ObjectHeaderOutcome::DerivedExceedsCount, fullScanBudget, scanCapacity});
                         continue;
-                    validated.push_back({header, *fullStats});
+                    }
+                    validated.push_back({header, fullStats->Stats});
+                    headerOutcomes.push_back({ObjectHeaderOutcome::Validated, fullScanBudget, scanCapacity});
+                }
+                for (size_t index = 0; index < headers.size() && index < headerOutcomes.size() &&
+                                       index < options.MaxHeaderEvidencePerStore;
+                     ++index)
+                {
+                    const HeaderCandidate &header = headers[index];
+                    ObjectHeaderEvidence headerEvidence;
+                    headerEvidence.Base = header.Root;
+                    headerEvidence.ObjectsOffset = header.ObjectsOffset;
+                    headerEvidence.CountOffset = header.CountOffset;
+                    headerEvidence.Count = header.Count;
+                    headerEvidence.MaxChunksOffset = header.MaxChunksOffset;
+                    headerEvidence.MaxChunks = header.MaxChunks;
+                    headerEvidence.NumChunksOffset = header.NumChunksOffset;
+                    headerEvidence.NumChunks = header.NumChunks;
+                    headerEvidence.MaxElementsOffset = header.MaxElementsOffset;
+                    headerEvidence.MaxElements = header.MaxElements;
+                    headerEvidence.Capacity = headerOutcomes[index].Capacity;
+                    headerEvidence.FullScanBudgetLeft = headerOutcomes[index].BudgetLeft;
+                    headerEvidence.Outcome = headerOutcomes[index].Outcome;
+                    storeEvidence.Headers.push_back(std::move(headerEvidence));
                 }
                 result.HeaderValidations += validated.size();
                 if (fullScanExhausted)
                 {
+                    finishStoreEvidence("budget-exhausted");
                     result.SeedBudgetExhausted = true;
                     processingBudgetExhausted = true;
                     break;
                 }
                 if (validated.size() != 1)
+                {
+                    if (headers.empty())
+                        finishStoreEvidence("no-header");
+                    else if (validated.size() > 1)
+                    {
+                        bool equivalent = true;
+                        for (size_t index = 1; index < validated.size(); ++index)
+                            equivalent = equivalent && SameHeader(validated[index - 1].Header,
+                                                                  validated[index].Header);
+                        finishStoreEvidence(equivalent ? "equivalent-multiple" : "incompatible-multiple");
+                    }
+                    else
+                    {
+                        finishStoreEvidence("no-validated-header " + SummarizeHeaderOutcomes(headerOutcomes));
+                    }
                     continue;
+                }
 
                 const ValidatedHeader &selected = validated.front();
                 ObjectSeedEvidence seed = MakeSeedEvidence(store, selected.Header, selected.Full);
@@ -1002,7 +1245,10 @@ namespace nextdumper::analysis
                 contract.Observation.MaxElements = static_cast<uint32_t>(selected.Header.MaxElements);
                 contract.Observation.Chunks = static_cast<uint32_t>(selected.Header.NumChunks);
                 if (!fields.Complete())
+                {
+                    finishStoreEvidence("fields-incomplete");
                     continue;
+                }
                 contract.Evidence.push_back({EvidenceKind::TableLoad, contract.Root, store.Root});
                 contract.Evidence.push_back({EvidenceKind::EntryLoad, contract.Root,
                                              static_cast<uint64_t>(selected.Header.Count)});
@@ -1012,6 +1258,7 @@ namespace nextdumper::analysis
                 result.UObjectLayouts.push_back(std::move(uobject));
                 if (result.Seeds.size() < options.MaxSeeds)
                     result.Seeds.push_back(std::move(seed));
+                finishStoreEvidence("contract");
             }
         }
 

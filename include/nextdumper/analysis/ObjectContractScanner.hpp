@@ -23,6 +23,9 @@ namespace nextdumper::analysis
         size_t MaxHeaderCandidates = 64;
         uint64_t MaxHeaderSteps = 8000000;
         uint64_t MaxFullScanItems = 16ull * 65536;
+        // 有界证据上限：只记录前 N 个 store 与每个 store 前 N 个 header
+        size_t MaxStoreEvidence = 8;
+        size_t MaxHeaderEvidencePerStore = 8;
     };
 
     struct ObjectSeedEvidence
@@ -66,11 +69,75 @@ namespace nextdumper::analysis
         int32_t HeaderChunks = 0;
     };
 
+    enum class ObjectHeaderOutcome : uint8_t
+    {
+        Validated,
+        DerivedExceedsCount,
+        FullScanRejected,
+        BudgetStarved,
+    };
+
+    [[nodiscard]] const char *ObjectHeaderOutcomeName(ObjectHeaderOutcome outcome);
+
+    struct ObjectHeaderEvidence
+    {
+        uintptr_t Base = 0;
+        int32_t ObjectsOffset = -1;
+        int32_t CountOffset = -1;
+        int32_t Count = 0;
+        int32_t MaxChunksOffset = -1;
+        int32_t MaxChunks = 0;
+        int32_t NumChunksOffset = -1;
+        int32_t NumChunks = 0;
+        int32_t MaxElementsOffset = -1;
+        int32_t MaxElements = 0;
+        int64_t Capacity = 0;
+        uint64_t FullScanBudgetLeft = 0;
+        ObjectHeaderOutcome Outcome = ObjectHeaderOutcome::DerivedExceedsCount;
+    };
+
+    struct ObjectFullScanEvidence
+    {
+        bool Scanned = false;
+        int64_t Capacity = -1;
+        uint64_t Tested = 0;
+        uint64_t Valid = 0;
+        uint64_t Empty = 0;
+        uint64_t Invalid = 0;
+        uint64_t InvalidBetweenValid = 0;
+        int32_t DerivedCount = 0;
+        bool GatesPassed = false;
+        std::string GateFailure;
+    };
+
+    struct ObjectStoreEvidence
+    {
+        uintptr_t Root = 0;
+        bool Fixed = false;
+        uint64_t Order = 0;
+        int32_t ItemStride = 0;
+        int32_t ItemIndexOffset = -1;
+        uint32_t PrefixValid = 0;
+        uint32_t PrefixTested = 0;
+        int32_t ChunkCount = 0;
+        std::vector<uintptr_t> ChunkPointers;
+        uint64_t ReferenceCount = 0;
+        std::vector<uintptr_t> ReferenceSamples;
+        uint64_t FullScanBudgetAtStart = 0;
+        uint64_t FullScanCount = 0;
+        size_t HeaderCount = 0;
+        int32_t MaxHeaderCount = 0;
+        std::vector<ObjectHeaderEvidence> Headers;
+        std::vector<ObjectFullScanEvidence> FullScans;
+        std::string Result;
+    };
+
     struct ObjectContractScanResult
     {
         std::vector<ObjectArrayContract> Contracts;
         std::vector<UObjectLayoutContract> UObjectLayouts;
         std::vector<ObjectSeedEvidence> Seeds;
+        std::vector<ObjectStoreEvidence> StoreEvidence;
         uint64_t ScannedBytes = 0;
         uint64_t Candidates = 0;
         uint64_t DiscoveredRoots = 0;
@@ -80,8 +147,14 @@ namespace nextdumper::analysis
         uint64_t SeedCandidates = 0;
         uint64_t ChunkStores = 0;
         uint64_t FixedStores = 0;
+        uint64_t ChunkNoStorage = 0;
+        uint64_t ChunkLayoutUnresolved = 0;
+        uint64_t ChunkPrefixFailed = 0;
+        uint64_t FixedLayoutUnresolved = 0;
+        uint64_t FixedPrefixFailed = 0;
         uint64_t HeaderCandidates = 0;
         uint64_t HeaderValidations = 0;
+        uint64_t StoresUnlogged = 0;
         bool BudgetExhausted = false;
         bool SeedBudgetExhausted = false;
         bool ContractsAmbiguous = false;
