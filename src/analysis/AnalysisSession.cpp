@@ -527,7 +527,14 @@ namespace nextdumper::analysis
 
                 std::string message = "scanned_bytes=" + std::to_string(objectScan.ScannedBytes) +
                                       " candidates=" + std::to_string(objectScan.Candidates) +
+                                      " discovered_roots=" + std::to_string(objectScan.DiscoveredRoots) +
+                                      " storage_roots=" + std::to_string(objectScan.StorageRoots) +
+                                      " roots_skipped=" + std::to_string(objectScan.RootsSkipped) +
                                       " seed_roots=" + std::to_string(objectScan.SeedRootsProbed) +
+                                      " chunk_stores=" + std::to_string(objectScan.ChunkStores) +
+                                      " fixed_stores=" + std::to_string(objectScan.FixedStores) +
+                                      " header_candidates=" + std::to_string(objectScan.HeaderCandidates) +
+                                      " header_validations=" + std::to_string(objectScan.HeaderValidations) +
                                       " seed_candidates=" + std::to_string(objectScan.SeedCandidates) +
                                       " seeds=" + std::to_string(objectScan.Seeds.size()) +
                                       " contracts=" + std::to_string(objectScan.Contracts.size()) +

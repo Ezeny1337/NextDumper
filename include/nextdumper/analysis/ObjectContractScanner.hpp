@@ -18,7 +18,8 @@ namespace nextdumper::analysis
         size_t MaxCandidates = 16;
         size_t MaxSamples = 32;
         size_t MaxSeeds = 8;
-        size_t MaxSeedRoots = 262144;
+        // 仅限制通过存储形态预筛选的唯一根，避免地址顺序截断真实对象存储
+        size_t MaxSeedRoots = 1048576;
         size_t MaxHeaderCandidates = 64;
         uint64_t MaxHeaderSteps = 8000000;
         uint64_t MaxFullScanItems = 16ull * 65536;
@@ -72,8 +73,15 @@ namespace nextdumper::analysis
         std::vector<ObjectSeedEvidence> Seeds;
         uint64_t ScannedBytes = 0;
         uint64_t Candidates = 0;
+        uint64_t DiscoveredRoots = 0;
+        uint64_t StorageRoots = 0;
+        uint64_t RootsSkipped = 0;
         uint64_t SeedRootsProbed = 0;
         uint64_t SeedCandidates = 0;
+        uint64_t ChunkStores = 0;
+        uint64_t FixedStores = 0;
+        uint64_t HeaderCandidates = 0;
+        uint64_t HeaderValidations = 0;
         bool BudgetExhausted = false;
         bool SeedBudgetExhausted = false;
         bool ContractsAmbiguous = false;

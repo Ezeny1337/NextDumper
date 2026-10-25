@@ -3,10 +3,10 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
-#include <map>
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -766,6 +766,31 @@ namespace nextdumper::analysis
             seed.HeaderChunks = header.NumChunks;
             return seed;
         }
+
+        struct DiscoveredRoot
+        {
+            uintptr_t Target = 0;
+            bool ChunkLike = false;
+            bool FixedLike = false;
+            std::vector<uintptr_t> References;
+        };
+
+        bool ClassifyStorageRoot(const MemoryView &memory, uintptr_t target,
+                                 bool &chunkLike, bool &fixedLike)
+        {
+            uintptr_t first = 0;
+            if (!ReadPointer(memory, target, first) || first < 0x10000)
+                return false;
+            fixedLike = IsLikelyObject(memory, first);
+            if (!fixedLike && memory.IsReadable(first, sizeof(uintptr_t)) &&
+                !memory.IsExecutable(first, sizeof(uintptr_t)))
+            {
+                // chunk table 的首项是 chunk，chunk 的首项才是 UObject；fixed 数组则直接以 UObject 项开始。
+                uintptr_t firstItem = 0;
+                chunkLike = ReadPointer(memory, first, firstItem) && IsLikelyObject(memory, firstItem);
+            }
+            return chunkLike || fixedLike;
+        }
     } // namespace
 
     ObjectContractScanResult ScanObjectContracts(const ImageModel &image, uintptr_t nameRoot,
@@ -781,10 +806,11 @@ namespace nextdumper::analysis
         }
         const MemoryView &memory = image.Memory();
         NameResolver names(memory, nameRoot, nameFields, nameDecoder);
-        std::map<uintptr_t, std::vector<uintptr_t>> roots;
+        std::vector<DiscoveredRoot> roots;
+        std::unordered_map<uintptr_t, size_t> rootIndices;
+        std::unordered_set<uintptr_t> rejectedRoots;
         std::vector<uint8_t> buffer(kReadChunkBytes);
         uint64_t writableBytes = 0;
-        bool rootCoverageIncomplete = false;
         bool processingBudgetExhausted = false;
         for (const auto &segment : image.Module().segments)
         {
@@ -823,33 +849,66 @@ namespace nextdumper::analysis
                     if (!slot)
                         continue;
                     ++result.Candidates;
-                    if (roots.find(target) == roots.end() && roots.size() >= options.MaxSeedRoots)
+                    const auto existing = rootIndices.find(target);
+                    if (existing != rootIndices.end())
                     {
-                        rootCoverageIncomplete = true;
+                        roots[existing->second].References.push_back(*slot);
                         continue;
                     }
-                    roots[target].push_back(*slot);
+                    if (rejectedRoots.contains(target))
+                        continue;
+                    ++result.DiscoveredRoots;
+                    bool chunkLike = false;
+                    bool fixedLike = false;
+                    if (!ClassifyStorageRoot(memory, target, chunkLike, fixedLike))
+                    {
+                        rejectedRoots.insert(target);
+                        continue;
+                    }
+                    ++result.StorageRoots;
+                    if (roots.size() >= options.MaxSeedRoots)
+                    {
+                        ++result.RootsSkipped;
+                        rejectedRoots.insert(target);
+                        continue;
+                    }
+                    rootIndices.emplace(target, roots.size());
+                    roots.push_back({target, chunkLike, fixedLike, {*slot}});
                 }
                 offset += wanted;
             }
         }
         result.BudgetExhausted = writableBytes > options.MaxScanBytes &&
                                  result.ScannedBytes >= options.MaxScanBytes;
+        std::sort(roots.begin(), roots.end(), [](const DiscoveredRoot &left, const DiscoveredRoot &right)
+                  { return left.Target < right.Target; });
 
         uint64_t headerStepBudget = options.MaxHeaderSteps;
         uint64_t fullScanBudget = options.MaxFullScanItems;
-        for (auto &[root, references] : roots)
+        for (DiscoveredRoot &root : roots)
         {
             if (processingBudgetExhausted)
                 break;
             ++result.SeedRootsProbed;
-            std::sort(references.begin(), references.end());
-            references.erase(std::unique(references.begin(), references.end()), references.end());
+            std::sort(root.References.begin(), root.References.end());
+            root.References.erase(std::unique(root.References.begin(), root.References.end()), root.References.end());
             std::vector<StoreObservation> stores;
-            if (auto chunked = ProbeChunkStore(memory, root, references, options.MaxSamples))
-                stores.push_back(std::move(*chunked));
-            if (auto fixed = ProbeFixedStore(memory, root, references, options.MaxSamples))
-                stores.push_back(std::move(*fixed));
+            if (root.ChunkLike)
+            {
+                if (auto chunked = ProbeChunkStore(memory, root.Target, root.References, options.MaxSamples))
+                {
+                    ++result.ChunkStores;
+                    stores.push_back(std::move(*chunked));
+                }
+            }
+            if (root.FixedLike)
+            {
+                if (auto fixed = ProbeFixedStore(memory, root.Target, root.References, options.MaxSamples))
+                {
+                    ++result.FixedStores;
+                    stores.push_back(std::move(*fixed));
+                }
+            }
 
             for (const StoreObservation &store : stores)
             {
@@ -859,6 +918,7 @@ namespace nextdumper::analysis
                 const auto headers = RecoverHeaders(memory, store, headerStepBudget,
                                                     options.MaxHeaderCandidates,
                                                     headerStepExhausted, headerOverflow);
+                result.HeaderCandidates += headers.size();
                 if (headerOverflow)
                     continue;
                 if (headerStepExhausted)
@@ -909,6 +969,7 @@ namespace nextdumper::analysis
                         continue;
                     validated.push_back({header, *fullStats});
                 }
+                result.HeaderValidations += validated.size();
                 if (fullScanExhausted)
                 {
                     result.SeedBudgetExhausted = true;
@@ -954,7 +1015,7 @@ namespace nextdumper::analysis
             }
         }
 
-        if (rootCoverageIncomplete)
+        if (result.RootsSkipped > 0)
             result.SeedBudgetExhausted = true;
         const ObjectArrayContract *validated = nullptr;
         for (const ObjectArrayContract &contract : result.Contracts)
