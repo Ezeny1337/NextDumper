@@ -571,6 +571,7 @@ namespace nextdumper::analysis
                             " invalid=" + std::to_string(scanEvidence.Invalid) +
                             " invalid_between=" + std::to_string(scanEvidence.InvalidBetweenValid) +
                             " derived=" + std::to_string(scanEvidence.DerivedCount) +
+                            " nonempty_extent=" + std::to_string(scanEvidence.NonEmptyExtent) +
                             " gates=" + (scanEvidence.GatesPassed ? "passed" : "failed");
                         if (!scanEvidence.GatesPassed)
                             scanMessage += " gate_failure=" + scanEvidence.GateFailure;
@@ -587,6 +588,7 @@ namespace nextdumper::analysis
                                  " objects_offset=" + std::to_string(headerEvidence.ObjectsOffset) +
                                  " count=" + std::to_string(headerEvidence.Count) + "@" +
                                  std::to_string(headerEvidence.CountOffset) +
+                                 " count_at_gate=" + std::to_string(headerEvidence.CountAtGate) +
                                  " max_chunks=" + std::to_string(headerEvidence.MaxChunks) + "@" +
                                  std::to_string(headerEvidence.MaxChunksOffset) +
                                  " num_chunks=" + std::to_string(headerEvidence.NumChunks) + "@" +

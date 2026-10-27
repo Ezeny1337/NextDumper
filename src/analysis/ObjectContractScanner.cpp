@@ -181,6 +181,7 @@ namespace nextdumper::analysis
             uint64_t InvalidBetweenValid = 0;
             uint64_t InvalidSinceValid = 0;
             int32_t DerivedCount = 0;
+            int32_t NonEmptyExtent = 0;
             std::array<int32_t, kMaxChunks> ChunkValid{};
             std::array<int32_t, kMaxChunks> ChunkEmpty{};
             std::array<int32_t, kMaxChunks> ChunkInvalid{};
@@ -222,6 +223,7 @@ namespace nextdumper::analysis
                         ++stats.ChunkEmpty[chunkIndex];
                     continue;
                 }
+                stats.NonEmptyExtent = std::max(stats.NonEmptyExtent, index + 1);
                 int32_t reported = -1;
                 const auto indexAddress = AddOffset(object, layout.IndexOffset);
                 const bool valid = IsLikelyObject(memory, object) && indexAddress &&
@@ -845,6 +847,8 @@ namespace nextdumper::analysis
             ObjectHeaderOutcome Outcome = ObjectHeaderOutcome::DerivedExceedsCount;
             uint64_t BudgetLeft = 0;
             int64_t Capacity = 0;
+            // 门禁时刻对 header.CountAddress 的重读值，-1 表示读失败，仅作证据
+            int32_t CountAtGate = -1;
         };
 
         std::string SummarizeHeaderOutcomes(const std::vector<HeaderOutcomeRecord> &outcomes)
@@ -1149,6 +1153,7 @@ namespace nextdumper::analysis
                             scanEvidence.Invalid = scan.Stats.Invalid;
                             scanEvidence.InvalidBetweenValid = scan.Stats.InvalidBetweenValid;
                             scanEvidence.DerivedCount = scan.Stats.DerivedCount;
+                            scanEvidence.NonEmptyExtent = scan.Stats.NonEmptyExtent;
                             scanEvidence.GatesPassed = scan.Passed;
                             if (!scan.Passed)
                                 scanEvidence.GateFailure = GateFailureReason(scan.Stats);
@@ -1165,14 +1170,20 @@ namespace nextdumper::analysis
                             continue;
                         }
                     }
+                    // 判定时刻对同一地址重读，与 header 恢复时读到的 Count 组成同一地址的两个时刻读数
+                    // 活进程的 NumElements 单调不减，因此两者的差能区分字段取值错误与扫描期间数组增长
+                    int32_t countAtGate = -1;
+                    if (!ReadInt32(memory, header.CountAddress, countAtGate))
+                        countAtGate = -1;
                     if (fullStats->Stats.DerivedCount > header.Count)
                     {
-                        headerOutcomes.push_back(
-                            {ObjectHeaderOutcome::DerivedExceedsCount, fullScanBudget, scanCapacity});
+                        headerOutcomes.push_back({ObjectHeaderOutcome::DerivedExceedsCount, fullScanBudget,
+                                                  scanCapacity, countAtGate});
                         continue;
                     }
                     validated.push_back({header, fullStats->Stats});
-                    headerOutcomes.push_back({ObjectHeaderOutcome::Validated, fullScanBudget, scanCapacity});
+                    headerOutcomes.push_back(
+                        {ObjectHeaderOutcome::Validated, fullScanBudget, scanCapacity, countAtGate});
                 }
                 for (size_t index = 0; index < headers.size() && index < headerOutcomes.size() &&
                                        index < options.MaxHeaderEvidencePerStore;
@@ -1184,6 +1195,7 @@ namespace nextdumper::analysis
                     headerEvidence.ObjectsOffset = header.ObjectsOffset;
                     headerEvidence.CountOffset = header.CountOffset;
                     headerEvidence.Count = header.Count;
+                    headerEvidence.CountAtGate = headerOutcomes[index].CountAtGate;
                     headerEvidence.MaxChunksOffset = header.MaxChunksOffset;
                     headerEvidence.MaxChunks = header.MaxChunks;
                     headerEvidence.NumChunksOffset = header.NumChunksOffset;

@@ -85,6 +85,7 @@ namespace nextdumper::analysis
         int32_t ObjectsOffset = -1;
         int32_t CountOffset = -1;
         int32_t Count = 0;
+        int32_t CountAtGate = -1;
         int32_t MaxChunksOffset = -1;
         int32_t MaxChunks = 0;
         int32_t NumChunksOffset = -1;
@@ -106,6 +107,7 @@ namespace nextdumper::analysis
         uint64_t Invalid = 0;
         uint64_t InvalidBetweenValid = 0;
         int32_t DerivedCount = 0;
+        int32_t NonEmptyExtent = 0;
         bool GatesPassed = false;
         std::string GateFailure;
     };
