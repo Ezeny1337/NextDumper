@@ -75,6 +75,7 @@ namespace nextdumper::analysis
         DerivedExceedsCount,
         FullScanRejected,
         BudgetStarved,
+        CountUnreadable,
     };
 
     [[nodiscard]] const char *ObjectHeaderOutcomeName(ObjectHeaderOutcome outcome);

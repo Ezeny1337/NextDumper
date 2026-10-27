@@ -20,6 +20,8 @@ namespace nextdumper::analysis
             return "validated";
         case ObjectHeaderOutcome::DerivedExceedsCount:
             return "derived-exceeds-count";
+        case ObjectHeaderOutcome::CountUnreadable:
+            return "count-unreadable";
         case ObjectHeaderOutcome::FullScanRejected:
             return "full-scan-rejected";
         case ObjectHeaderOutcome::BudgetStarved:
@@ -870,6 +872,7 @@ namespace nextdumper::analysis
             append(ObjectHeaderOutcome::DerivedExceedsCount);
             append(ObjectHeaderOutcome::FullScanRejected);
             append(ObjectHeaderOutcome::BudgetStarved);
+            append(ObjectHeaderOutcome::CountUnreadable);
             if (summary.empty())
                 summary = "unevaluated";
             return summary;
@@ -1105,6 +1108,8 @@ namespace nextdumper::analysis
                 {
                     HeaderCandidate Header;
                     ScanStats Full;
+                    // 与 DerivedCount 同一时刻的 Count，契约观察值以它为准
+                    int32_t CountAtGate = -1;
                 };
                 std::vector<ValidatedHeader> validated;
                 std::vector<HeaderOutcomeRecord> headerOutcomes;
@@ -1170,18 +1175,21 @@ namespace nextdumper::analysis
                             continue;
                         }
                     }
-                    // 判定时刻对同一地址重读，与 header 恢复时读到的 Count 组成同一地址的两个时刻读数
-                    // 活进程的 NumElements 单调不减，因此两者的差能区分字段取值错误与扫描期间数组增长
+                    // 在判定时刻重读同一地址，使 DerivedCount 与 Count 属于同一时刻。
                     int32_t countAtGate = -1;
                     if (!ReadInt32(memory, header.CountAddress, countAtGate))
-                        countAtGate = -1;
-                    if (fullStats->Stats.DerivedCount > header.Count)
+                    {
+                        headerOutcomes.push_back(
+                            {ObjectHeaderOutcome::CountUnreadable, fullScanBudget, scanCapacity, -1});
+                        continue;
+                    }
+                    if (fullStats->Stats.DerivedCount > countAtGate)
                     {
                         headerOutcomes.push_back({ObjectHeaderOutcome::DerivedExceedsCount, fullScanBudget,
                                                   scanCapacity, countAtGate});
                         continue;
                     }
-                    validated.push_back({header, fullStats->Stats});
+                    validated.push_back({header, fullStats->Stats, countAtGate});
                     headerOutcomes.push_back(
                         {ObjectHeaderOutcome::Validated, fullScanBudget, scanCapacity, countAtGate});
                 }
@@ -1253,7 +1261,7 @@ namespace nextdumper::analysis
                 fields.ItemObjectOffset = 0;
                 fields.ItemIndexOffset = store.Layout.IndexOffset;
                 fields.Fixed = store.Fixed;
-                contract.Observation.Count = static_cast<uint32_t>(selected.Header.Count);
+                contract.Observation.Count = static_cast<uint32_t>(selected.CountAtGate);
                 contract.Observation.MaxElements = static_cast<uint32_t>(selected.Header.MaxElements);
                 contract.Observation.Chunks = static_cast<uint32_t>(selected.Header.NumChunks);
                 if (!fields.Complete())
@@ -1263,7 +1271,7 @@ namespace nextdumper::analysis
                 }
                 contract.Evidence.push_back({EvidenceKind::TableLoad, contract.Root, store.Root});
                 contract.Evidence.push_back({EvidenceKind::EntryLoad, contract.Root,
-                                             static_cast<uint64_t>(selected.Header.Count)});
+                                             static_cast<uint64_t>(selected.CountAtGate)});
                 contract.Evidence.push_back({EvidenceKind::ScaleAdd, contract.Root,
                                              static_cast<uint64_t>(store.Layout.Stride)});
                 result.Contracts.push_back(std::move(contract));
