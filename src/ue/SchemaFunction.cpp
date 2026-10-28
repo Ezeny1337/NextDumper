@@ -48,6 +48,7 @@ namespace nextdumper::ue::schema_probe
         }
         size_t excludedDefaultObjects = 0;
         size_t excludedLoadingObjects = 0;
+        size_t functionObjects = 0;
         std::unordered_map<std::string, size_t> classSampleCounts;
         const auto sampleLimitFor = [](const std::string &className)
         {
@@ -60,6 +61,7 @@ namespace nextdumper::ue::schema_probe
             const FieldKind kind = FieldKindFromRuntimeName(object.className, false);
             if (!IsFunctionFieldKind(kind))
                 continue;
+            ++functionObjects;
             // CDO 属于 UFunction 的实例，但它们并不是已被链接的函数定义
             // 采样资格不可依赖于候选的 FunctionFlags 偏移量
             const uint32_t objectFlags = object.flags;
@@ -96,6 +98,39 @@ namespace nextdumper::ue::schema_probe
                                           " excluded_loading=" + std::to_string(excludedLoadingObjects) +
                                           " index_limited=" + std::to_string(session_.indexLimited);
         report.evidence.push_back("UFunction sample eligibility;" + sampleSummary);
+        report.evidence.push_back("UFunction cdo ratio: function_objects=" + std::to_string(functionObjects) +
+                                  " excluded_cdo=" + std::to_string(excludedDefaultObjects) +
+                                  " objects=" + std::to_string(session_.Objects(schema).size()) +
+                                  " index_limited=" + std::to_string(session_.indexLimited));
+        {
+            constexpr size_t kFlagProbeObjects = 256;
+            std::vector<uintptr_t> probeAddresses;
+            for (const auto &object : session_.Objects(schema))
+            {
+                if (probeAddresses.size() >= kFlagProbeObjects)
+                    break;
+                if (!IsFunctionFieldKind(FieldKindFromRuntimeName(object.className, false)))
+                    continue;
+                probeAddresses.push_back(object.address);
+            }
+            std::string probe;
+            for (int32_t offset = 8; offset <= 0x30 && !probeAddresses.empty(); offset += 4)
+            {
+                size_t flagged = 0;
+                for (const uintptr_t address : probeAddresses)
+                {
+                    const auto at = Add(address, offset);
+                    uint32_t value = 0;
+                    if (at && memory_.Read(*at, value) && (value & kRFClassDefaultObject) != 0)
+                        ++flagged;
+                }
+                probe += " @" + std::to_string(offset) + "=" +
+                         std::to_string(flagged * 100 / probeAddresses.size()) + "%";
+            }
+            if (!probe.empty())
+                report.evidence.push_back("UFunction flags offset probe (cdo rate per offset, objects=" +
+                                          std::to_string(probeAddresses.size()) + "):" + probe);
+        }
         if (functions.size() < 2)
         {
             report.failures.push_back("not enough UFunction definition samples;" + sampleSummary);

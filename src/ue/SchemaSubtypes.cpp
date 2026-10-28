@@ -264,19 +264,31 @@ namespace nextdumper::ue::schema_probe
             std::unordered_map<uintptr_t, std::optional<DefinitionKind>> classifications;
             const auto &objects = session.Objects(schema);
             result.collectionLimit = session.indexLimited;
+            size_t skippedNotType = 0;
+            size_t skippedFlags = 0;
+            size_t skippedPropertyKind = 0;
+            size_t skippedOwner = 0;
+            size_t visitedObjects = 0;
             for (const auto &object : objects)
             {
                 if (result.visited.size() >= kMaxProperties || memory.Exhausted())
                     break;
+                ++visitedObjects;
                 auto classification = classifications.find(object.classAddress);
                 if (classification == classifications.end())
                     classification = classifications.emplace(object.classAddress, model.DefinitionKindForClass(object.classAddress)).first;
                 const bool function = IsFunctionFieldKind(FieldKindFromRuntimeName(object.className, false));
                 if (!function && (!classification->second || (*classification->second != DefinitionKind::Class &&
                                                               *classification->second != DefinitionKind::Struct)))
+                {
+                    ++skippedNotType;
                     continue;
+                }
                 if ((object.flags & (kRFClassDefaultObject | kRFUnavailableDefinition)) != 0)
+                {
+                    ++skippedFlags;
                     continue;
+                }
                 const auto first = model.StructProperties(object.address);
                 if (!first)
                 {
@@ -295,9 +307,16 @@ namespace nextdumper::ue::schema_probe
                 {
                     if (result.visited.size() >= kMaxProperties || memory.Exhausted())
                         break;
-                    if (!IsPropertyFieldKind(field.kind) ||
-                        (schema.features.useFProperty && (!field.ownerIsUObject || field.ownerAddress != object.address)))
+                    if (!IsPropertyFieldKind(field.kind))
+                    {
+                        ++skippedPropertyKind;
                         continue;
+                    }
+                    if (schema.features.useFProperty && (!field.ownerIsUObject || field.ownerAddress != object.address))
+                    {
+                        ++skippedOwner;
+                        continue;
+                    }
                     const auto property = model.Property(field);
                     if (!property || !ValidHeader(*property))
                     {
@@ -320,6 +339,13 @@ namespace nextdumper::ue::schema_probe
                                       " incomplete_chains=" + std::to_string(result.incompleteChains) +
                                       " samples_omitted=" + std::to_string(result.omitted) +
                                       " collection_limit=" + std::to_string(result.collectionLimit));
+            report.evidence.push_back("property subtype skip reasons: objects=" + std::to_string(objects.size()) +
+                                      " visited=" + std::to_string(visitedObjects) +
+                                      " skipped_not_type=" + std::to_string(skippedNotType) +
+                                      " skipped_flags=" + std::to_string(skippedFlags) +
+                                      " skipped_property_kind=" + std::to_string(skippedPropertyKind) +
+                                      " skipped_owner=" + std::to_string(skippedOwner) +
+                                      " index_limited=" + std::to_string(session.indexLimited));
             return result;
         }
 
