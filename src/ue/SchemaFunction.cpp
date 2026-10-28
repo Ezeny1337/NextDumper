@@ -585,6 +585,70 @@ namespace nextdumper::ue::schema_probe
                 if (!scan.empty())
                     report.evidence.push_back("UFunction header offset scan (top nonzero):" + scan);
             }
+            {
+                constexpr size_t kSummarySamples = 4;
+                size_t emptyPropertySamples = 0;
+                size_t noParmFlagSamples = 0;
+                size_t positiveCountSamples = 0;
+                std::string detail;
+                size_t captured = 0;
+                for (size_t index = 0; index < functions.size(); ++index)
+                {
+                    const FunctionSample &sample = functions[index];
+                    if (!sample.parameterChainValid || diagnosticCandidate.offset < 0)
+                        continue;
+                    const FunctionObservation &observation = diagnosticCandidate.observations[index];
+                    if (!observation.readable)
+                        continue;
+                    const FunctionParameterSummary &summary = observation.summary;
+                    if (sample.properties.empty())
+                        ++emptyPropertySamples;
+                    if (summary.count > 0)
+                        ++positiveCountSamples;
+                    bool sawParmFlag = false;
+                    bool firstFlagsSet = false;
+                    uint64_t firstFlags = 0;
+                    for (const PropertyMetadata &property : sample.properties)
+                    {
+                        if (!firstFlagsSet)
+                        {
+                            firstFlags = property.flags;
+                            firstFlagsSet = true;
+                        }
+                        if ((property.flags & kCPFParm) != 0)
+                        {
+                            sawParmFlag = true;
+                            break;
+                        }
+                    }
+                    if (!sample.properties.empty() && !sawParmFlag)
+                        ++noParmFlagSamples;
+                    if (captured < kSummarySamples)
+                    {
+                        detail += " s" + std::to_string(captured) +
+                                  "={fn=" + sample.name +
+                                  ",props=" + std::to_string(sample.properties.size()) +
+                                  ",count=" + std::to_string(summary.count) +
+                                  ",paramEnd=" + std::to_string(summary.paramEnd) +
+                                  ",returnOffset=" + std::to_string(summary.returnOffset) +
+                                  ",valid=" + std::to_string(summary.valid) +
+                                  ",layoutConflict=" + std::to_string(summary.layoutConflict) +
+                                  ",sawNonParam=" + std::to_string(summary.sawNonParameter) +
+                                  ",firstPropFlags=" + Hex(firstFlags) + "}";
+                        ++captured;
+                    }
+                }
+                std::string summaryLine =
+                    "UFunction parameter summary sides: func_objects=" + std::to_string(functionObjects) +
+                    " counted_samples=" + std::to_string(parameterChainSamples) +
+                    " empty_properties=" + std::to_string(emptyPropertySamples) +
+                    " no_parm_flag=" + std::to_string(noParmFlagSamples) +
+                    " positive_count=" + std::to_string(positiveCountSamples) +
+                    " cpf_parm_mask=" + Hex(kCPFParm);
+                if (!detail.empty())
+                    summaryLine += detail;
+                report.evidence.push_back(std::move(summaryLine));
+            }
             size_t reportedParameters = 0;
             for (size_t sampleIndex = 0; sampleIndex < functions.size() && reportedParameters < 8; ++sampleIndex)
             {
