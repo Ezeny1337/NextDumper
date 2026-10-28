@@ -587,9 +587,11 @@ namespace nextdumper::ue::schema_probe
             }
             {
                 constexpr int32_t kWindowBytes = 56;
+                constexpr int32_t kReverseBytes = 32;
                 const int32_t baseOffset = diagnosticCandidate.offset;
                 struct HeaderWindow
                 {
+                    std::array<uint8_t, kReverseBytes> before{};
                     std::array<uint8_t, kWindowBytes> bytes{};
                     size_t count = 0;
                     int32_t paramEnd = 0;
@@ -600,7 +602,7 @@ namespace nextdumper::ue::schema_probe
                 {
                     HeaderWindow &window = windows[index];
                     const FunctionSample &sample = functions[index];
-                    if (!sample.parameterChainValid || baseOffset < 0)
+                    if (!sample.parameterChainValid || baseOffset < kReverseBytes)
                         continue;
                     const FunctionObservation &observation = diagnosticCandidate.observations[index];
                     if (!observation.readable || !observation.flagsPlausible)
@@ -608,41 +610,82 @@ namespace nextdumper::ue::schema_probe
                     const FunctionParameterSummary &summary = observation.summary;
                     if (!summary.valid || summary.count > 0xFF || summary.paramEnd < 0 || summary.paramEnd > 0xFFFF)
                         continue;
-                    const auto address = Add(sample.address, baseOffset);
-                    if (!address || !memory_.ReadBytes(*address, window.bytes.data(), window.bytes.size()).Ok())
+                    if (summary.count == 0)
+                        continue;
+                    const auto forwardAddress = Add(sample.address, baseOffset);
+                    const auto reverseAddress = Add(sample.address, baseOffset - kReverseBytes);
+                    if (!forwardAddress || !reverseAddress ||
+                        !memory_.ReadBytes(*forwardAddress, window.bytes.data(), window.bytes.size()).Ok() ||
+                        !memory_.ReadBytes(*reverseAddress, window.before.data(), window.before.size()).Ok())
                         continue;
                     window.count = summary.count;
                     window.paramEnd = summary.paramEnd;
                     window.usable = true;
                 }
-                size_t bestMatches = 0;
-                int32_t bestCountDelta = -1;
-                int32_t bestSizeDelta = -1;
                 size_t usableWindows = 0;
                 for (const HeaderWindow &window : windows)
                     usableWindows += window.usable ? 1u : 0u;
+                size_t bestMatches = 0;
+                int32_t bestCountDelta = -1;
+                int32_t bestSizeDelta = -1;
+                bool bestInReverse = false;
+                const auto evaluate = [&](int32_t countDelta, int32_t sizeDelta, bool reverse, size_t &matches)
+                {
+                    matches = 0;
+                    for (const HeaderWindow &window : windows)
+                    {
+                        if (!window.usable)
+                            continue;
+                        uint8_t value = 0;
+                        uint16_t size = 0;
+                        if (reverse)
+                        {
+                            if (countDelta < 0 || countDelta >= kReverseBytes || sizeDelta < 0 ||
+                                sizeDelta + 1 >= kReverseBytes)
+                                continue;
+                            value = window.before[static_cast<size_t>(countDelta)];
+                            size = static_cast<uint16_t>(window.before[static_cast<size_t>(sizeDelta)] |
+                                                         (window.before[static_cast<size_t>(sizeDelta) + 1] << 8));
+                        }
+                        else
+                        {
+                            if (countDelta + 1 > kWindowBytes || sizeDelta + 2 > kWindowBytes)
+                                continue;
+                            value = window.bytes[static_cast<size_t>(countDelta)];
+                            size = static_cast<uint16_t>(window.bytes[static_cast<size_t>(sizeDelta)] |
+                                                         (window.bytes[static_cast<size_t>(sizeDelta) + 1] << 8));
+                        }
+                        if (value == window.count && size == window.paramEnd)
+                            ++matches;
+                    }
+                };
                 for (int32_t countDelta = 0; countDelta + 1 <= kWindowBytes; ++countDelta)
                 {
                     for (int32_t sizeDelta = 0; sizeDelta + 2 <= kWindowBytes; ++sizeDelta)
                     {
                         size_t matches = 0;
-                        for (const HeaderWindow &window : windows)
-                        {
-                            if (!window.usable)
-                                continue;
-                            // 窗口内小端读取，避免逐组合访问内存源
-                            const uint8_t value = window.bytes[static_cast<size_t>(countDelta)];
-                            const uint16_t size = static_cast<uint16_t>(
-                                window.bytes[static_cast<size_t>(sizeDelta)] |
-                                (window.bytes[static_cast<size_t>(sizeDelta) + 1] << 8));
-                            if (value == window.count && size == window.paramEnd)
-                                ++matches;
-                        }
+                        evaluate(countDelta, sizeDelta, false, matches);
                         if (matches > bestMatches)
                         {
                             bestMatches = matches;
                             bestCountDelta = countDelta;
                             bestSizeDelta = sizeDelta;
+                            bestInReverse = false;
+                        }
+                    }
+                }
+                for (int32_t countDelta = 0; countDelta < kReverseBytes; ++countDelta)
+                {
+                    for (int32_t sizeDelta = 0; sizeDelta + 1 < kReverseBytes; ++sizeDelta)
+                    {
+                        size_t matches = 0;
+                        evaluate(countDelta, sizeDelta, true, matches);
+                        if (matches > bestMatches)
+                        {
+                            bestMatches = matches;
+                            bestCountDelta = countDelta;
+                            bestSizeDelta = sizeDelta;
+                            bestInReverse = true;
                         }
                     }
                 }
@@ -652,6 +695,7 @@ namespace nextdumper::ue::schema_probe
                                               std::to_string(baseOffset) +
                                               " best_count_delta=" + std::to_string(bestCountDelta) +
                                               " best_size_delta=" + std::to_string(bestSizeDelta) +
+                                              " direction=" + std::string(bestInReverse ? "before-flags" : "after-flags") +
                                               " matched=" + std::to_string(bestMatches) +
                                               " usable=" + std::to_string(usableWindows) +
                                               " of_samples=" + std::to_string(parameterChainSamples));
