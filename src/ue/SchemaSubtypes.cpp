@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstring>
 #include <map>
 #include <iomanip>
 #include <sstream>
@@ -528,6 +529,89 @@ namespace nextdumper::ue::schema_probe
                 }
             }
             return owners.size() >= 2 && !budget.memory.Exhausted();
+        }
+
+        struct TailDiagnostics
+        {
+            size_t samples = 0;
+            size_t repNotifyValid = 0;
+            size_t linkNonZero = 0;
+            size_t linkValid = 0;
+            size_t fullyValid = 0;
+            size_t owners = 0;
+            std::array<int32_t, 8> firstRepNotify{};
+            std::array<uintptr_t, 8> firstLinks{};
+            size_t captured = 0;
+        };
+
+        TailDiagnostics DiagnoseTail(const IMemorySource &memory, const RuntimeBinding &binding, const EngineSchema &schema,
+                                     const PropertyTailCandidate &tail, const std::vector<Sample> &samples)
+        {
+            constexpr size_t kDiagReads = 8192;
+            constexpr size_t kCapture = 8;
+            TailDiagnostics result;
+            ProbeMemory diagMemory(memory);
+            diagMemory.ResetBudget(kDiagReads);
+            ObjectModelReader diagModel(diagMemory, binding, schema);
+            if (!diagModel.Initialize())
+                return result;
+            Budget budget{diagMemory};
+            std::set<uintptr_t> owners;
+            for (const auto &sample : samples)
+            {
+                if (budget.memory.Exhausted())
+                    break;
+                ++result.samples;
+                owners.insert(sample.rootOwner);
+                bool sampleValid = true;
+                std::array<uint8_t, 12> name{};
+                const bool readable = budget.Read(sample.metadata.address, tail.repNotify, name.data(),
+                                                  static_cast<size_t>(schema.fname.size));
+                int32_t repNotifyValue = 0;
+                const auto address = Add(sample.metadata.address, tail.repNotify);
+                const bool repNotifyOk = readable && address && diagModel.Names().ReadFName(*address);
+                if (repNotifyOk)
+                {
+                    ++result.repNotifyValid;
+                    std::memcpy(&repNotifyValue, name.data(), sizeof(repNotifyValue));
+                }
+                else
+                {
+                    sampleValid = false;
+                }
+                std::array<uintptr_t, 4> links{};
+                bool linksOk = true;
+                for (int32_t link = 0; link < 4; ++link)
+                {
+                    uintptr_t value = 0;
+                    if (!budget.Read(sample.metadata.address, tail.links + link * static_cast<int32_t>(sizeof(uintptr_t)), value))
+                    {
+                        linksOk = false;
+                        break;
+                    }
+                    links[static_cast<size_t>(link)] = value;
+                    if (value == 0)
+                        continue;
+                    ++result.linkNonZero;
+                    const auto field = diagModel.Field(value);
+                    if (!field || !IsPropertyFieldKind(field->kind))
+                        linksOk = false;
+                }
+                if (linksOk)
+                    ++result.linkValid;
+                else
+                    sampleValid = false;
+                if (sampleValid)
+                    ++result.fullyValid;
+                if (result.captured < kCapture)
+                {
+                    result.firstRepNotify[result.captured] = repNotifyValue;
+                    result.firstLinks[result.captured] = links[0];
+                    ++result.captured;
+                }
+            }
+            result.owners = owners.size();
+            return result;
         }
 
         enum class Observation
@@ -1054,6 +1138,24 @@ namespace nextdumper::ue::schema_probe
                                       " rep_notify=" + std::to_string(candidate.repNotify) + " links=" + std::to_string(candidate.links) +
                                       " data_end=" + std::to_string(candidate.dataEnd) + " complete_size=" + std::to_string(candidate.completeSize) +
                                       " samples=" + std::to_string(samples.tail.size()) + " valid=" + std::to_string(valid));
+            // 有界诊断：TailValid 在首个失败处返回，只留下一条证据。这里用独立预算遍历全部
+            // 样本，给出 repNotify 与 property-link 各自单独成立的比例，用来区分
+            // 「两个字段都错」与「只有一个字段错」。仅统计，不参与判定。
+            const TailDiagnostics diag = DiagnoseTail(memory_, binding_, schema, candidate, samples.tail);
+            std::string diagLine = "property subtype tail diagnostics: layout=" +
+                                   std::string(PropertyTailName(candidate.layout)) +
+                                   " samples=" + std::to_string(diag.samples) +
+                                   " owners=" + std::to_string(diag.owners) +
+                                   " rep_notify_valid=" + std::to_string(diag.repNotifyValid) +
+                                   " link_nonzero=" + std::to_string(diag.linkNonZero) +
+                                   " links_valid=" + std::to_string(diag.linkValid) +
+                                   " fully_valid=" + std::to_string(diag.fullyValid);
+            for (size_t index = 0; index < diag.captured; ++index)
+            {
+                diagLine += " s" + std::to_string(index) + "={rep=" + std::to_string(diag.firstRepNotify[index]) +
+                            ",link0=" + Hex(diag.firstLinks[index]) + "}";
+            }
+            report.evidence.push_back(std::move(diagLine));
             if (valid)
                 tails.push_back(candidate);
         }
