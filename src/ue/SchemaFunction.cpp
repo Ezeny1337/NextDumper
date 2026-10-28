@@ -586,6 +586,78 @@ namespace nextdumper::ue::schema_probe
                     report.evidence.push_back("UFunction header offset scan (top nonzero):" + scan);
             }
             {
+                constexpr int32_t kWindowBytes = 56;
+                const int32_t baseOffset = diagnosticCandidate.offset;
+                struct HeaderWindow
+                {
+                    std::array<uint8_t, kWindowBytes> bytes{};
+                    size_t count = 0;
+                    int32_t paramEnd = 0;
+                    bool usable = false;
+                };
+                std::vector<HeaderWindow> windows(functions.size());
+                for (size_t index = 0; index < functions.size(); ++index)
+                {
+                    HeaderWindow &window = windows[index];
+                    const FunctionSample &sample = functions[index];
+                    if (!sample.parameterChainValid || baseOffset < 0)
+                        continue;
+                    const FunctionObservation &observation = diagnosticCandidate.observations[index];
+                    if (!observation.readable || !observation.flagsPlausible)
+                        continue;
+                    const FunctionParameterSummary &summary = observation.summary;
+                    if (!summary.valid || summary.count > 0xFF || summary.paramEnd < 0 || summary.paramEnd > 0xFFFF)
+                        continue;
+                    const auto address = Add(sample.address, baseOffset);
+                    if (!address || !memory_.ReadBytes(*address, window.bytes.data(), window.bytes.size()).Ok())
+                        continue;
+                    window.count = summary.count;
+                    window.paramEnd = summary.paramEnd;
+                    window.usable = true;
+                }
+                size_t bestMatches = 0;
+                int32_t bestCountDelta = -1;
+                int32_t bestSizeDelta = -1;
+                size_t usableWindows = 0;
+                for (const HeaderWindow &window : windows)
+                    usableWindows += window.usable ? 1u : 0u;
+                for (int32_t countDelta = 0; countDelta + 1 <= kWindowBytes; ++countDelta)
+                {
+                    for (int32_t sizeDelta = 0; sizeDelta + 2 <= kWindowBytes; ++sizeDelta)
+                    {
+                        size_t matches = 0;
+                        for (const HeaderWindow &window : windows)
+                        {
+                            if (!window.usable)
+                                continue;
+                            // 窗口内小端读取，避免逐组合访问内存源
+                            const uint8_t value = window.bytes[static_cast<size_t>(countDelta)];
+                            const uint16_t size = static_cast<uint16_t>(
+                                window.bytes[static_cast<size_t>(sizeDelta)] |
+                                (window.bytes[static_cast<size_t>(sizeDelta) + 1] << 8));
+                            if (value == window.count && size == window.paramEnd)
+                                ++matches;
+                        }
+                        if (matches > bestMatches)
+                        {
+                            bestMatches = matches;
+                            bestCountDelta = countDelta;
+                            bestSizeDelta = sizeDelta;
+                        }
+                    }
+                }
+                if (bestCountDelta >= 0)
+                {
+                    report.evidence.push_back("UFunction NumParms/ParmsSize search: flags_offset=" +
+                                              std::to_string(baseOffset) +
+                                              " best_count_delta=" + std::to_string(bestCountDelta) +
+                                              " best_size_delta=" + std::to_string(bestSizeDelta) +
+                                              " matched=" + std::to_string(bestMatches) +
+                                              " usable=" + std::to_string(usableWindows) +
+                                              " of_samples=" + std::to_string(parameterChainSamples));
+                }
+            }
+            {
                 constexpr size_t kSummarySamples = 4;
                 size_t emptyPropertySamples = 0;
                 size_t noParmFlagSamples = 0;
