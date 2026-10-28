@@ -46,8 +46,11 @@ namespace nextdumper::analysis
         uint32_t IndexHits = 0;
         int32_t ClassOffset = -1;
         uint32_t ClassHits = 0;
+        uint32_t ClassUnique = 0;
         int32_t OuterOffset = -1;
         uint32_t OuterHits = 0;
+        uint32_t OuterUnique = 0;
+        uint32_t OuterNamed = 0;
         std::string CalibrationDetail;
         bool ChunkTable = false;
         int32_t ChunkCount = 0;

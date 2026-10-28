@@ -641,6 +641,8 @@ namespace nextdumper::analysis
             uint32_t Primary = 0;
             uint32_t Secondary = 0;
             uint32_t Hits = 0;
+            uint32_t Tertiary = 0;
+            uint32_t Quaternary = 0;
         };
 
         struct OffsetSelection
@@ -765,6 +767,22 @@ namespace nextdumper::analysis
                     else
                         contract.State = ContractState::Ambiguous;
                 }
+                if (contract.UObject.Class >= 0)
+                {
+                    std::vector<std::string> uniqueClasses;
+                    for (const ObjectSample &sample : full.Samples)
+                    {
+                        const auto address = AddOffset(sample.Address, contract.UObject.Class);
+                        uintptr_t classObject = 0;
+                        std::string className;
+                        if (address && ReadPointer(memory, *address, classObject) &&
+                            IsLikelyObject(memory, classObject) &&
+                            ReadNameAt(memory, names, classObject, contract.UObject.Name, className) &&
+                            std::find(uniqueClasses.begin(), uniqueClasses.end(), className) == uniqueClasses.end())
+                            uniqueClasses.push_back(std::move(className));
+                    }
+                    seed.ClassUnique = static_cast<uint32_t>(uniqueClasses.size());
+                }
             }
 
             std::vector<OffsetStat> outerStats;
@@ -781,6 +799,8 @@ namespace nextdumper::analysis
                     continue;
                 OffsetStat stat;
                 stat.Offset = offset;
+                std::vector<uintptr_t> uniqueOuters;
+                uint32_t namedOuters = 0;
                 for (const ObjectSample &sample : full.Samples)
                 {
                     const auto address = AddOffset(sample.Address, offset);
@@ -791,10 +811,20 @@ namespace nextdumper::analysis
                     {
                         ++stat.Hits;
                         if (outer != 0)
+                        {
                             ++stat.Primary;
+                            if (std::find(uniqueOuters.begin(), uniqueOuters.end(), outer) == uniqueOuters.end())
+                                uniqueOuters.push_back(outer);
+                            std::string outerName;
+                            if (contract.UObject.Name >= 0 &&
+                                ReadNameAt(memory, names, outer, contract.UObject.Name, outerName))
+                                ++namedOuters;
+                        }
                     }
                 }
                 stat.Secondary = stat.Hits;
+                stat.Tertiary = static_cast<uint32_t>(uniqueOuters.size());
+                stat.Quaternary = namedOuters;
                 if (stat.Hits > 0)
                     outerStats.push_back(stat);
             }
@@ -803,10 +833,21 @@ namespace nextdumper::analysis
             {
                 seed.OuterOffset = outer.Value.Offset;
                 seed.OuterHits = outer.Value.Hits;
+                seed.OuterUnique = outer.Value.Tertiary;
+                seed.OuterNamed = outer.Value.Quaternary;
                 if (!outer.Ambiguous)
                     contract.UObject.Outer = outer.Value.Offset;
                 else
                     contract.State = ContractState::Ambiguous;
+            }
+
+            if (contract.State == ContractState::Observed && contract.UObject.Complete())
+            {
+                const bool nameUsable = seed.NameHits >= 8 && seed.NameUnique >= 4;
+                const bool classUsable = seed.ClassHits >= 8 && seed.ClassUnique >= 2;
+                const bool outerUsable = seed.OuterHits >= 8 && seed.OuterUnique >= 3 && seed.OuterNamed >= 3;
+                if (nameUsable && classUsable && outerUsable)
+                    contract.State = ContractState::Validated;
             }
             return contract;
         }

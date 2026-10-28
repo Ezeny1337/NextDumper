@@ -521,6 +521,9 @@ namespace nextdumper::analysis
                                  " class_hits=" + std::to_string(seed.ClassHits) +
                                  " outer_offset=" + std::to_string(seed.OuterOffset) +
                                  " outer_hits=" + std::to_string(seed.OuterHits) +
+                                 " class_unique=" + std::to_string(seed.ClassUnique) +
+                                 " outer_unique=" + std::to_string(seed.OuterUnique) +
+                                 " outer_named=" + std::to_string(seed.OuterNamed) +
                                  " detail=" + seed.CalibrationDetail});
                     }
                 }
