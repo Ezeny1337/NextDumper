@@ -643,6 +643,52 @@ namespace nextdumper::ue::schema_probe
             schema.uobject.outer = uobjectHint->outer;
             report.evidence.push_back("resolved UObject::Outer from analysis hint offset=" +
                                       std::to_string(uobjectHint->outer));
+            int32_t hintValid = 0;
+            int32_t hintNull = 0;
+            int32_t hintSelf = 0;
+            int32_t hintUnreadable = 0;
+            int32_t hintSampleHits = 0;
+            std::unordered_set<uintptr_t> hintUnique;
+            for (const auto &[index, object] : samples)
+            {
+                (void)index;
+                const auto address = Add(object, schema.uobject.outer);
+                uintptr_t value = 0;
+                if (!address || !memory_.Read(*address, value))
+                {
+                    ++hintUnreadable;
+                    continue;
+                }
+                value = binding_.decode.objectOuter(value, *address);
+                if (value == 0)
+                {
+                    ++hintNull;
+                    continue;
+                }
+                if (value == object)
+                {
+                    ++hintSelf;
+                    continue;
+                }
+                if (!IsReadablePointer(memory_, value))
+                {
+                    ++hintUnreadable;
+                    continue;
+                }
+                ++hintValid;
+                hintUnique.insert(value);
+                if (sampleObjects.contains(value))
+                    ++hintSampleHits;
+            }
+            report.evidence.push_back("UObject::Outer hint verification: offset=" +
+                                      std::to_string(schema.uobject.outer) +
+                                      " tested=" + std::to_string(samples.size()) +
+                                      " valid=" + std::to_string(hintValid) +
+                                      " unique=" + std::to_string(hintUnique.size()) +
+                                      " sample_hits=" + std::to_string(hintSampleHits) +
+                                      " null=" + std::to_string(hintNull) +
+                                      " self=" + std::to_string(hintSelf) +
+                                      " unreadable=" + std::to_string(hintUnreadable));
         }
         else
         {
