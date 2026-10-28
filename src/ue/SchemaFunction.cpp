@@ -216,8 +216,6 @@ namespace nextdumper::ue::schema_probe
                 }
                 if (!IsPropertyFieldKind(field.kind))
                     continue;
-                // Parameter semantics consume only the integer header. Subtype payloads
-                // belong to the Property stage and must not add Function dependencies or reads.
                 PropertyMetadata property;
                 static_cast<FieldMetadata &>(property) = field;
                 const auto read = [&](int32_t offset, auto &value)
@@ -336,6 +334,15 @@ namespace nextdumper::ue::schema_probe
         };
         FunctionCandidate best;
         FunctionCandidate bestObserved;
+        struct HeaderScanEntry
+        {
+            int32_t offset = -1;
+            size_t flagHits = 0;
+            size_t shapeHits = 0;
+            size_t zeroShapes = 0;
+            size_t nonzeroShapes = 0;
+        };
+        std::vector<HeaderScanEntry> headerScan;
         size_t equivalentHeaderCandidates = 0;
         size_t parameterChainSamples = 0;
         for (const FunctionSample &sample : functions)
@@ -468,6 +475,22 @@ namespace nextdumper::ue::schema_probe
                        left.sizeMismatches == right.sizeMismatches &&
                        left.returnMismatches == right.returnMismatches;
             };
+            {
+                HeaderScanEntry entry;
+                entry.offset = offset;
+                entry.flagHits = candidate.flagHits;
+                entry.shapeHits = candidate.shapeHits;
+                for (const FunctionObservation &observation : candidate.observations)
+                {
+                    if (!observation.readable)
+                        continue;
+                    if (observation.numParams == 0 && observation.paramSize == 0)
+                        ++entry.zeroShapes;
+                    else
+                        ++entry.nonzeroShapes;
+                }
+                headerScan.push_back(entry);
+            }
             if (candidate.flagHits >= minimumHeaderSamples || candidate.shapeHits >= minimumHeaderSamples)
                 report.evidence.push_back("UFunction header candidate offset=" + std::to_string(offset) +
                                           " readable=" + std::to_string(candidate.headerReadable) +
@@ -521,6 +544,47 @@ namespace nextdumper::ue::schema_probe
                                       std::to_string(diagnosticCandidate.bothMismatches) + " invalid_shape=" +
                                       std::to_string(diagnosticCandidate.invalidShapes) + " return_mismatch=" +
                                       std::to_string(diagnosticCandidate.returnMismatches));
+            {
+                constexpr size_t kRawHeaderSamples = 3;
+                std::string raw;
+                size_t captured = 0;
+                for (size_t index = 0; index < functions.size() && captured < kRawHeaderSamples; ++index)
+                {
+                    const FunctionSample &sample = functions[index];
+                    if (!sample.parameterChainValid || diagnosticCandidate.offset < 0)
+                        continue;
+                    const auto address = Add(sample.address, diagnosticCandidate.offset);
+                    std::array<uint8_t, 10> header{};
+                    if (!address || !memory_.ReadBytes(*address, header.data(), header.size()).Ok())
+                        continue;
+                    raw += " s" + std::to_string(captured) + "=" + Hex(sample.address) + ":";
+                    for (const uint8_t byte : header)
+                        raw += Hex(static_cast<uint64_t>(byte)).substr(2);
+                    ++captured;
+                }
+                if (!raw.empty())
+                    report.evidence.push_back("UFunction header raw bytes at selected offset " +
+                                              std::to_string(diagnosticCandidate.offset) + ":" + raw);
+            }
+            {
+                std::vector<HeaderScanEntry> ranked = headerScan;
+                std::sort(ranked.begin(), ranked.end(), [](const HeaderScanEntry &left, const HeaderScanEntry &right)
+                          { return left.nonzeroShapes > right.nonzeroShapes; });
+                std::string scan;
+                size_t scanned = 0;
+                for (const HeaderScanEntry &entry : ranked)
+                {
+                    if (scanned++ >= 10)
+                        break;
+                    scan += " @off" + std::to_string(entry.offset) +
+                            "=flags" + std::to_string(entry.flagHits) +
+                            "/shape" + std::to_string(entry.shapeHits) +
+                            "/nonzero" + std::to_string(entry.nonzeroShapes) +
+                            "/zero" + std::to_string(entry.zeroShapes);
+                }
+                if (!scan.empty())
+                    report.evidence.push_back("UFunction header offset scan (top nonzero):" + scan);
+            }
             size_t reportedParameters = 0;
             for (size_t sampleIndex = 0; sampleIndex < functions.size() && reportedParameters < 8; ++sampleIndex)
             {
@@ -783,9 +847,6 @@ namespace nextdumper::ue::schema_probe
                                           VersionEvidenceStrength::Medium,
                                           "tail position is build-conditional; does not uniquely identify WITH_LIVE_CODING"});
 
-        // A candidate is evidence only after its UObject identity, outer and complete
-        // UField chain agree on multiple independent owners. Invalid scalar contents
-        // are rejected before dereference, rather than contaminating read statistics.
         std::vector<uintptr_t> owners;
         for (const char *ownerName : {"KismetSystemLibrary", "Actor", "PlayerController"})
         {
