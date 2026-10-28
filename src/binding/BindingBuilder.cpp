@@ -294,7 +294,18 @@ namespace nextdumper::binding
                     objectLayouts = standard.Layouts;
                 }
                 if (objectLayouts.empty())
-                    objectLayouts = objectDiscovery.Discover(objectRoot.address, decode);
+                {
+                    // 标准表导出的布局全部被数据否定时，独立发现仍有机会
+                    // 它不假设引擎的字段声明顺序，只用 chunk 表实测值判定字段位置
+                    const ObjectLayoutDiscoveryResult discovered =
+                        objectDiscovery.Discover(objectRoot.address, decode);
+                    for (const std::string &line : discovered.Evidence)
+                    {
+                        if (progress)
+                            progress("binding_object_discovered " + line);
+                    }
+                    objectLayouts = discovered.Layouts;
+                }
             }
             size_t acceptedObjectLayouts = 0;
             for (const auto &[objectLayout, objectScore] : objectLayouts)

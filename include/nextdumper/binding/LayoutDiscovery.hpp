@@ -26,12 +26,18 @@ namespace nextdumper::binding
         std::vector<std::string> Evidence;
     };
 
+    struct ObjectLayoutDiscoveryResult
+    {
+        std::vector<std::pair<ObjectContainerLayout, double>> Layouts;
+        std::vector<std::string> Evidence;
+    };
+
     class ObjectLayoutDiscovery
     {
     public:
         explicit ObjectLayoutDiscovery(const IMemorySource &memory) : memory_(memory) {}
 
-        [[nodiscard]] std::vector<std::pair<ObjectContainerLayout, double>> Discover(
+        [[nodiscard]] ObjectLayoutDiscoveryResult Discover(
             uintptr_t root,
             const DecodePlan &decode,
             int32_t maxCandidates = 64) const;

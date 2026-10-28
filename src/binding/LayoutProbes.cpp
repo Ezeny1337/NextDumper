@@ -116,9 +116,10 @@ namespace nextdumper::binding
 
         if (layout.kind == ObjectContainerKind::Chunked && !layout.chunkFieldsValidated)
         {
-            // UE 5.6 的 FChunkedFixedUObjectArray 嵌在 FUObjectArray 中
-            // 字段顺序为：Objects、PreAllocatedObjects、MaxElements、NumElements、MaxChunks、NumChunks
+            // FChunkedFixedUObjectArray 的声明顺序在 4.23 到 5.6 全部版本中一致
+            // Objects、PreAllocatedObjects、MaxElements、NumElements、MaxChunks、NumChunks
             // 检查该关系可以避免仅因为数值碰巧等于抽样索引，就把 FUObjectArray 的 ObjFirstGCIndex 等 bookkeeping 字段接受为 NumElements
+            // 该检查只约束按声明顺序给」的候选，字段位置由数据不变量判定的候选置 chunkFieldsValidated 后走数值校验
             const int32_t expectedMaxElements = layout.objectsOffset + static_cast<int32_t>(sizeof(uintptr_t) * 2);
             const int32_t expectedNumElements = expectedMaxElements + static_cast<int32_t>(sizeof(int32_t));
             const int32_t expectedMaxChunks = expectedNumElements + static_cast<int32_t>(sizeof(int32_t));
@@ -126,7 +127,7 @@ namespace nextdumper::binding
                 layout.numElementsOffset != expectedNumElements ||
                 layout.maxChunksOffset != expectedMaxChunks)
             {
-                report.failures.push_back("chunked UObject array field ordering is inconsistent with UE 5.6 source");
+                report.failures.push_back("chunked UObject array field ordering is inconsistent with the engine declaration order");
                 return report;
             }
         }

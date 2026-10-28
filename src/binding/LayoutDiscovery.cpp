@@ -51,6 +51,43 @@ namespace nextdumper::binding
             return Add(base, uIndex * uStride);
         }
 
+        bool Overlaps(int32_t leftOffset, int32_t leftSize, int32_t rightOffset, int32_t rightSize)
+        {
+            return leftOffset < rightOffset + rightSize && rightOffset < leftOffset + leftSize;
+        }
+
+        constexpr int32_t kMaxChunkIndex = 0x1000;
+        int32_t CountChunkPrefix(const IMemorySource &memory, uintptr_t storage, const DecodePlan &decode)
+        {
+            constexpr int32_t kWindowChunks = 64;
+            int32_t prefix = 0;
+            for (int32_t base = 0; base < kMaxChunkIndex; base += kWindowChunks)
+            {
+                std::array<uintptr_t, kWindowChunks> window{};
+                const size_t bytes = static_cast<size_t>(kWindowChunks) * sizeof(uintptr_t);
+                const auto windowAddress = Scaled(storage, base, static_cast<int32_t>(sizeof(uintptr_t)));
+                if (!windowAddress)
+                    break;
+                const auto result = memory.ReadBytes(*windowAddress, window.data(), bytes);
+                const size_t available = result.transferred >= sizeof(uintptr_t)
+                                             ? result.transferred / sizeof(uintptr_t) * sizeof(uintptr_t)
+                                             : 0;
+                bool stopped = false;
+                for (size_t index = 0; index * sizeof(uintptr_t) < available; ++index)
+                {
+                    if (decode.objectChunk(window[index], *windowAddress + index * sizeof(uintptr_t)) == 0)
+                    {
+                        stopped = true;
+                        break;
+                    }
+                    prefix = base + static_cast<int32_t>(index) + 1;
+                }
+                if (stopped || available < bytes)
+                    break;
+            }
+            return std::min(prefix, kMaxChunkIndex);
+        }
+
         bool ReadInt32(const IMemorySource &memory, uintptr_t address, int32_t &value)
         {
             return memory.Read(address, value);
@@ -87,6 +124,109 @@ namespace nextdumper::binding
                    firstFunction != 0 && memory.IsExecutable(firstFunction, sizeof(uintptr_t));
         }
 
+        // AddSingle/AddRange 先递增 NumElements 再返回索引，调用方随后才填充该槽位；
+        // FreeUObjectIndex 只清空槽位，从不回退计数。因此任何已解析对象的槽位必然满足
+        // index < NumElements（写入时刻成立，且计数单调不减）。反过来，若在 [count, capacity)
+        // 内找到可解析对象，则该 count 不可能是 NumElements。
+        // 返回的是采样到的最大已解析下标（-1 表示采样点全空），不是窗口内真实最大值：
+        // 采样可能漏判，但不会凭空造出矛盾，所以误判方向只会「漏否决」而不会「假否决」。
+        // 返回下标而非直接下结论，是因为调用方必须用「探测之后」重读的 count 比较：
+        // 探测期间数组可能继续增长，旧快照会把正常增长误判成矛盾。
+        int64_t MaxResolvedIndexAbove(const IMemorySource &memory, const DecodePlan &decode,
+                                      uintptr_t storage, int32_t chunkPrefix, int32_t elementsPerChunk,
+                                      int32_t stride, bool packed, int32_t objectOffset, int32_t count)
+        {
+            constexpr int32_t kDenseProbes = 64;
+            constexpr int32_t kTailProbes = 8;
+            if (chunkPrefix <= 0 || elementsPerChunk <= 0 || count < 0)
+                return -1;
+            const int64_t capacity = static_cast<int64_t>(chunkPrefix) * elementsPerChunk;
+            if (count >= capacity)
+                return -1;
+
+            int64_t highest = -1;
+            const auto probeIndex = [&](int64_t index)
+            {
+                if (index < count || index >= capacity)
+                    return;
+                const int32_t chunkIndex = static_cast<int32_t>(index / elementsPerChunk);
+                const int32_t withinChunk = static_cast<int32_t>(index % elementsPerChunk);
+                const auto chunkSlot = Scaled(storage, chunkIndex, static_cast<int32_t>(sizeof(uintptr_t)));
+                if (!chunkSlot)
+                    return;
+                uintptr_t rawChunk = 0;
+                if (!memory.Read(*chunkSlot, rawChunk))
+                    return;
+                const uintptr_t chunk = decode.objectChunk(rawChunk, *chunkSlot);
+                if (chunk == 0)
+                    return;
+                const auto item = Scaled(chunk, withinChunk, stride);
+                if (!item)
+                    return;
+                const auto objectSlot = Add(*item, static_cast<uintptr_t>(objectOffset));
+                uintptr_t rawObject = 0;
+                if (!objectSlot || !memory.Read(*objectSlot, rawObject))
+                    return;
+                const uintptr_t object = decode.objectPointer(UnpackObjectItemPointer(rawObject, packed), *objectSlot);
+                if (object != 0 && IsLikelyObject(memory, object))
+                    highest = std::max(highest, index);
+            };
+
+            // 密集段抓住紧邻 count 的矛盾；几何与尾段覆盖稀疏空区，
+            // 避免 count 远低于真实计数时因一段连续空槽而漏判。总探测数仍有界。
+            for (int32_t probe = 0; probe < kDenseProbes; ++probe)
+                probeIndex(static_cast<int64_t>(count) + probe);
+            for (int64_t step = kDenseProbes; step < capacity; step *= 2)
+                probeIndex(static_cast<int64_t>(count) + step);
+            for (int32_t probe = 0; probe < kTailProbes; ++probe)
+                probeIndex(capacity - 1 - probe);
+            return highest;
+        }
+
+        // elementsPerChunk 决定了 index -> (chunk, within) 的映射，因此可以只用 item 数据检验：
+        // 取 chunk 1 起始处的若干槽位，凡能解析到对象的，其 InternalIndex 必须等于
+        // elementsPerChunk + 槽内偏移。若出现不符，则 elementsPerChunk 必错。
+        // 窗口内没有可解析对象时返回 false（无法判定，不是反对证据）——本函数只用于否决，
+        // 不作为接受依据，所以无法判定时必须放行给下游探针。
+        bool ChunkBoundaryContradicted(const IMemorySource &memory, const DecodePlan &decode,
+                                       uintptr_t storage, int32_t chunkPrefix, int32_t elementsPerChunk,
+                                       int32_t stride, int32_t objectOffset, int32_t indexOffset, bool packed)
+        {
+            constexpr int32_t kBoundaryProbes = 8;
+            if (chunkPrefix < 2 || elementsPerChunk <= 0 || stride <= 0 || indexOffset < 0)
+                return false;
+            const auto chunkSlot = Scaled(storage, 1, static_cast<int32_t>(sizeof(uintptr_t)));
+            if (!chunkSlot)
+                return false;
+            uintptr_t rawChunk = 0;
+            if (!memory.Read(*chunkSlot, rawChunk))
+                return false;
+            const uintptr_t chunk = decode.objectChunk(rawChunk, *chunkSlot);
+            if (chunk == 0)
+                return false;
+            for (int32_t withinChunk = 0; withinChunk < kBoundaryProbes; ++withinChunk)
+            {
+                const int32_t index = elementsPerChunk + withinChunk;
+                const auto item = Scaled(chunk, withinChunk, stride);
+                if (!item)
+                    return false;
+                const auto objectSlot = Add(*item, static_cast<uintptr_t>(objectOffset));
+                uintptr_t rawObject = 0;
+                if (!objectSlot || !memory.Read(*objectSlot, rawObject))
+                    continue;
+                const uintptr_t object = decode.objectPointer(UnpackObjectItemPointer(rawObject, packed), *objectSlot);
+                if (object == 0 || !IsLikelyObject(memory, object))
+                    continue;
+                const auto indexAddress = Add(object, static_cast<uintptr_t>(indexOffset));
+                int32_t reported = 0;
+                if (!indexAddress || !memory.Read(*indexAddress, reported))
+                    continue;
+                if (decode.objectIndex(reported, *indexAddress) != index)
+                    return true;
+            }
+            return false;
+        }
+
         void AddUniqueObjectCandidate(std::vector<std::pair<ObjectContainerLayout, double>> &out,
                                       ObjectContainerLayout layout,
                                       double confidence,
@@ -94,8 +234,14 @@ namespace nextdumper::binding
         {
             for (const auto &[existing, score] : out)
             {
+                // 容量字段偏移也计入身份：仅差 maxElements/maxChunks/numChunks 的候选
+                // 在读取器看来是不同的契约，不能互相吞掉
                 if (existing.kind == layout.kind && existing.objectsOffset == layout.objectsOffset &&
-                    existing.numElementsOffset == layout.numElementsOffset && existing.elementsPerChunk == layout.elementsPerChunk &&
+                    existing.numElementsOffset == layout.numElementsOffset &&
+                    existing.maxElementsOffset == layout.maxElementsOffset &&
+                    existing.maxChunksOffset == layout.maxChunksOffset &&
+                    existing.numChunksOffset == layout.numChunksOffset &&
+                    existing.elementsPerChunk == layout.elementsPerChunk &&
                     existing.itemObjectOffset == layout.itemObjectOffset && existing.itemStride == layout.itemStride &&
                     existing.itemIndexOffset == layout.itemIndexOffset && existing.packedPointers == layout.packedPointers)
                     return;
@@ -194,12 +340,12 @@ namespace nextdumper::binding
         return false;
     }
 
-    std::vector<std::pair<ObjectContainerLayout, double>> ObjectLayoutDiscovery::Discover(
+    ObjectLayoutDiscoveryResult ObjectLayoutDiscovery::Discover(
         uintptr_t root,
         const DecodePlan &decode,
         int32_t maxCandidates) const
     {
-        std::vector<std::pair<ObjectContainerLayout, double>> result;
+        ObjectLayoutDiscoveryResult result;
         if (root == 0 || maxCandidates <= 0 || !memory_.IsReadable(root, 0x40))
             return result;
 
@@ -223,6 +369,57 @@ namespace nextdumper::binding
                                                      at->second.objectOffset, at->second.stride,
                                                      at->second.indexOffset, at->second.confidence);
             return at->second;
+        };
+
+        constexpr size_t kMaxDiscoveryEvidence = 8;
+        size_t chunkEvidence = 0;
+
+        // 每个 storage 的 chunk 表形态只读一次：连续非空前缀数，以及在 header 窗口内
+        // 取值等于该前缀数的字段偏移。两者都只依赖 storage，与 count/容量字段无关，
+        // 因此可以提到最内层循环之外，避免把偏移枚举乘进组合数。
+        struct ChunkFacts
+        {
+            int32_t prefix = 0;
+            std::vector<int32_t> matchingOffsets;
+        };
+        std::map<uintptr_t, ChunkFacts> chunkFacts;
+        const auto chunkFactsFor = [&](uintptr_t storage) -> const ChunkFacts &
+        {
+            const auto cached = chunkFacts.find(storage);
+            if (cached != chunkFacts.end())
+                return cached->second;
+            ChunkFacts facts;
+            facts.prefix = CountChunkPrefix(memory_, storage, decode);
+            if (facts.prefix > 0)
+            {
+                for (int32_t offset = 0; offset <= headerBytes - static_cast<int32_t>(sizeof(int32_t)); offset += 4)
+                {
+                    int32_t value = 0;
+                    if (!ReadInt32(memory_, root + static_cast<uintptr_t>(offset), value))
+                        continue;
+                    value = decode.objectCount(value, root + static_cast<uintptr_t>(offset));
+                    if (value != facts.prefix)
+                        continue;
+                    facts.matchingOffsets.push_back(offset);
+                }
+            }
+            return chunkFacts.emplace(storage, std::move(facts)).first->second;
+        };
+
+        // MaxResolvedIndexAbove 的采样结果只取决于 storage、chunk 几何、item 形状与 count 取值，
+        // 与 count/maxElements/maxChunks/numChunks 的偏移无关。缓存后，偏移枚举不会把
+        // 采样成本乘进组合数——否则光是 numChunks 偏移的自由枚举就会放大一个数量级。
+        std::map<std::tuple<uintptr_t, int32_t, int32_t, int32_t, bool, int32_t>, int64_t> resolvedCache;
+        const auto sampledAboveFor = [&](uintptr_t storage, int32_t chunkPrefix, int32_t elementsPerChunk,
+                                         const Shape &shape, bool packed, int32_t count) -> int64_t
+        {
+            const auto key = std::make_tuple(storage, elementsPerChunk, shape.stride, shape.objectOffset, packed, count);
+            const auto cached = resolvedCache.find(key);
+            if (cached != resolvedCache.end())
+                return cached->second;
+            const int64_t highest = MaxResolvedIndexAbove(memory_, decode, storage, chunkPrefix, elementsPerChunk,
+                                                          shape.stride, packed, shape.objectOffset, count);
+            return resolvedCache.emplace(key, highest).first->second;
         };
 
         for (int32_t pointerOffset = 0; pointerOffset <= headerBytes - static_cast<int32_t>(sizeof(uintptr_t)); pointerOffset += 4)
@@ -253,7 +450,7 @@ namespace nextdumper::binding
                     layout.itemObjectOffset = fixedShape.objectOffset;
                     layout.itemStride = fixedShape.stride;
                     layout.itemIndexOffset = fixedShape.indexOffset;
-                    AddUniqueObjectCandidate(result, std::move(layout), 0.30 + 0.70 * fixedShape.confidence, maxCandidates);
+                    AddUniqueObjectCandidate(result.Layouts, std::move(layout), 0.30 + 0.70 * fixedShape.confidence, maxCandidates);
                 }
 
                 for (int32_t maxElementsOffset = 0; maxElementsOffset <= headerBytes - static_cast<int32_t>(sizeof(int32_t)); maxElementsOffset += 4)
@@ -265,7 +462,7 @@ namespace nextdumper::binding
                     if (maxElements <= count || maxElements > 0x08000000 || maxElements % 0x1000 != 0)
                         continue;
 
-                    for (int32_t maxChunksOffset = 0; maxChunksOffset <= headerBytes - 2 * static_cast<int32_t>(sizeof(int32_t)); maxChunksOffset += 4)
+                    for (int32_t maxChunksOffset = 0; maxChunksOffset <= headerBytes - static_cast<int32_t>(sizeof(int32_t)); maxChunksOffset += 4)
                     {
                         int32_t maxChunks = 0;
                         if (!ReadInt32(memory_, root + static_cast<uintptr_t>(maxChunksOffset), maxChunks))
@@ -273,25 +470,125 @@ namespace nextdumper::binding
                         if (maxChunks <= 0 || maxChunks > 0x1000 || maxElements % maxChunks != 0)
                             continue;
                         const int32_t elementsPerChunk = maxElements / maxChunks;
-                        for (int packed = 0; packed <= (sizeof(uintptr_t) == 8 ? 1 : 0); ++packed)
+                        // NumChunks 不再是「MaxChunks 的下一个 int32」，而是取窗口内取值等于
+                        // chunk 表实测连续非空前缀数的字段；该关系只依赖 chunk 表本身。
+                        const ChunkFacts &facts = chunkFactsFor(storage);
+                        if (facts.prefix <= 0 || facts.prefix > maxChunks)
+                            continue;
+                        for (const int32_t numChunksOffset : facts.matchingOffsets)
                         {
-                            const auto &chunkShape = shapeFor(storage, true, packed != 0, elementsPerChunk);
-                            if (!chunkShape.valid)
+                            // 字段必须互不重叠，否则同一段字节会被当成两个语义
+                            constexpr int32_t wordSize = static_cast<int32_t>(sizeof(int32_t));
+                            constexpr int32_t pointerSize = static_cast<int32_t>(sizeof(uintptr_t));
+                            const std::array<int32_t, 5> fieldOffsets = {
+                                pointerOffset, countOffset, maxElementsOffset, maxChunksOffset, numChunksOffset};
+                            bool distinct = true;
+                            for (size_t index = 0; index < fieldOffsets.size() && distinct; ++index)
+                            {
+                                const int32_t leftSize = index == 0 ? pointerSize : wordSize;
+                                for (size_t other = index + 1; other < fieldOffsets.size(); ++other)
+                                {
+                                    const int32_t rightSize = other == 0 ? pointerSize : wordSize;
+                                    distinct = distinct && !Overlaps(fieldOffsets[index], leftSize,
+                                                                     fieldOffsets[other], rightSize);
+                                }
+                            }
+                            if (!distinct)
                                 continue;
 
-                            ObjectContainerLayout layout;
-                            layout.kind = ObjectContainerKind::Chunked;
-                            layout.objectsOffset = pointerOffset;
-                            layout.numElementsOffset = countOffset;
-                            layout.maxElementsOffset = maxElementsOffset;
-                            layout.maxChunksOffset = maxChunksOffset;
-                            layout.elementsPerChunk = elementsPerChunk;
-                            layout.itemObjectOffset = chunkShape.objectOffset;
-                            layout.itemStride = chunkShape.stride;
-                            layout.itemIndexOffset = chunkShape.indexOffset;
-                            layout.packedPointers = packed != 0;
-                            layout.numChunksOffset = maxChunksOffset + static_cast<int32_t>(sizeof(int32_t));
-                            AddUniqueObjectCandidate(result, std::move(layout), 0.35 + 0.65 * chunkShape.confidence, maxCandidates);
+                            for (int packed = 0; packed <= (sizeof(uintptr_t) == 8 ? 1 : 0); ++packed)
+                            {
+                                const auto &chunkShape = shapeFor(storage, true, packed != 0, elementsPerChunk);
+                                if (!chunkShape.valid)
+                                    continue;
+
+                                // elementsPerChunk 决定 index -> (chunk, within) 的映射，可用 chunk 1
+                                // 起始处对象的 InternalIndex 独立检验；读不到可判定样本时放行给下游探针。
+                                if (ChunkBoundaryContradicted(memory_, decode, storage, facts.prefix, elementsPerChunk,
+                                                              chunkShape.stride, chunkShape.objectOffset,
+                                                              chunkShape.indexOffset, packed != 0))
+                                {
+                                    if (chunkEvidence < kMaxDiscoveryEvidence)
+                                    {
+                                        ++chunkEvidence;
+                                        result.Evidence.push_back(
+                                            "chunked candidate objects=" + std::to_string(pointerOffset) +
+                                            " count=" + std::to_string(countOffset) +
+                                            " max_elements=" + std::to_string(maxElementsOffset) +
+                                            " max_chunks=" + std::to_string(maxChunksOffset) +
+                                            " num_chunks=" + std::to_string(numChunksOffset) +
+                                            " status=rejected reason=chunk-boundary-contradicted"
+                                            " elements_per_chunk=" +
+                                            std::to_string(elementsPerChunk));
+                                    }
+                                    break;
+                                }
+
+                                // 计数下界校验：先探测 [count, capacity) 是否已有对象，再重读 count。
+                                // 必须用探测后的重读值比较——活进程在探测窗口内仍会分配，
+                                // 拿探测前的快照比较会把正常增长判成矛盾。
+                                const int64_t highest = sampledAboveFor(
+                                    storage, facts.prefix, elementsPerChunk, chunkShape, packed != 0, count);
+                                if (highest >= 0)
+                                {
+                                    int32_t countAfterProbe = 0;
+                                    if (!ReadInt32(memory_, root + static_cast<uintptr_t>(countOffset), countAfterProbe))
+                                        continue;
+                                    countAfterProbe = decode.objectCount(
+                                        countAfterProbe, root + static_cast<uintptr_t>(countOffset));
+                                    if (highest >= countAfterProbe)
+                                    {
+                                        if (chunkEvidence < kMaxDiscoveryEvidence)
+                                        {
+                                            ++chunkEvidence;
+                                            result.Evidence.push_back(
+                                                "chunked candidate objects=" + std::to_string(pointerOffset) +
+                                                " count=" + std::to_string(countOffset) +
+                                                " max_elements=" + std::to_string(maxElementsOffset) +
+                                                " max_chunks=" + std::to_string(maxChunksOffset) +
+                                                " num_chunks=" + std::to_string(numChunksOffset) +
+                                                " status=rejected reason=count-boundary-contradicted count=" +
+                                                std::to_string(countAfterProbe) +
+                                                " resolved_index=" + std::to_string(highest));
+                                        }
+                                        break;
+                                    }
+                                }
+
+                                ObjectContainerLayout layout;
+                                layout.kind = ObjectContainerKind::Chunked;
+                                layout.objectsOffset = pointerOffset;
+                                layout.numElementsOffset = countOffset;
+                                layout.maxElementsOffset = maxElementsOffset;
+                                layout.maxChunksOffset = maxChunksOffset;
+                                layout.numChunksOffset = numChunksOffset;
+                                layout.elementsPerChunk = elementsPerChunk;
+                                layout.itemObjectOffset = chunkShape.objectOffset;
+                                layout.itemStride = chunkShape.stride;
+                                layout.itemIndexOffset = chunkShape.indexOffset;
+                                layout.packedPointers = packed != 0;
+                                // 该候选的五个字段位置由 chunk 表实测前缀数与 item 索引一致性判定，
+                                // 不依赖引擎声明顺序；下游探针据此跳过固定字段顺序检查，改走数值校验。
+                                // 计数下界判据在采样点全空时无法否决，此时本标志仅表示「未发现反证」，
+                                // 接受与否仍由下游探针的 valid/confidence 门槛决定。
+                                layout.chunkFieldsValidated = true;
+                                AddUniqueObjectCandidate(result.Layouts, std::move(layout),
+                                                         0.35 + 0.65 * chunkShape.confidence, maxCandidates);
+                                if (chunkEvidence < kMaxDiscoveryEvidence)
+                                {
+                                    ++chunkEvidence;
+                                    result.Evidence.push_back(
+                                        "chunked candidate objects=" + std::to_string(pointerOffset) +
+                                        " count=" + std::to_string(countOffset) +
+                                        " max_elements=" + std::to_string(maxElementsOffset) +
+                                        " max_chunks=" + std::to_string(maxChunksOffset) +
+                                        " num_chunks=" + std::to_string(numChunksOffset) +
+                                        " chunk_prefix=" + std::to_string(facts.prefix) +
+                                        " elements_per_chunk=" + std::to_string(elementsPerChunk) +
+                                        " item_stride=" + std::to_string(chunkShape.stride) +
+                                        " status=accepted");
+                                }
+                            }
                         }
                     }
                 }
