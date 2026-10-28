@@ -744,27 +744,63 @@ namespace nextdumper::ue::schema_probe
 
         int32_t bestFlagsOffset = -1;
         int32_t bestFlagsHits = 0;
-        for (int32_t offset = static_cast<int32_t>(sizeof(uintptr_t)); offset <= 0x40; offset += 4)
         {
-            int32_t hits = 0;
-            for (const auto &[index, object] : samples)
+            // 8 字节指针占两个 4 字节槽；落在指针高 32 位的偏移会读到指针高位
+            // RF_ClassDefaultObject(0x10) 等低位标志会被指针内容随机置位
+            // 这类偏移的特征是 CDO 命中率接近饱和，必须从候选中排除
+            int32_t saturatedOffset = -1;
+            size_t saturatedHits = 0;
+            size_t saturatedTested = 0;
+            int32_t bestHitsDetail = 0;
+            size_t bestTestedDetail = 0;
+            for (int32_t offset = static_cast<int32_t>(sizeof(uintptr_t)); offset <= 0x40; offset += 4)
             {
-                (void)index;
-                const auto address = Add(object, offset);
-                if (!address)
+                int32_t hits = 0;
+                size_t tested = 0;
+                size_t cdoHits = 0;
+                for (const auto &[index, object] : samples)
+                {
+                    (void)index;
+                    const auto address = Add(object, offset);
+                    if (!address)
+                        continue;
+                    int32_t rawFlags = 0;
+                    if (!memory_.Read(*address, rawFlags))
+                        continue;
+                    ++tested;
+                    const uint32_t flags = static_cast<uint32_t>(binding_.decode.objectFlags(rawFlags, *address));
+                    if ((flags & 0xFFFF0000u) == 0 && (flags & 0x1u) != 0)
+                        ++hits;
+                    if ((flags & 0x10u) != 0)
+                        ++cdoHits;
+                }
+                // RF_ClassDefaultObject 只属于 UClass 的默认对象，正常工程里远非全员
+                // 一个偏移若在全部可读样本上都带该标志，说明它读到的是指针高位而非 Flags
+                // 样本过少时饱和是常态，故要求足够样本量
+                constexpr size_t kSaturationMinTested = 16;
+                if (tested >= kSaturationMinTested && cdoHits == tested)
+                {
+                    if (cdoHits > saturatedHits)
+                    {
+                        saturatedHits = cdoHits;
+                        saturatedOffset = offset;
+                        saturatedTested = tested;
+                    }
                     continue;
-                int32_t rawFlags = 0;
-                if (!memory_.Read(*address, rawFlags))
-                    continue;
-                const uint32_t flags = static_cast<uint32_t>(binding_.decode.objectFlags(rawFlags, *address));
-                if ((flags & 0xFFFF0000u) == 0 && (flags & 0x1u) != 0)
-                    ++hits;
+                }
+                if (hits > bestFlagsHits)
+                {
+                    bestFlagsHits = hits;
+                    bestFlagsOffset = offset;
+                    bestHitsDetail = hits;
+                    bestTestedDetail = tested;
+                }
             }
-            if (hits > bestFlagsHits)
-            {
-                bestFlagsHits = hits;
-                bestFlagsOffset = offset;
-            }
+            report.evidence.push_back("UObject::Flags candidate search: selected=" + std::to_string(bestFlagsOffset) +
+                                      " hits=" + std::to_string(bestHitsDetail) + "/" + std::to_string(bestTestedDetail) +
+                                      " saturated_offset=" + std::to_string(saturatedOffset) +
+                                      " saturated_cdo_hits=" + std::to_string(saturatedHits) + "/" +
+                                      std::to_string(saturatedTested));
         }
         if (bestFlagsHits >= 3)
             schema.uobject.flags = bestFlagsOffset;
