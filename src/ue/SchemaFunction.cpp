@@ -765,6 +765,67 @@ namespace nextdumper::ue::schema_probe
                     summaryLine += detail;
                 report.evidence.push_back(std::move(summaryLine));
             }
+            {
+                constexpr int32_t kCandidateBack = 12;
+                const int32_t altOffset = diagnosticCandidate.offset - kCandidateBack;
+                if (altOffset >= 0)
+                {
+                    size_t altFlagHits = 0;
+                    size_t altReadable = 0;
+                    size_t altCountMatches = 0;
+                    size_t altSizeMatches = 0;
+                    size_t altConstraints = 0;
+                    std::string altSample;
+                    for (size_t index = 0; index < functions.size(); ++index)
+                    {
+                        const FunctionSample &sample = functions[index];
+                        if (!sample.parameterChainValid)
+                            continue;
+                        const FunctionObservation &observation = diagnosticCandidate.observations[index];
+                        if (!observation.readable || !observation.flagsPlausible)
+                            continue;
+                        const FunctionParameterSummary &summary = observation.summary;
+                        if (!summary.valid || summary.count == 0)
+                            continue;
+                        ++altConstraints;
+                        const auto flagsAddress = Add(sample.address, altOffset);
+                        uint32_t altFlags = 0;
+                        if (!flagsAddress || !memory_.ReadBytes(*flagsAddress, &altFlags, sizeof(altFlags)).Ok())
+                            continue;
+                        ++altReadable;
+                        if (!isPlausibleFunctionFlags(altFlags))
+                            continue;
+                        ++altFlagHits;
+                        uint8_t countValue = 0;
+                        uint16_t sizeValue = 0;
+                        const auto countAddress = Add(sample.address, altOffset + 4);
+                        const auto sizeAddress = Add(sample.address, altOffset + 6);
+                        if (!countAddress || !sizeAddress ||
+                            !memory_.ReadBytes(*countAddress, &countValue, sizeof(countValue)).Ok() ||
+                            !memory_.ReadBytes(*sizeAddress, &sizeValue, sizeof(sizeValue)).Ok())
+                            continue;
+                        if (countValue == summary.count)
+                            ++altCountMatches;
+                        if (sizeValue == summary.paramEnd)
+                            ++altSizeMatches;
+                        if (altSample.size() < 300)
+                            altSample += " s={addr=" + Hex(sample.address) + ",flags=" + Hex(altFlags) +
+                                         ",count=" + std::to_string(countValue) +
+                                         ",size=" + std::to_string(sizeValue) +
+                                         ",expect_count=" + std::to_string(summary.count) +
+                                         ",expect_size=" + std::to_string(summary.paramEnd) + "}";
+                    }
+                    report.evidence.push_back("UFunction flags position check: selected=" +
+                                              std::to_string(diagnosticCandidate.offset) +
+                                              " alt=" + std::to_string(altOffset) +
+                                              " constraints=" + std::to_string(altConstraints) +
+                                              " alt_readable=" + std::to_string(altReadable) +
+                                              " alt_flags_plausible=" + std::to_string(altFlagHits) +
+                                              " alt_count_match=" + std::to_string(altCountMatches) +
+                                              " alt_size_match=" + std::to_string(altSizeMatches) +
+                                              altSample);
+                }
+            }
             size_t reportedParameters = 0;
             for (size_t sampleIndex = 0; sampleIndex < functions.size() && reportedParameters < 8; ++sampleIndex)
             {
