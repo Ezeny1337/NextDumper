@@ -542,6 +542,14 @@ namespace nextdumper::ue::schema_probe
             std::array<int32_t, 8> firstRepNotify{};
             std::array<uintptr_t, 8> firstLinks{};
             size_t captured = 0;
+            size_t linkUnreadable = 0;
+            size_t linkNotField = 0;
+            size_t linkWrongKind = 0;
+            std::array<uintptr_t, 4> firstNotField{};
+            std::array<uintptr_t, 4> firstWrongKind{};
+            size_t notFieldCaptured = 0;
+            size_t wrongKindCaptured = 0;
+            std::array<std::string, 4> firstWrongKindNames{};
         };
 
         TailDiagnostics DiagnoseTail(const IMemorySource &memory, const RuntimeBinding &binding, const EngineSchema &schema,
@@ -587,6 +595,7 @@ namespace nextdumper::ue::schema_probe
                     if (!budget.Read(sample.metadata.address, tail.links + link * static_cast<int32_t>(sizeof(uintptr_t)), value))
                     {
                         linksOk = false;
+                        ++result.linkUnreadable;
                         break;
                     }
                     links[static_cast<size_t>(link)] = value;
@@ -594,8 +603,28 @@ namespace nextdumper::ue::schema_probe
                         continue;
                     ++result.linkNonZero;
                     const auto field = diagModel.Field(value);
-                    if (!field || !IsPropertyFieldKind(field->kind))
+                    if (!field)
+                    {
                         linksOk = false;
+                        ++result.linkNotField;
+                        if (result.notFieldCaptured < result.firstNotField.size())
+                        {
+                            result.firstNotField[result.notFieldCaptured] = value;
+                            ++result.notFieldCaptured;
+                        }
+                        continue;
+                    }
+                    if (!IsPropertyFieldKind(field->kind))
+                    {
+                        linksOk = false;
+                        ++result.linkWrongKind;
+                        if (result.wrongKindCaptured < result.firstWrongKind.size())
+                        {
+                            result.firstWrongKind[result.wrongKindCaptured] = value;
+                            result.firstWrongKindNames[result.wrongKindCaptured] = field->className;
+                            ++result.wrongKindCaptured;
+                        }
+                    }
                 }
                 if (linksOk)
                     ++result.linkValid;
@@ -1156,6 +1185,17 @@ namespace nextdumper::ue::schema_probe
                             ",link0=" + Hex(diag.firstLinks[index]) + "}";
             }
             report.evidence.push_back(std::move(diagLine));
+            std::string causeLine = "property subtype tail link causes: layout=" +
+                                    std::string(PropertyTailName(candidate.layout)) +
+                                    " unreadable=" + std::to_string(diag.linkUnreadable) +
+                                    " not_field=" + std::to_string(diag.linkNotField) +
+                                    " wrong_kind=" + std::to_string(diag.linkWrongKind);
+            for (size_t index = 0; index < diag.notFieldCaptured; ++index)
+                causeLine += " nf" + std::to_string(index) + "=" + Hex(diag.firstNotField[index]);
+            for (size_t index = 0; index < diag.wrongKindCaptured; ++index)
+                causeLine += " wk" + std::to_string(index) + "=" + Hex(diag.firstWrongKind[index]) +
+                             ":" + diag.firstWrongKindNames[index];
+            report.evidence.push_back(std::move(causeLine));
             if (valid)
                 tails.push_back(candidate);
         }
