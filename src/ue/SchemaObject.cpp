@@ -791,62 +791,129 @@ namespace nextdumper::ue::schema_probe
         int32_t bestFlagsOffset = -1;
         int32_t bestFlagsHits = 0;
         {
-            // 8 字节指针占两个 4 字节槽；落在指针高 32 位的偏移会读到指针高位
-            // RF_ClassDefaultObject(0x10) 等低位标志会被指针内容随机置位
-            // 这类偏移的特征是 CDO 命中率接近饱和，必须从候选中排除
-            int32_t saturatedOffset = -1;
-            size_t saturatedHits = 0;
-            size_t saturatedTested = 0;
-            int32_t bestHitsDetail = 0;
-            size_t bestTestedDetail = 0;
+            // 先按 UClass 默认对象的命名约定收集约束：UClass::GetDefaultObjectName 生成的名字
+            // 形如 Default__<Class>，因此名字带该前缀的对象必然带 RF_ClassDefaultObject
+            // 这条关系来自引擎命名规则，与内存布局、进程地址均无关，可作为偏移的硬判据
+            const auto readObjectName = [&](uintptr_t object)
+            { return ReadObjectName(memory_, binding_, schema, names, object); };
+            struct FlagProbe
+            {
+                uintptr_t address = 0;
+                bool defaultNamed = false;
+            };
+            std::vector<FlagProbe> probes;
+            for (const auto &[index, object] : samples)
+            {
+                (void)index;
+                FlagProbe probe;
+                probe.address = object;
+                const auto name = readObjectName(object);
+                probe.defaultNamed = name.has_value() && name->rfind("Default__", 0) == 0;
+                probes.push_back(probe);
+            }
+            size_t defaultNamedCount = 0;
+            for (const FlagProbe &probe : probes)
+                defaultNamedCount += probe.defaultNamed ? 1u : 0u;
+
+            struct FlagsCandidate
+            {
+                int32_t offset = -1;
+                size_t hits = 0;
+                size_t tested = 0;
+                // 名字带 Default__ 前缀的对象中，带 CDO 标志的数量
+                size_t defaultSatisfied = 0;
+                // 名字带 Default__ 前缀且可读的样本数（分母）
+                size_t defaultTested = 0;
+                // 名字不带该前缀却带 CDO 标志的数量（允许少量例外）
+                size_t nonDefaultFlagged = 0;
+                // 名字不带该前缀且可读的样本数（分母）
+                size_t nonDefaultTested = 0;
+                bool consistent = false;
+            };
+            std::vector<FlagsCandidate> candidates;
             for (int32_t offset = static_cast<int32_t>(sizeof(uintptr_t)); offset <= 0x40; offset += 4)
             {
-                int32_t hits = 0;
-                size_t tested = 0;
-                size_t cdoHits = 0;
-                for (const auto &[index, object] : samples)
+                FlagsCandidate candidate;
+                candidate.offset = offset;
+                for (const FlagProbe &probe : probes)
                 {
-                    (void)index;
-                    const auto address = Add(object, offset);
+                    const auto address = Add(probe.address, offset);
                     if (!address)
                         continue;
                     int32_t rawFlags = 0;
                     if (!memory_.Read(*address, rawFlags))
                         continue;
-                    ++tested;
+                    ++candidate.tested;
                     const uint32_t flags = static_cast<uint32_t>(binding_.decode.objectFlags(rawFlags, *address));
                     if ((flags & 0xFFFF0000u) == 0 && (flags & 0x1u) != 0)
-                        ++hits;
-                    if ((flags & 0x10u) != 0)
-                        ++cdoHits;
-                }
-                // RF_ClassDefaultObject 只属于 UClass 的默认对象，正常工程里远非全员
-                // 一个偏移若在全部可读样本上都带该标志，说明它读到的是指针高位而非 Flags
-                // 样本过少时饱和是常态，故要求足够样本量
-                constexpr size_t kSaturationMinTested = 16;
-                if (tested >= kSaturationMinTested && cdoHits == tested)
-                {
-                    if (cdoHits > saturatedHits)
+                        ++candidate.hits;
+                    const bool cdo = (flags & 0x10u) != 0;
+                    if (probe.defaultNamed)
                     {
-                        saturatedHits = cdoHits;
-                        saturatedOffset = offset;
-                        saturatedTested = tested;
+                        ++candidate.defaultTested;
+                        if (cdo)
+                            ++candidate.defaultSatisfied;
                     }
-                    continue;
+                    else
+                    {
+                        ++candidate.nonDefaultTested;
+                        if (cdo)
+                            ++candidate.nonDefaultFlagged;
+                    }
                 }
-                if (hits > bestFlagsHits)
+                // 两条同时成立才算一致：
+                //   1. 全部 Default__ 对象都带该标志（名字约定必然成立）
+                //   2. 非 Default__ 对象带该标志的比例不超过四分之一
+                // 只满足第 1 条无法排除读到了指针高位
+                // 指针高位的 0x10 位在 Default__ 与非 Default__ 对象上都会随机置位
+                const bool defaultsAllFlagged =
+                    candidate.defaultTested > 0 && candidate.defaultSatisfied == candidate.defaultTested;
+                const bool nonDefaultsRarelyFlagged =
+                    candidate.nonDefaultTested == 0 ||
+                    candidate.nonDefaultFlagged * 4 <= candidate.nonDefaultTested;
+                candidate.consistent = defaultsAllFlagged && nonDefaultsRarelyFlagged;
+                candidates.push_back(candidate);
+            }
+            std::string detail;
+            size_t detailed = 0;
+            for (const FlagsCandidate &candidate : candidates)
+            {
+                if (detailed++ >= 8)
+                    break;
+                detail += " @" + std::to_string(candidate.offset) +
+                          "=hits" + std::to_string(candidate.hits) +
+                          "/tested" + std::to_string(candidate.tested) +
+                          "/cdo_ok" + std::to_string(candidate.defaultSatisfied) +
+                          "/nondef" + std::to_string(candidate.nonDefaultFlagged) +
+                          "/" + (candidate.consistent ? "ok" : "no");
+            }
+            // 优先取满足命名约定的偏移，都满足或都不满足时退回原有 hits 排序
+            for (const FlagsCandidate &candidate : candidates)
+            {
+                if (!candidate.consistent)
+                    continue;
+                if (static_cast<int32_t>(candidate.hits) > bestFlagsHits)
                 {
-                    bestFlagsHits = hits;
-                    bestFlagsOffset = offset;
-                    bestHitsDetail = hits;
-                    bestTestedDetail = tested;
+                    bestFlagsHits = static_cast<int32_t>(candidate.hits);
+                    bestFlagsOffset = candidate.offset;
+                }
+            }
+            if (bestFlagsOffset < 0)
+            {
+                for (const FlagsCandidate &candidate : candidates)
+                {
+                    if (static_cast<int32_t>(candidate.hits) > bestFlagsHits)
+                    {
+                        bestFlagsHits = static_cast<int32_t>(candidate.hits);
+                        bestFlagsOffset = candidate.offset;
+                    }
                 }
             }
             report.evidence.push_back("UObject::Flags candidate search: selected=" + std::to_string(bestFlagsOffset) +
-                                      " hits=" + std::to_string(bestHitsDetail) + "/" + std::to_string(bestTestedDetail) +
-                                      " saturated_offset=" + std::to_string(saturatedOffset) +
-                                      " saturated_cdo_hits=" + std::to_string(saturatedHits) + "/" +
-                                      std::to_string(saturatedTested));
+                                      " hits=" + std::to_string(bestFlagsHits) +
+                                      " default_named=" + std::to_string(defaultNamedCount) +
+                                      " probes=" + std::to_string(probes.size()) +
+                                      " detail:" + detail);
         }
         if (bestFlagsHits >= 3)
             schema.uobject.flags = bestFlagsOffset;
