@@ -278,6 +278,15 @@ namespace nextdumper::ue::schema_probe
             knownFieldSpans.push_back({uobjectHint->internalIndex, static_cast<int32_t>(sizeof(int32_t))});
             knownFieldSpans.push_back({uobjectHint->outer, static_cast<int32_t>(sizeof(uintptr_t))});
         }
+        // Flags 搜索发生在 class/outer/name/index 都已确定之后
+        // 这些字段占据的字节区间不可能同时属于 Flags
+        // 把已解析的字段全部纳入重叠检查，可以排除落在指针高 32 位或其他字段内部的候选
+        const auto addKnownField = [&](int32_t offset, int32_t size)
+        {
+            if (offset < 0 || size <= 0)
+                return;
+            knownFieldSpans.push_back({offset, size});
+        };
         const auto overlapsKnownField = [&](int32_t offset, int32_t size)
         {
             for (const KnownFieldSpan &span : knownFieldSpans)
@@ -796,6 +805,11 @@ namespace nextdumper::ue::schema_probe
             // 这条关系来自引擎命名规则，与内存布局、进程地址均无关，可作为偏移的硬判据
             const auto readObjectName = [&](uintptr_t object)
             { return ReadObjectName(memory_, binding_, schema, names, object); };
+            // 此处 class/outer/name/index 均已确定，把它们占据的区间纳入重叠检查
+            addKnownField(schema.uobject.name, schema.fname.size);
+            addKnownField(schema.uobject.classPointer, static_cast<int32_t>(sizeof(uintptr_t)));
+            addKnownField(schema.uobject.outer, static_cast<int32_t>(sizeof(uintptr_t)));
+            addKnownField(schema.uobject.internalIndex, static_cast<int32_t>(sizeof(int32_t)));
             struct FlagProbe
             {
                 uintptr_t address = 0;
@@ -828,6 +842,8 @@ namespace nextdumper::ue::schema_probe
                 size_t nonDefaultFlagged = 0;
                 // 名字不带该前缀且可读的样本数（分母）
                 size_t nonDefaultTested = 0;
+                // 候选字节区间是否与已解析字段重叠。重叠意味着同一段字节被判给两个字段
+                bool overlapsKnown = false;
                 bool consistent = false;
             };
             std::vector<FlagsCandidate> candidates;
@@ -861,17 +877,17 @@ namespace nextdumper::ue::schema_probe
                             ++candidate.nonDefaultFlagged;
                     }
                 }
-                // 两条同时成立才算一致：
-                //   1. 全部 Default__ 对象都带该标志（名字约定必然成立）
-                //   2. 非 Default__ 对象带该标志的比例不超过四分之一
-                // 只满足第 1 条无法排除读到了指针高位
-                // 指针高位的 0x10 位在 Default__ 与非 Default__ 对象上都会随机置位
+                candidate.overlapsKnown = overlapsKnownField(offset, static_cast<int32_t>(sizeof(int32_t)));
                 const bool defaultsAllFlagged =
                     candidate.defaultTested > 0 && candidate.defaultSatisfied == candidate.defaultTested;
                 const bool nonDefaultsRarelyFlagged =
                     candidate.nonDefaultTested == 0 ||
                     candidate.nonDefaultFlagged * 4 <= candidate.nonDefaultTested;
-                candidate.consistent = defaultsAllFlagged && nonDefaultsRarelyFlagged;
+                // 结构不重叠 > Default__ 约束（样本含 CDO 时才可判）
+                candidate.consistent =
+                    !candidate.overlapsKnown &&
+                    (candidate.defaultTested == 0 ||
+                     (defaultsAllFlagged && nonDefaultsRarelyFlagged));
                 candidates.push_back(candidate);
             }
             std::string detail;
@@ -885,6 +901,7 @@ namespace nextdumper::ue::schema_probe
                           "/tested" + std::to_string(candidate.tested) +
                           "/cdo_ok" + std::to_string(candidate.defaultSatisfied) +
                           "/nondef" + std::to_string(candidate.nonDefaultFlagged) +
+                          (candidate.overlapsKnown ? "/overlap" : "/free") +
                           "/" + (candidate.consistent ? "ok" : "no");
             }
             // 优先取满足命名约定的偏移，都满足或都不满足时退回原有 hits 排序
