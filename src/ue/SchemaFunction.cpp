@@ -384,7 +384,128 @@ namespace nextdumper::ue::schema_probe
                    candidate.sizeMismatches == 0 && candidate.bothMismatches == 0 &&
                    candidate.returnMismatches == 0;
         };
-        for (int32_t offset = functionDataStart; offset <= 0x200; offset += 4)
+        // 原始 UE 的 UFunction 是 FunctionFlags 紧跟 uint8 NumParms、uint16 ParmsSize、uint16 ReturnValueOffset
+        // 厂商可能把这几个字段整体搬走，因此把字段相对 flags 的偏移参数化，失败时用参数语义重新定位后再评一次
+        struct HeaderFieldOffsets
+        {
+            int32_t count = 4;
+            int32_t size = 6;
+            int32_t returnOffset = 8;
+        };
+        HeaderFieldOffsets resolvedFields;
+        // 用参数语义定位 NumParms / ParmsSize / ReturnValueOffset 相对 flags 的偏移
+        // 判据全部来自已独立验证的 summary：count 与 paramEnd 必须同时命中
+        // returnOffset 必须与读值一致（无返回值时为 MAX_uint16）
+        const auto relocateHeaderFields = [&](int32_t offset, const FunctionCandidate &base)
+            -> std::optional<HeaderFieldOffsets>
+        {
+            constexpr int32_t kLookBack = 16;
+            constexpr int32_t kLookAhead = 16;
+            constexpr int32_t kSpan = kLookBack + kLookAhead;
+            if (offset < kLookBack)
+                return std::nullopt;
+            struct Window
+            {
+                std::array<uint8_t, kSpan> bytes{};
+                size_t count = 0;
+                int32_t paramEnd = 0;
+                bool returnRequired = false;
+                int32_t returnValue = -1;
+                bool usable = false;
+            };
+            std::vector<Window> windows(functions.size());
+            size_t constraints = 0;
+            for (size_t index = 0; index < functions.size(); ++index)
+            {
+                const FunctionSample &sample = functions[index];
+                if (!sample.parameterChainValid)
+                    continue;
+                const FunctionObservation &observation = base.observations[index];
+                if (!observation.readable || !observation.flagsPlausible)
+                    continue;
+                const FunctionParameterSummary &summary = observation.summary;
+                if (!summary.valid || summary.count > 0xFF || summary.paramEnd < 0 || summary.paramEnd > 0xFFFF)
+                    continue;
+                Window &window = windows[index];
+                const auto address = Add(sample.address, offset - kLookBack);
+                if (!address || !memory_.ReadBytes(*address, window.bytes.data(), window.bytes.size()).Ok())
+                    continue;
+                window.count = summary.count;
+                window.paramEnd = summary.paramEnd;
+                window.returnRequired = true;
+                window.returnValue = summary.returnOffset;
+                window.usable = true;
+                ++constraints;
+            }
+            if (constraints == 0)
+                return std::nullopt;
+            // 先在二维网格上解 count/size，再对唯一解单独求 return 位置
+            size_t bestPairMatches = 0;
+            int32_t bestCountDelta = 0;
+            int32_t bestSizeDelta = 0;
+            for (int32_t countDelta = -kLookBack; countDelta < kLookAhead; ++countDelta)
+            {
+                for (int32_t sizeDelta = -kLookBack; sizeDelta + 1 < kLookAhead; ++sizeDelta)
+                {
+                    const int32_t countAt = countDelta + kLookBack;
+                    const int32_t sizeAt = sizeDelta + kLookBack;
+                    size_t matches = 0;
+                    for (const Window &window : windows)
+                    {
+                        if (!window.usable)
+                            continue;
+                        const uint8_t countValue = window.bytes[static_cast<size_t>(countAt)];
+                        const uint16_t sizeValue = static_cast<uint16_t>(
+                            window.bytes[static_cast<size_t>(sizeAt)] |
+                            (window.bytes[static_cast<size_t>(sizeAt) + 1] << 8));
+                        if (countValue == window.count && sizeValue == window.paramEnd)
+                            ++matches;
+                    }
+                    if (matches > bestPairMatches)
+                    {
+                        bestPairMatches = matches;
+                        bestCountDelta = countDelta;
+                        bestSizeDelta = sizeDelta;
+                    }
+                }
+            }
+            // 只接受覆盖全部约束的解，避免被零值样本的退化解骗过
+            if (bestPairMatches != constraints)
+                return std::nullopt;
+            size_t bestReturnMatches = 0;
+            int32_t bestReturnDelta = 8;
+            for (int32_t returnDelta = -kLookBack; returnDelta + 1 < kLookAhead; ++returnDelta)
+            {
+                const int32_t returnAt = returnDelta + kLookBack;
+                size_t matches = 0;
+                for (const Window &window : windows)
+                {
+                    if (!window.usable)
+                        continue;
+                    const uint16_t returnValue = static_cast<uint16_t>(
+                        window.bytes[static_cast<size_t>(returnAt)] |
+                        (window.bytes[static_cast<size_t>(returnAt) + 1] << 8));
+                    const uint16_t expectedReturn = window.returnValue >= 0
+                                                        ? static_cast<uint16_t>(window.returnValue)
+                                                        : kReturnFlagDefault;
+                    if (returnValue == expectedReturn)
+                        ++matches;
+                }
+                if (matches > bestReturnMatches)
+                {
+                    bestReturnMatches = matches;
+                    bestReturnDelta = returnDelta;
+                }
+            }
+            if (bestReturnMatches != constraints)
+                return std::nullopt;
+            HeaderFieldOffsets fields;
+            fields.count = bestCountDelta;
+            fields.size = bestSizeDelta;
+            fields.returnOffset = bestReturnDelta;
+            return fields;
+        };
+        const auto scoreCandidate = [&](int32_t offset, const HeaderFieldOffsets &fields)
         {
             FunctionCandidate candidate;
             candidate.offset = offset;
@@ -409,8 +530,28 @@ namespace nextdumper::ue::schema_probe
                 std::memcpy(&observation.paramSize, header.data() + 6, sizeof(observation.paramSize));
                 std::memcpy(&observation.returnOffset, header.data() + 8, sizeof(observation.returnOffset));
                 const uint32_t flags = observation.flags;
-                const uint8_t numParams = observation.numParams;
-                const uint16_t paramSize = observation.paramSize;
+                uint8_t numParams = observation.numParams;
+                uint16_t paramSize = observation.paramSize;
+                uint16_t returnOffsetValue = observation.returnOffset;
+                if (fields.count != 4 || fields.size != 6 || fields.returnOffset != 8)
+                {
+                    // 非默认布局：分别读取三个字段，而不是从固定的 10 字节头里取
+                    const auto countAddress = Add(sample.address, offset + fields.count);
+                    const auto sizeAddress = Add(sample.address, offset + fields.size);
+                    const auto returnAddress = Add(sample.address, offset + fields.returnOffset);
+                    if (!countAddress || !sizeAddress || !returnAddress ||
+                        !memory_.ReadBytes(*countAddress, &numParams, sizeof(numParams)).Ok() ||
+                        !memory_.ReadBytes(*sizeAddress, &paramSize, sizeof(paramSize)).Ok() ||
+                        !memory_.ReadBytes(*returnAddress, &returnOffsetValue, sizeof(returnOffsetValue)).Ok())
+                    {
+                        ++candidate.headerReadFailures;
+                        --candidate.headerReadable;
+                        continue;
+                    }
+                    observation.numParams = numParams;
+                    observation.paramSize = paramSize;
+                    observation.returnOffset = returnOffsetValue;
+                }
                 observation.flagsPlausible = isPlausibleFunctionFlags(flags);
                 observation.summary = AnalyzeFunctionParameters(
                     sample.properties, flags, schema.features.functionDefaultsContinueAfterInitializer);
@@ -466,7 +607,13 @@ namespace nextdumper::ue::schema_probe
                     ++candidate.returnFailures;
                 }
             }
+            return candidate;
+        };
 
+        for (int32_t offset = functionDataStart; offset <= 0x200; offset += 4)
+        {
+            const FunctionCandidate base = scoreCandidate(offset, HeaderFieldOffsets{});
+            FunctionCandidate candidate = base;
             const auto sameHeaderEvidence = [](const FunctionCandidate &left, const FunctionCandidate &right)
             {
                 return left.headerReadable == right.headerReadable && left.shapeHits == right.shapeHits &&
@@ -507,6 +654,38 @@ namespace nextdumper::ue::schema_probe
 
             if (!isHardValidHeaderCandidate(candidate))
             {
+                // flags 位置可能正确，只是 NumParms/ParmsSize/ReturnValueOffset 不在官方声明的 +4/+6/+8
+                // 用参数语义（已独立验证）重新定位后再评一次
+                // 只对 flags 命中达到门槛的候选执行
+                if (candidate.flagHits < minimumHeaderSamples)
+                {
+                    ++report.rejectedCandidates;
+                    continue;
+                }
+                const auto relocation = relocateHeaderFields(offset, base);
+                if (relocation.has_value())
+                {
+                    const FunctionCandidate rescored = scoreCandidate(offset, *relocation);
+                    report.evidence.push_back("UFunction header fields relocated at flags_offset=" +
+                                              std::to_string(offset) +
+                                              " count_delta=" + std::to_string(relocation->count) +
+                                              " size_delta=" + std::to_string(relocation->size) +
+                                              " return_delta=" + std::to_string(relocation->returnOffset) +
+                                              " hard_valid=" + std::to_string(isHardValidHeaderCandidate(rescored)));
+                    if (isHardValidHeaderCandidate(rescored))
+                    {
+                        candidate = rescored;
+                        resolvedFields = *relocation;
+                        if (best.offset < 0 || betterHeaderCandidate(candidate, best))
+                        {
+                            best = candidate;
+                            equivalentHeaderCandidates = 1;
+                        }
+                        else if (sameHeaderEvidence(candidate, best))
+                            ++equivalentHeaderCandidates;
+                        continue;
+                    }
+                }
                 ++report.rejectedCandidates;
                 continue;
             }
@@ -1038,9 +1217,9 @@ namespace nextdumper::ue::schema_probe
             return false;
         }
         schema.ufunction.functionFlags = best.offset;
-        schema.ufunction.numParams = best.offset + 4;
-        schema.ufunction.paramSize = best.offset + 6;
-        schema.ufunction.returnValueOffset = best.offset + 8;
+        schema.ufunction.numParams = best.offset + resolvedFields.count;
+        schema.ufunction.paramSize = best.offset + resolvedFields.size;
+        schema.ufunction.returnValueOffset = best.offset + resolvedFields.returnOffset;
         report.evidence.push_back("resolved UFunction::FunctionFlags, NumParms and ParmsSize from multiple samples;" + candidateSummary);
 
         struct NativeCandidate
