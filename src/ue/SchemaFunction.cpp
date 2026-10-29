@@ -826,6 +826,62 @@ namespace nextdumper::ue::schema_probe
                                               altSample);
                 }
             }
+            {
+                constexpr int32_t kReturnSpan = 24;
+                constexpr uint16_t kReturnDefault = 0xFFFF;
+                struct ReturnScan
+                {
+                    int32_t delta = 0;
+                    size_t defaultHits = 0;
+                    size_t tested = 0;
+                };
+                std::vector<ReturnScan> scans;
+                for (int32_t delta = -kReturnSpan; delta <= kReturnSpan; delta += 2)
+                {
+                    ReturnScan entry;
+                    entry.delta = delta;
+                    for (size_t index = 0; index < functions.size(); ++index)
+                    {
+                        const FunctionSample &sample = functions[index];
+                        if (!sample.parameterChainValid)
+                            continue;
+                        const FunctionObservation &observation = diagnosticCandidate.observations[index];
+                        if (!observation.readable || !observation.flagsPlausible)
+                            continue;
+                        const auto address = Add(sample.address, diagnosticCandidate.offset + delta);
+                        uint16_t value = 0;
+                        if (!address || !memory_.ReadBytes(*address, &value, sizeof(value)).Ok())
+                            continue;
+                        ++entry.tested;
+                        if (value == kReturnDefault)
+                            ++entry.defaultHits;
+                    }
+                    if (entry.tested > 0)
+                        scans.push_back(entry);
+                }
+                if (!scans.empty())
+                {
+                    std::sort(scans.begin(), scans.end(), [](const ReturnScan &left, const ReturnScan &right)
+                              { return left.defaultHits > right.defaultHits; });
+                    std::string scan;
+                    size_t emitted = 0;
+                    for (const ReturnScan &entry : scans)
+                    {
+                        if (emitted++ >= 10)
+                            break;
+                        scan += " @" + std::to_string(diagnosticCandidate.offset + entry.delta) +
+                                "=" + std::to_string(entry.defaultHits) + "/" + std::to_string(entry.tested);
+                    }
+                    report.evidence.push_back("UFunction ReturnValueOffset search: flags_offset=" +
+                                              std::to_string(diagnosticCandidate.offset) +
+                                              " default_value=" + Hex(kReturnDefault) +
+                                              " best_offset=" + std::to_string(diagnosticCandidate.offset + scans.front().delta) +
+                                              " best_delta=" + std::to_string(scans.front().delta) +
+                                              " default_hits=" + std::to_string(scans.front().defaultHits) +
+                                              " tested=" + std::to_string(scans.front().tested) +
+                                              " top:" + scan);
+                }
+            }
             size_t reportedParameters = 0;
             for (size_t sampleIndex = 0; sampleIndex < functions.size() && reportedParameters < 8; ++sampleIndex)
             {
