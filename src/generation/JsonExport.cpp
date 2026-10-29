@@ -558,6 +558,8 @@ namespace nextdumper::generation
         std::vector<Sample> samples;
         size_t total = 0;
         size_t unresolvedRoots = 0;
+        constexpr size_t kSamplesPerKind = 8;
+        std::map<std::string, size_t> sampledPerKind;
         const auto collect = [&](const ir::TypeIR *type, const ir::FunctionIR *function,
                                  const ir::PropertyIR &property, const char *scope)
         {
@@ -565,7 +567,12 @@ namespace nextdumper::generation
             for (const auto &detail : property.detailDiagnostics)
             {
                 ++total;
-                ++counts[detail.reason + ":" + detail.normalizedClass];
+                const std::string kind = detail.reason + ":" + detail.normalizedClass;
+                ++counts[kind];
+                auto &sampled = sampledPerKind[kind];
+                if (sampled >= kSamplesPerKind)
+                    continue;
+                ++sampled;
                 samples.push_back({type, function, &property, &detail, scope});
             }
         };
@@ -583,7 +590,9 @@ namespace nextdumper::generation
                 collect(nullptr, &function, property, "function-local");
         }
         stream << "{\"unresolved_roots_in_ir\":" << unresolvedRoots << ",\"total\":" << total
-               << ",\"records_omitted\":0"
+               << ",\"records_exported\":" << samples.size()
+               << ",\"records_omitted\":" << (total - samples.size())
+               << ",\"samples_per_kind\":" << kSamplesPerKind
                << ",\"counts_by_reason_and_class\":{";
         bool first = true;
         for (const auto &[reason, count] : counts)

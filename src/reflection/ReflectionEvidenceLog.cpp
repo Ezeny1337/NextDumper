@@ -99,10 +99,26 @@ namespace nextdumper::reflection::detail
                      << " outer_readable=" << signature.outerReadable;
             diagnostic(line.str());
         }
+        constexpr size_t kPropertyDiagnosticSamples = 8;
+        constexpr size_t kPropertyDetailSamples = 8;
+        constexpr size_t kPropertyDetailReadSamples = 2;
+        std::map<std::string, size_t> propertyDiagnosticSamples;
+        std::map<std::string, size_t> propertyDiagnosticOmitted;
+        std::map<std::string, size_t> propertyDetailSamples;
+        std::map<std::string, size_t> propertyDetailOmitted;
+        std::map<std::string, size_t> propertyReadOmitted;
         const auto propertyEvidence = [&](const PropertyIR &property, const std::string &owner, uintptr_t ownerAddress, const char *scope)
         {
             for (const auto &message : property.diagnostics)
             {
+                const std::string key = message.substr(0, message.find(' '));
+                auto &seen = propertyDiagnosticSamples[key];
+                if (seen >= kPropertyDiagnosticSamples)
+                {
+                    ++propertyDiagnosticOmitted[key];
+                    continue;
+                }
+                ++seen;
                 std::ostringstream line;
                 line << "property_diagnostic owner=" << std::quoted(owner) << " owner_address=" << Hex(ownerAddress)
                      << " scope=" << scope << " property=" << std::quoted(property.name)
@@ -111,6 +127,14 @@ namespace nextdumper::reflection::detail
             }
             for (const auto &detail : property.detailDiagnostics)
             {
+                const std::string key = detail.reason + ":" + detail.normalizedClass;
+                auto &seen = propertyDetailSamples[key];
+                if (seen >= kPropertyDetailSamples)
+                {
+                    ++propertyDetailOmitted[key];
+                    continue;
+                }
+                ++seen;
                 std::ostringstream line;
                 line << "property_detail owner=" << std::quoted(owner) << " scope=" << scope
                      << " root=" << std::quoted(property.name) << " root_address=" << Hex(property.address)
@@ -129,12 +153,20 @@ namespace nextdumper::reflection::detail
                      << " bool_byte_mask=" << static_cast<unsigned int>(detail.boolean.byteMask)
                      << " bool_field_mask=" << static_cast<unsigned int>(detail.boolean.fieldMask);
                 diagnostic(line.str());
+                size_t readsEmitted = 0;
                 for (const auto &read : detail.reads)
+                {
+                    if (readsEmitted++ >= kPropertyDetailReadSamples)
+                    {
+                        ++propertyReadOmitted[key];
+                        continue;
+                    }
                     diagnostic("property_detail_read node=" + Hex(detail.address) +
                                " member=" + read.member + " selected_offset=" + std::to_string(read.offset) +
                                " address=" + Hex(read.address) + " raw=" + std::to_string(read.rawValue) +
                                " error=" + std::to_string(read.error) + " requested=" + std::to_string(read.requested) +
                                " transferred=" + std::to_string(read.transferred) + " status=" + read.status);
+                }
             }
             size_t remaining = 256;
             const auto references = [&](const auto &self, const TypeReferenceIR &reference, const std::string &path, size_t depth) -> void
@@ -167,10 +199,19 @@ namespace nextdumper::reflection::detail
             };
             references(references, property.type, "type", 0);
         };
+        std::map<uintptr_t, size_t> typeConflictOmitted;
         for (const auto &type : reflection.types)
         {
+            size_t emitted = 0;
             for (const auto &message : type.layoutConflicts)
+            {
+                if (emitted++ >= 3)
+                {
+                    ++typeConflictOmitted[type.address];
+                    continue;
+                }
                 diagnostic("type_conflict owner=" + type.fullName + " address=" + Hex(type.address) + " message=" + message);
+            }
             for (const auto &property : type.properties)
                 propertyEvidence(property, type.fullName, type.address, "type-field");
         }
@@ -312,6 +353,21 @@ namespace nextdumper::reflection::detail
         for (const auto &[kind, count] : rawLogOmitted)
             diagnostic("container_storage_log_omitted class=" + kind + " normal_records=" + std::to_string(count) +
                        " samples=8 full_records=reflection.json/container_storage_evidence/observations");
+        for (const auto &[key, count] : propertyDiagnosticOmitted)
+            diagnostic("property_diagnostic_log_omitted reason=" + key + " records_omitted=" + std::to_string(count) +
+                       " samples=" + std::to_string(kPropertyDiagnosticSamples) +
+                       " full_records=reflection.json/property_diagnostics");
+        for (const auto &[key, count] : propertyDetailOmitted)
+            diagnostic("property_detail_log_omitted key=" + key + " records_omitted=" + std::to_string(count) +
+                       " samples=" + std::to_string(kPropertyDetailSamples) +
+                       " full_records=reflection.json/property_diagnostics");
+        for (const auto &[key, count] : propertyReadOmitted)
+            diagnostic("property_detail_read_log_omitted key=" + key + " records_omitted=" + std::to_string(count) +
+                       " samples_per_detail=" + std::to_string(kPropertyDetailReadSamples) +
+                       " full_records=reflection.json/property_diagnostics");
+        for (const auto &[address, count] : typeConflictOmitted)
+            diagnostic("type_conflict_log_omitted address=" + Hex(address) + " conflicts_omitted=" + std::to_string(count) +
+                       " samples=3 full_records=reflection.json/types");
         for (const auto &enumeration : reflection.enums)
             for (const auto &message : enumeration.diagnostics)
                 diagnostic("enum_diagnostic owner=" + enumeration.fullName + " address=" + Hex(enumeration.address) + " message=" + message);
