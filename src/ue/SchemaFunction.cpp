@@ -259,6 +259,8 @@ namespace nextdumper::ue::schema_probe
         //   EFunctionFlags FunctionFlags;
         //   uint8         NumParms;
         //   uint16        ParmsSize;
+        // ReturnValueOffset 在 Link() 中初始化为 MAX_uint16，只有带返回值的函数才改写它
+        constexpr uint16_t kReturnFlagDefault = 0xFFFFu;
         constexpr uint32_t kFunctionFlagEvidenceMask =
             0x00000040u | // FUNC_Net
             0x00000200u | // FUNC_Exec
@@ -828,7 +830,7 @@ namespace nextdumper::ue::schema_probe
             }
             {
                 constexpr int32_t kReturnSpan = 24;
-                constexpr uint16_t kReturnDefault = 0xFFFF;
+                constexpr uint16_t kReturnDefault = kReturnFlagDefault;
                 struct ReturnScan
                 {
                     int32_t delta = 0;
@@ -880,6 +882,78 @@ namespace nextdumper::ue::schema_probe
                                               " default_hits=" + std::to_string(scans.front().defaultHits) +
                                               " tested=" + std::to_string(scans.front().tested) +
                                               " top:" + scan);
+                }
+            }
+            {
+                constexpr int32_t kReturnOffset = -4;
+                constexpr uint16_t kReturnDefaultValue = kReturnFlagDefault;
+                size_t tested = 0;
+                size_t valueIsDefault = 0;
+                size_t valueNonDefault = 0;
+                size_t expectationNonDefault = 0;
+                size_t agree = 0;
+                size_t parmBitSeen = 0;
+                size_t returnBitSeen = 0;
+                std::string detail;
+                size_t captured = 0;
+                for (size_t index = 0; index < functions.size(); ++index)
+                {
+                    const FunctionSample &sample = functions[index];
+                    if (!sample.parameterChainValid)
+                        continue;
+                    const FunctionObservation &observation = diagnosticCandidate.observations[index];
+                    if (!observation.readable || !observation.flagsPlausible)
+                        continue;
+                    const auto address = Add(sample.address, diagnosticCandidate.offset + kReturnOffset);
+                    uint16_t value = 0;
+                    if (!address || !memory_.ReadBytes(*address, &value, sizeof(value)).Ok())
+                        continue;
+                    ++tested;
+                    const uint16_t expected = observation.summary.returnOffset >= 0
+                                                  ? static_cast<uint16_t>(observation.summary.returnOffset)
+                                                  : kReturnDefaultValue;
+                    if (value == kReturnDefaultValue)
+                        ++valueIsDefault;
+                    else
+                        ++valueNonDefault;
+                    if (expected != kReturnDefaultValue)
+                        ++expectationNonDefault;
+                    if (value == expected)
+                        ++agree;
+                    bool sampleParm = false;
+                    bool sampleReturn = false;
+                    for (const PropertyMetadata &property : sample.properties)
+                    {
+                        if ((property.flags & kCPFParm) != 0)
+                            sampleParm = true;
+                        if ((property.flags & kCPFReturnParm) != 0)
+                            sampleReturn = true;
+                    }
+                    parmBitSeen += sampleParm ? 1u : 0u;
+                    returnBitSeen += sampleReturn ? 1u : 0u;
+                    if (captured < 4)
+                    {
+                        detail += " s={fn=" + sample.name +
+                                  ",props=" + std::to_string(sample.properties.size()) +
+                                  ",value=" + Hex(value) +
+                                  ",expected=" + Hex(expected) +
+                                  ",has_parm_bit=" + std::to_string(sampleParm) +
+                                  ",has_return_bit=" + std::to_string(sampleReturn) + "}";
+                        ++captured;
+                    }
+                }
+                if (tested > 0)
+                {
+                    report.evidence.push_back("UFunction ReturnValueOffset cross-check: offset=" +
+                                              std::to_string(diagnosticCandidate.offset + kReturnOffset) +
+                                              " tested=" + std::to_string(tested) +
+                                              " value_default=" + std::to_string(valueIsDefault) +
+                                              " value_nondefault=" + std::to_string(valueNonDefault) +
+                                              " expected_nondefault=" + std::to_string(expectationNonDefault) +
+                                              " agree=" + std::to_string(agree) +
+                                              " parm_bit=" + std::to_string(parmBitSeen) +
+                                              " return_bit=" + std::to_string(returnBitSeen) +
+                                              detail);
                 }
             }
             size_t reportedParameters = 0;
