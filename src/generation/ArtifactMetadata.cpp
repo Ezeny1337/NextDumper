@@ -2,6 +2,7 @@
 
 #include <map>
 #include <ostream>
+#include <set>
 #include <string>
 
 #include "nextdumper/common/Hex.hpp"
@@ -148,10 +149,37 @@ namespace nextdumper::generation::detail
                    << EscapeJson(key.second) << "\",\"count\":" << count << '}';
         }
         stream << ']';
+        constexpr size_t kOwnersPerScope = 64;
+        constexpr size_t kEventsPerCategory = 8;
+        std::map<std::string, size_t> eventsPerCategory;
+        for (const auto &event : report.events)
+        {
+            if (eventsPerCategory[event.category] >= kEventsPerCategory)
+                continue;
+            ++eventsPerCategory[event.category];
+        }
+        std::set<uintptr_t> referencedOwners;
+        {
+            std::map<std::string, size_t> emitted;
+            for (const auto &event : report.events)
+            {
+                if (emitted[event.category] >= kEventsPerCategory)
+                    continue;
+                ++emitted[event.category];
+                referencedOwners.insert(event.ownerAddress);
+            }
+        }
+        std::map<std::string, size_t> ownersPerScope;
+        size_t ownersExported = 0;
         stream << ",\n  \"generation_owners\":[";
         bool firstOwner = true;
         for (const auto &[address, owner] : report.owners)
         {
+            const bool referenced = referencedOwners.contains(address);
+            if (!referenced && ownersPerScope[owner.scope] >= kOwnersPerScope)
+                continue;
+            ++ownersPerScope[owner.scope];
+            ++ownersExported;
             if (!firstOwner)
                 stream << ',';
             firstOwner = false;
@@ -165,16 +193,9 @@ namespace nextdumper::generation::detail
                        << "\",\"base_size\":" << owner.baseSize;
             stream << '}';
         }
-        constexpr size_t kEventsPerCategory = 8;
-        std::map<std::string, size_t> eventsPerCategory;
         size_t eventsExported = 0;
-        for (const auto &event : report.events)
-        {
-            if (eventsPerCategory[event.category] >= kEventsPerCategory)
-                continue;
-            ++eventsPerCategory[event.category];
-            ++eventsExported;
-        }
+        for (const auto &[category, count] : eventsPerCategory)
+            eventsExported += count;
         stream << "],\n  \"generation_report\":{\"total\":" << report.layoutEvents
                << ",\"warnings\":" << report.layoutWarnings
                << ",\"records_exported\":" << eventsExported
@@ -225,12 +246,33 @@ namespace nextdumper::generation::detail
                 stream << ",\"cursor_before\":" << event.cursor;
             stream << '}';
         }
-        stream << "]},\n  \"opaque_fields\":[";
+        constexpr size_t kOpaqueSamplesPerKind = 8;
+        std::map<std::string, size_t> opaqueSamples;
+        size_t opaqueExported = 0;
+        std::map<std::string, size_t> opaqueKindCounts;
+        for (const auto &field : report.opaqueDetails)
+            ++opaqueKindCounts[field.reason + ":" + field.property->reflectedClass];
+        stream << "]},\n  \"opaque_fields_by_kind\":{";
+        bool firstOpaqueKind = true;
+        for (const auto &[kind, count] : opaqueKindCounts)
+        {
+            if (!firstOpaqueKind)
+                stream << ',';
+            firstOpaqueKind = false;
+            stream << '"' << EscapeJson(kind) << "\":" << count;
+        }
+        stream << "},\n  \"opaque_fields\":[";
+        bool firstOpaque = true;
         for (size_t index = 0; index < report.opaqueDetails.size(); ++index)
         {
-            if (index != 0)
-                stream << ',';
             const auto &field = report.opaqueDetails[index];
+            const std::string kind = field.reason + ":" + field.property->reflectedClass;
+            if (opaqueSamples[kind]++ >= kOpaqueSamplesPerKind)
+                continue;
+            ++opaqueExported;
+            if (!firstOpaque)
+                stream << ',';
+            firstOpaque = false;
             const auto &property = *field.property;
             const auto &reason = report.fields.at(property.address).type.failureReason;
             stream << "{\"owner\":\"" << Hex(field.ownerAddress) << "\",\"property\":\"" << Hex(property.address)
@@ -246,7 +288,11 @@ namespace nextdumper::generation::detail
             }
             stream << '}';
         }
-        stream << "],\n  \"reflection_evidence\":{\"artifact\":\"reflection.json\",\"owner_join_key\":\"types/functions.address\",\"property_join_key\":\"address\",\"generation_types\":\"property.generation.type_id -> generation_types.id\",\"layout_issues\":\"owner.layout_analysis.issues[layout_issue_index]\",\"delegate_signatures\":\"delegate_signatures\",\"container_storage\":\"container_storage_evidence\",\"runtime_values\":\"runtime_value_evidence\"}";
+        stream << "],\n  \"opaque_fields_exports\":{\"total\":" << report.opaqueDetails.size()
+               << ",\"exported\":" << opaqueExported
+               << ",\"omitted\":" << (report.opaqueDetails.size() - opaqueExported)
+               << ",\"samples_per_kind\":" << kOpaqueSamplesPerKind << "},\n";
+        stream << "  \"reflection_evidence\":{\"artifact\":\"reflection.json\",\"owner_join_key\":\"types/functions.address\",\"property_join_key\":\"address\",\"generation_types\":\"property.generation.type_id -> generation_types.id\",\"layout_issues\":\"owner.layout_analysis.issues[layout_issue_index]\",\"delegate_signatures\":\"delegate_signatures\",\"container_storage\":\"container_storage_evidence\",\"runtime_values\":\"runtime_value_evidence\"}";
         stream << ",\n  \"runtime_value_evidence\":";
         WriteRuntimeEvidenceJson(stream, reflection.runtimeEvidence, false);
         stream << ",\n";
