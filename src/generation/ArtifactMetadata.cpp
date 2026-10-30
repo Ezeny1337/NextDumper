@@ -193,10 +193,15 @@ namespace nextdumper::generation::detail
                        << "\",\"base_size\":" << owner.baseSize;
             stream << '}';
         }
+        stream << "],\n  \"generation_owners_exports\":{\"total\":" << report.owners.size()
+               << ",\"exported\":" << ownersExported
+               << ",\"omitted\":" << (report.owners.size() - ownersExported)
+               << ",\"samples_per_scope\":" << kOwnersPerScope
+               << ",\"referenced_owners\":" << referencedOwners.size() << "},\n";
         size_t eventsExported = 0;
         for (const auto &[category, count] : eventsPerCategory)
             eventsExported += count;
-        stream << "],\n  \"generation_report\":{\"total\":" << report.layoutEvents
+        stream << "  \"generation_report\":{\"total\":" << report.layoutEvents
                << ",\"warnings\":" << report.layoutWarnings
                << ",\"records_exported\":" << eventsExported
                << ",\"records_omitted\":" << (report.events.size() - eventsExported)
