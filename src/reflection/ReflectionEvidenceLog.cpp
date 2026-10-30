@@ -107,6 +107,9 @@ namespace nextdumper::reflection::detail
         std::map<std::string, size_t> propertyDetailSamples;
         std::map<std::string, size_t> propertyDetailOmitted;
         std::map<std::string, size_t> propertyReadOmitted;
+        constexpr size_t kDelegateSamplesPerKind = 32;
+        std::map<std::string, size_t> delegateSamples;
+        std::map<std::string, size_t> delegateOmitted;
         const auto propertyEvidence = [&](const PropertyIR &property, const std::string &owner, uintptr_t ownerAddress, const char *scope)
         {
             for (const auto &message : property.diagnostics)
@@ -179,16 +182,25 @@ namespace nextdumper::reflection::detail
                 --remaining;
                 if (reference.kind == PropertyKind::Delegate || reference.kind == PropertyKind::MulticastDelegate)
                 {
-                    logOwner(ownerAddress, owner);
-                    std::ostringstream line;
-                    line << "delegate_reference owner=" << Hex(ownerAddress) << " scope=" << scope
-                         << " root=" << std::quoted(property.name) << " root_address=" << Hex(property.address)
-                         << " path=" << path << " node=" << Hex(reference.metadataAddress)
-                         << " class=" << reference.reflectedClass
-                         << " storage_kind=" << ::nextdumper::ir::DelegateStorageKindName(reference.delegateStorage)
-                         << " signature=" << Hex(reference.referencedObject)
-                         << " details_resolved=" << reference.detailsResolved;
-                    diagnostic(line.str());
+                    const std::string kind = std::string("delegate:") +
+                                             ::nextdumper::ir::DelegateStorageKindName(reference.delegateStorage);
+                    if (delegateSamples[kind]++ >= kDelegateSamplesPerKind)
+                    {
+                        ++delegateOmitted[kind];
+                    }
+                    else
+                    {
+                        logOwner(ownerAddress, owner);
+                        std::ostringstream line;
+                        line << "delegate_reference owner=" << Hex(ownerAddress) << " scope=" << scope
+                             << " root=" << std::quoted(property.name) << " root_address=" << Hex(property.address)
+                             << " path=" << path << " node=" << Hex(reference.metadataAddress)
+                             << " class=" << reference.reflectedClass
+                             << " storage_kind=" << ::nextdumper::ir::DelegateStorageKindName(reference.delegateStorage)
+                             << " signature=" << Hex(reference.referencedObject)
+                             << " details_resolved=" << reference.detailsResolved;
+                        diagnostic(line.str());
+                    }
                 }
                 if (reference.inner)
                     self(self, *reference.inner, path + ".inner", depth + 1);
@@ -199,15 +211,17 @@ namespace nextdumper::reflection::detail
             };
             references(references, property.type, "type", 0);
         };
-        std::map<uintptr_t, size_t> typeConflictOmitted;
+        constexpr size_t kConflictSamplesPerKind = 24;
+        std::map<std::string, size_t> conflictSamples;
+        std::map<std::string, size_t> conflictOmitted;
         for (const auto &type : reflection.types)
         {
-            size_t emitted = 0;
             for (const auto &message : type.layoutConflicts)
             {
-                if (emitted++ >= 3)
+                const std::string kind = message.substr(0, message.find_first_of(": ="));
+                if (conflictSamples[kind]++ >= kConflictSamplesPerKind)
                 {
-                    ++typeConflictOmitted[type.address];
+                    ++conflictOmitted[kind];
                     continue;
                 }
                 diagnostic("type_conflict owner=" + type.fullName + " address=" + Hex(type.address) + " message=" + message);
@@ -217,7 +231,12 @@ namespace nextdumper::reflection::detail
         }
         std::map<std::string, size_t> normalEntrySamples;
         std::map<std::string, size_t> normalEntryOmitted;
-        diagnostic("function_entry_log_policy normal_samples_per_kind=8 mandatory=all-anomalies-and-signatures full_records=reflection.json/functions");
+        constexpr size_t kAnomalyEntrySamples = 48;
+        std::map<std::string, size_t> anomalyEntrySamples;
+        std::map<std::string, size_t> anomalyEntryOmitted;
+        diagnostic("function_entry_log_policy normal_samples_per_kind=8 anomaly_samples_per_class=" +
+                   std::to_string(kAnomalyEntrySamples) +
+                   " full_records=reflection.json/functions");
         for (const auto &[address, function] : reflection.functions)
         {
             const bool normal = !function.referencedAsSignature && function.reflectedClass == "Function" &&
@@ -235,6 +254,25 @@ namespace nextdumper::reflection::detail
                 else
                 {
                     ++normalEntryOmitted[function.EntryKind()];
+                    emitEntry = false;
+                }
+            }
+            else
+            {
+                std::string kind = function.referencedAsSignature ? "signature" : "anomaly";
+                if (!function.headerReadable)
+                    kind += ":header-unreadable";
+                else if (!function.parameterSemanticsValid || !function.parameterSemanticsConsistent)
+                    kind += ":parameter-semantics";
+                else if (!function.layoutConflicts.empty())
+                    kind += ":layout-conflict";
+                else if (!function.entryExecutable || !function.entryInModule)
+                    kind += ":entry-unusable";
+                else if (function.reflectedClass != "Function")
+                    kind += ":class-" + function.reflectedClass;
+                if (anomalyEntrySamples[kind]++ >= kAnomalyEntrySamples)
+                {
+                    ++anomalyEntryOmitted[kind];
                     emitEntry = false;
                 }
             }
@@ -288,7 +326,15 @@ namespace nextdumper::reflection::detail
                 diagnostic(line.str());
             }
             for (const auto &message : function.layoutConflicts)
+            {
+                const std::string kind = "function:" + message.substr(0, message.find_first_of(": ="));
+                if (conflictSamples[kind]++ >= kConflictSamplesPerKind)
+                {
+                    ++conflictOmitted[kind];
+                    continue;
+                }
                 diagnostic("function_conflict address=" + Hex(address) + " message=" + message);
+            }
             for (const auto &property : function.parameters)
                 propertyEvidence(property, function.fullName, address, "function-parameter");
             for (const auto &property : function.locals)
@@ -365,9 +411,18 @@ namespace nextdumper::reflection::detail
             diagnostic("property_detail_read_log_omitted key=" + key + " records_omitted=" + std::to_string(count) +
                        " samples_per_detail=" + std::to_string(kPropertyDetailReadSamples) +
                        " full_records=reflection.json/property_diagnostics");
-        for (const auto &[address, count] : typeConflictOmitted)
-            diagnostic("type_conflict_log_omitted address=" + Hex(address) + " conflicts_omitted=" + std::to_string(count) +
-                       " samples=3 full_records=reflection.json/types");
+        for (const auto &[kind, count] : conflictOmitted)
+            diagnostic("conflict_log_omitted kind=" + kind + " records_omitted=" + std::to_string(count) +
+                       " samples=" + std::to_string(kConflictSamplesPerKind) +
+                       " full_records=reflection.json/types-and-functions");
+        for (const auto &[kind, count] : anomalyEntryOmitted)
+            diagnostic("function_entry_anomaly_omitted kind=" + kind + " records_omitted=" + std::to_string(count) +
+                       " samples=" + std::to_string(kAnomalyEntrySamples) +
+                       " full_records=reflection.json/functions");
+        for (const auto &[kind, count] : delegateOmitted)
+            diagnostic("delegate_reference_log_omitted kind=" + kind + " records_omitted=" + std::to_string(count) +
+                       " samples=" + std::to_string(kDelegateSamplesPerKind) +
+                       " full_records=reflection.json/property_types");
         for (const auto &enumeration : reflection.enums)
             for (const auto &message : enumeration.diagnostics)
                 diagnostic("enum_diagnostic owner=" + enumeration.fullName + " address=" + Hex(enumeration.address) + " message=" + message);
