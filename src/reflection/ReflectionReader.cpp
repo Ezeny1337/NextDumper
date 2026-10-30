@@ -551,7 +551,9 @@ namespace nextdumper::reflection
         if (address == 0 || ir.functions.size() >= kMaxFunctionDefinitions)
         {
             ++ir.stats.failures;
-            ir.diagnostics.push_back("function registry budget or invalid address: address=" + Hex(address));
+            constexpr size_t kRegistryDiagnosticSamples = 8;
+            if (++registryBudgetDiagnostics <= kRegistryDiagnosticSamples)
+                ir.diagnostics.push_back("function registry budget or invalid address: address=" + Hex(address));
             return nullptr;
         }
         FunctionIR &function = ir.functions.try_emplace(address).first->second;

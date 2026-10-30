@@ -1,6 +1,8 @@
 #include "ArtifactMetadata.hpp"
 
+#include <map>
 #include <ostream>
+#include <string>
 
 #include "nextdumper/common/Hex.hpp"
 #include "nextdumper/generation/JsonExport.hpp"
@@ -163,9 +165,22 @@ namespace nextdumper::generation::detail
                        << "\",\"base_size\":" << owner.baseSize;
             stream << '}';
         }
+        constexpr size_t kEventsPerCategory = 8;
+        std::map<std::string, size_t> eventsPerCategory;
+        size_t eventsExported = 0;
+        for (const auto &event : report.events)
+        {
+            if (eventsPerCategory[event.category] >= kEventsPerCategory)
+                continue;
+            ++eventsPerCategory[event.category];
+            ++eventsExported;
+        }
         stream << "],\n  \"generation_report\":{\"total\":" << report.layoutEvents
                << ",\"warnings\":" << report.layoutWarnings
-               << ",\"records_omitted\":0,\"record_encoding\":\"reflection-layout-issue-reference-or-emission-event\",\"counts_by_category\":{";
+               << ",\"records_exported\":" << eventsExported
+               << ",\"records_omitted\":" << (report.events.size() - eventsExported)
+               << ",\"samples_per_category\":" << kEventsPerCategory
+               << ",\"record_encoding\":\"reflection-layout-issue-reference-or-emission-event\",\"counts_by_category\":{";
         bool firstCategory = true;
         for (const auto &[category, count] : report.counts)
         {
@@ -175,11 +190,17 @@ namespace nextdumper::generation::detail
             stream << '"' << EscapeJson(category) << "\":" << count;
         }
         stream << "},\"records\":[";
+        std::map<std::string, size_t> emittedPerCategory;
+        bool firstRecord = true;
         for (size_t index = 0; index < report.events.size(); ++index)
         {
-            if (index != 0)
-                stream << ',';
             const auto &event = report.events[index];
+            if (emittedPerCategory[event.category] >= kEventsPerCategory)
+                continue;
+            ++emittedPerCategory[event.category];
+            if (!firstRecord)
+                stream << ',';
+            firstRecord = false;
             if (event.layoutIssueIndex)
             {
                 stream << "{\"owner\":\"" << Hex(event.ownerAddress)
@@ -229,20 +250,48 @@ namespace nextdumper::generation::detail
         stream << ",\n  \"runtime_value_evidence\":";
         WriteRuntimeEvidenceJson(stream, reflection.runtimeEvidence, false);
         stream << ",\n";
-        stream << "  \"diagnostics\": [";
-        for (size_t index = 0; index < reflection.diagnostics.size(); ++index)
+        constexpr size_t kDiagnosticsPerPrefix = 8;
+        std::map<std::string, size_t> diagnosticsByPrefix;
+        for (const auto &message : reflection.diagnostics)
+            ++diagnosticsByPrefix[message.substr(0, message.find_first_of(": ="))];
+        stream << "  \"diagnostic_summary\":{";
+        bool firstDiagnostic = true;
+        for (const auto &[prefix, count] : diagnosticsByPrefix)
         {
-            if (index != 0)
+            if (!firstDiagnostic)
                 stream << ',';
-            stream << "\"" << EscapeJson(reflection.diagnostics[index]) << "\"";
+            firstDiagnostic = false;
+            stream << '"' << EscapeJson(prefix) << "\":" << count;
         }
-        stream << "],\n";
+        stream << "},\n  \"diagnostics\": [";
+        std::map<std::string, size_t> diagnosticsEmitted;
+        bool firstDiagnosticRecord = true;
+        for (const auto &message : reflection.diagnostics)
+        {
+            const std::string prefix = message.substr(0, message.find_first_of(": ="));
+            if (diagnosticsEmitted[prefix]++ >= kDiagnosticsPerPrefix)
+                continue;
+            if (!firstDiagnosticRecord)
+                stream << ',';
+            firstDiagnosticRecord = false;
+            stream << "\"" << EscapeJson(message) << "\"";
+        }
+        stream << "],\n  \"diagnostics_exports\":{\"total\":" << reflection.diagnostics.size()
+               << ",\"samples_per_prefix\":" << kDiagnosticsPerPrefix << "},\n";
+        constexpr size_t kConflictsPerKind = 8;
+        std::map<std::string, size_t> conflictSamples;
+        size_t conflictsExported = 0;
+        size_t conflictsTotal = 0;
         stream << "  \"type_conflicts\": [\n";
         size_t conflictCount = 0;
         for (const TypeIR &type : reflection.types)
         {
             for (const std::string &conflict : type.layoutConflicts)
             {
+                ++conflictsTotal;
+                if (conflictSamples["type"]++ >= kConflictsPerKind)
+                    continue;
+                ++conflictsExported;
                 if (conflictCount++ != 0)
                     stream << ",\n";
                 stream << "    {\"type\":\"" << EscapeJson(type.fullName) << "\",\"address\":\"" << Hex(type.address)
@@ -256,6 +305,10 @@ namespace nextdumper::generation::detail
         {
             for (const std::string &conflict : function.layoutConflicts)
             {
+                ++conflictsTotal;
+                if (conflictSamples["function"]++ >= kConflictsPerKind)
+                    continue;
+                ++conflictsExported;
                 if (conflictCount++ != 0)
                     stream << ",\n";
                 stream << "    {\"function\":\"" << EscapeJson(function.fullName) << "\",\"address\":\"" << Hex(address)
@@ -264,17 +317,25 @@ namespace nextdumper::generation::detail
         }
         stream << "\n  ],\n  \"enum_conflicts\": [\n";
         conflictCount = 0;
+        size_t enumConflictsSeen = 0;
         for (const auto &enumeration : reflection.enums)
         {
             for (const auto &message : enumeration.diagnostics)
             {
+                ++conflictsTotal;
+                if (enumConflictsSeen++ >= kConflictsPerKind)
+                    continue;
+                ++conflictsExported;
                 if (conflictCount++ != 0)
                     stream << ",\n";
                 stream << "    {\"enum\":\"" << EscapeJson(enumeration.fullName) << "\",\"address\":\""
                        << Hex(enumeration.address) << "\",\"message\":\"" << EscapeJson(message) << "\"}";
             }
         }
-        stream << "\n  ]\n}\n";
+        stream << "\n  ],\n  \"conflict_exports\":{\"total\":" << conflictsTotal
+               << ",\"exported\":" << conflictsExported
+               << ",\"omitted\":" << (conflictsTotal - conflictsExported)
+               << ",\"samples_per_kind\":" << kConflictsPerKind << "}\n}\n";
     }
 
     void RuntimeJson(std::ostream &stream, const RuntimeContext &context)

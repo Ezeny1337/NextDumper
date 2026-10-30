@@ -34,9 +34,7 @@ namespace nextdumper::generation::detail
     {
         if (!diagnostic)
             return;
-        if (event.severity == "info" &&
-            (event.category == "offset-description" || event.category == "inherited-extent-intersection") &&
-            ++layoutLogSamples[event.category] > 8)
+        if (++layoutLogSamples[event.category] > 8)
         {
             ++layoutLogOmitted[event.category];
             return;
@@ -89,20 +87,14 @@ namespace nextdumper::generation::detail
             node = nullptr;
         field.failureNode = node;
         bool emit = static_cast<bool>(diagnostic);
-        if (emit && field.reason == "internals-not-expanded" && description.validBounds &&
-            description.type.storage == PropertyStorageKind::TypedOpaque &&
-            (!field.property->type.containerStorage ||
-             field.property->type.containerStorage->headerStatus == "source-model-and-size-match" ||
-             field.property->type.containerStorage->headerStatus == "source-model-fits-reflected-extent") &&
-            (description.type.failureReason == "internals-not-expanded" ||
-             description.type.failureReason == "container-internals-not-expanded"))
+        if (emit)
         {
-            auto &samples = opaqueLogSamples[field.property->reflectedClass];
+            auto &samples = opaqueLogSamples[field.property->reflectedClass + ":" + field.reason];
             if (samples < 8)
                 ++samples;
             else
             {
-                ++opaqueLogOmitted[field.property->reflectedClass];
+                ++opaqueLogOmitted[field.property->reflectedClass + ":" + field.reason];
                 emit = false;
             }
         }

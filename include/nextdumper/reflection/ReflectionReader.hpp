@@ -94,6 +94,7 @@ namespace nextdumper::reflection
         std::function<void(const std::string &)> progress_;
         std::function<void(const std::string &)> diagnostic_;
         mutable std::map<uintptr_t, ::nextdumper::ir::DelegateSignatureObservation> delegateSignatures_;
+        mutable size_t registryBudgetDiagnostics = 0;
         mutable std::vector<uintptr_t> pendingSignatures_;
         mutable size_t nextSignature_ = 0;
         mutable std::map<uintptr_t, std::pair<uintptr_t, ::nextdumper::ue::FieldChainStatus>> functionChains_;
