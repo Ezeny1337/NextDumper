@@ -68,7 +68,7 @@ flowchart TD
 | `FField` tagged owner | 5.3–5.4 |
 | 新版反射布局 | 5.5–5.6 |
 
-`runtime.json` 和 `EngineLayouts.hpp` 会记录最终选择的布局，`reflection.json` 还会记录兼容的其他 profile 和版本可信度。不同分支或自定义构建可能存在差异；此时诊断报告会指出失败的阶段，而不是直接假定引擎版本。
+`runtime.json` 和 `EngineLayouts.hpp` 会记录最终选择的布局，`reflection.json` 还会记录兼容的其他 profile 和版本可信度。不同分支或自定义构建可能存在差异；此时诊断报告会指出失败的阶段，而不是直接假定引擎版本。反射记录按包拆分为分片，`reflection.json` 只列出分片清单并保存跨包证据。
 
 ## 快速开始
 
@@ -156,7 +156,8 @@ NextDumper -o <输出目录> -p <包名> [options]
 ├── Types.hpp
 ├── Enums.hpp
 ├── Functions.hpp
-├── reflection.json
+├── reflection.json          # 索引，不含类型/函数/枚举记录
+├── reflection.<Package>.json  # 每个 UE 包一个分片
 ├── manifest.json
 ├── diagnostics.json
 └── runtime.json
@@ -176,7 +177,8 @@ NextDumper -o <输出目录> -p <包名> [options]
 | `Types.hpp` | 反射出的类和结构体，包含名称、继承关系和字段偏移。 |
 | `Enums.hpp` | 反射出的枚举声明和值。 |
 | `Functions.hpp` | 反射函数的执行入口 RVA 和参数布局。 |
-| `reflection.json` | 完整反射数据、字段存储描述、生成信息和少量运行时采样。 |
+| `reflection.json` | 反射分片的索引：状态、profile、统计、采集证据、生成信息和少量运行时采样；不包含类型、函数或枚举记录。 |
+| `reflection.<Package>.json` | 每个 Unreal 包一个分片，包含该包的类型、函数、枚举及字段存储描述；分片文件名列在 `reflection.json` 的 `shards` 中。 |
 | `manifest.json` | 输出状态、解析统计和构建信息（commit、版本、工作区状态）。 |
 | `diagnostics.json` | 反射与生成诊断、计数，以及对共用采样数据的引用。 |
 | `runtime.json` | 模块信息、绑定布局、反射偏移和常用类地址。 |
@@ -260,7 +262,7 @@ public:
 - 把反射出的字节布局类型导入 IDA 本地类型库；
 - 为已验证的执行入口 RVA，以及 RVA 落在已加载镜像可执行段内的原生函数候选，添加名称和注释。
 
-它不会把运行时堆地址写入静态镜像，也不会自动创建函数。超出 32 位 C 枚举范围的枚举值会保留在 `reflection.json` 中，不写入生成的 IDA 头文件。导入器还会检查输出文件的架构和位数是否与当前 IDA 数据库一致。
+它不会把运行时堆地址写入静态镜像，也不会自动创建函数。超出 32 位 C 枚举范围的枚举值会保留在反射分片中，不写入生成的 IDA 头文件。导入器还会检查输出文件的架构和位数是否与当前 IDA 数据库一致。
 
 输出中不包含目标二进制的内容哈希。使用 RVA 标注前，请确认 IDA 打开的文件与本次采集的镜像一致。
 
@@ -322,7 +324,7 @@ JSON 文件保留完整字段元数据。日志保留诊断摘要、有限的样
 5. 可提供时附上 `manifest.json`、`diagnostics.json` 和 `runtime.json`。
 6. 简短的问题复现步骤和预期结果。
 
-上传日志或输出前，请移除凭据、私有二进制、专有资源以及任何未经授权不得分享的信息。较大的 `reflection.json` 可以单独作为附件，或只保留相关的对象和布局记录。
+上传日志或输出前，请移除凭据、私有二进制、专有资源以及任何未经授权不得分享的信息。较大的反射分片可以单独作为附件，也可以只保留包含问题类型的那个分片。
 
 ## 免责声明
 

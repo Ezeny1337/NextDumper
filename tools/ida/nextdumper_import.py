@@ -26,6 +26,39 @@ def _read_json(path, expected_version):
     return value
 
 
+REFLECTION_SCHEMA_VERSION = 11
+
+
+def _shard_paths(artifact_dir, index):
+    """Shard names come from the artifact and are untrusted: accept bare file names only."""
+    shards = index.get("shards")
+    if not isinstance(shards, list):
+        raise ValueError("reflection.json has no shard list")
+    paths = []
+    for shard in shards:
+        if not isinstance(shard, dict):
+            raise ValueError("reflection.json shard entry is not an object")
+        name = str(shard.get("file", ""))
+        if not name or name in (".", "..") or os.path.basename(name) != name:
+            raise ValueError("reflection.json shard has an unsafe file name: " + name)
+        if os.sep in name or (os.altsep and os.altsep in name):
+            raise ValueError("reflection.json shard has an unsafe file name: " + name)
+        paths.append(os.path.join(artifact_dir, name))
+    return paths
+
+
+def _iter_shard_section(artifact_dir, index, section):
+    """Yield records of one section across shards, holding a single shard in memory at a time."""
+    for path in _shard_paths(artifact_dir, index):
+        shard = _read_json(path, REFLECTION_SCHEMA_VERSION)
+        items = shard.get(section, [])
+        if not isinstance(items, list):
+            raise ValueError("Shard section is not a list: " + section + " in " + path)
+        for item in items:
+            yield item
+        del shard
+
+
 def _as_int(value):
     if isinstance(value, bool):
         raise ValueError("Boolean is not an integer address")
@@ -68,15 +101,27 @@ def _safe_enum_value(value):
     return value
 
 
-def _build_types_header(reflection):
-    types = reflection.get("types", [])
-    enums = reflection.get("enums", [])
-    functions = reflection.get("functions", [])
-    if not isinstance(types, list) or len(types) > MAX_TYPES:
+def _count_shards(index, section):
+    shards = index.get("shards")
+    if not isinstance(shards, list):
+        raise ValueError("reflection.json has no shard list")
+    total = 0
+    for shard in shards:
+        if not isinstance(shard, dict):
+            raise ValueError("reflection.json shard entry is not an object")
+        total += _as_int(shard.get(section, 0))
+    return total
+
+
+def _build_types_header(artifact_dir, index):
+    type_count = _count_shards(index, "types")
+    enum_count = _count_shards(index, "enums")
+    function_count = _count_shards(index, "functions")
+    if type_count > MAX_TYPES:
         raise ValueError("Type count is invalid or exceeds the configured limit")
-    if not isinstance(enums, list) or len(enums) > MAX_ENUMS:
+    if enum_count > MAX_ENUMS:
         raise ValueError("Enum count is invalid or exceeds the configured limit")
-    if not isinstance(functions, list) or len(functions) > MAX_FUNCTIONS:
+    if function_count > MAX_FUNCTIONS:
         raise ValueError("Function count is invalid or exceeds the configured limit")
 
     output = []
@@ -93,7 +138,7 @@ def _build_types_header(reflection):
     emit("/* No runtime object addresses are applied as static data addresses. */\n\n")
 
     used_enum_names = set()
-    for enum in enums:
+    for enum in _iter_shard_section(artifact_dir, index, "enums"):
         if not isinstance(enum, dict):
             continue
         values = enum.get("values", [])
@@ -127,15 +172,16 @@ def _build_types_header(reflection):
 
     total_properties = 0
     used_type_names = set()
+    # A base type may live in another shard: collect address-to-size first, then emit types.
     address_to_size = {}
-    for item in types:
+    for item in _iter_shard_section(artifact_dir, index, "types"):
         if isinstance(item, dict):
             try:
                 address_to_size[_as_int(item.get("address"))] = _as_int(item.get("size"))
             except (TypeError, ValueError):
                 continue
 
-    for item in types:
+    for item in _iter_shard_section(artifact_dir, index, "types"):
         if not isinstance(item, dict):
             continue
         try:
@@ -211,7 +257,7 @@ def _build_types_header(reflection):
             emit("    unsigned char _tail_" + format(cursor, "X") + "[" + str(type_size - cursor) + "];\n")
         emit("} " + type_name + ";\n\n")
 
-    return "".join(output), len(types), len(enums), total_properties
+    return "".join(output), type_count, enum_count, total_properties
 
 
 def _default_name(name, ea):
@@ -260,7 +306,7 @@ def run_import():
         return
     reflection_path = os.path.join(artifact_dir, "reflection.json")
     runtime_path = os.path.join(artifact_dir, "runtime.json")
-    reflection = _read_json(reflection_path, 10)
+    reflection = _read_json(reflection_path, REFLECTION_SCHEMA_VERSION)
     runtime = _read_json(runtime_path, 5)
 
     module = runtime.get("module")
@@ -292,7 +338,7 @@ def run_import():
     if (architecture == "arm64") != bool(ida_ida.inf_is_64bit()):
         raise ValueError("IDA database bitness does not match the artifact module")
 
-    header, type_count, enum_count, property_count = _build_types_header(reflection)
+    header, type_count, enum_count, property_count = _build_types_header(artifact_dir, reflection)
     header_path = os.path.join(artifact_dir, "NextDumper_IDA_types.h")
     base_header_path = header_path
     suffix = 1
@@ -327,10 +373,9 @@ def run_import():
     module_size = module_end - module_base
 
     entries = {}
-    functions = reflection.get("functions", [])
-    if not isinstance(functions, list) or len(functions) > MAX_FUNCTIONS:
+    if _count_shards(reflection, "functions") > MAX_FUNCTIONS:
         raise ValueError("Function count is invalid or exceeds the configured limit")
-    for function in functions:
+    for function in _iter_shard_section(artifact_dir, reflection, "functions"):
         if not isinstance(function, dict) or not function.get("header_readable"):
             continue
         for field, label in (("exec_entry_rva", "UFunction execution entry"),

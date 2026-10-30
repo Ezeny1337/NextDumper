@@ -187,7 +187,10 @@ namespace nextdumper::generation::detail
             field.reason = opaqueReasonFor(entry);
             report.RecordOpaque(std::move(field));
         };
-        const auto describe = [&](const FieldDescription &entry)
+        // 每个字段只保留一行注释：字段名、反射来源、类型与异常成因
+        // 偏移、尺寸、维度由紧随其后的 constexpr 成员表达，不在此重复
+        // includeType 仅在无成员声明（offset-description 表示）时为 true，避免与声明行重复
+        const auto describe = [&](const FieldDescription &entry, bool includeType)
         {
             const auto &property = *entry.property;
             const char *opaqueReason = opaqueReasonFor(entry);
@@ -195,6 +198,8 @@ namespace nextdumper::generation::detail
                    << " flags=" << Hex(property.flags);
             if (!entry.type.semanticName.empty() && entry.type.semanticName != entry.type.name)
                 stream << " semantic=" << EscapeJson(entry.type.semanticName);
+            if (includeType && !entry.type.name.empty())
+                stream << " type=" << EscapeJson(entry.type.name);
             if (property.status != ParseStatus::Complete)
                 stream << " status=" << ParseStatusName(property.status);
             if (std::string_view(opaqueReason) != "none" && std::string_view(opaqueReason) != "internals-not-expanded")
@@ -270,7 +275,7 @@ namespace nextdumper::generation::detail
             size_t ordinal = 0;
             for (const FieldDescription &entry : plan.fields)
             {
-                describe(entry);
+                describe(entry, true);
                 const PropertyIR &property = *entry.property;
                 const std::string member = SanitizeIdentifier(property.name, "Member_") + "_" + std::to_string(ordinal++);
                 if (ir::IsVirtualProperty(property))
@@ -279,18 +284,13 @@ namespace nextdumper::generation::detail
                            << EscapeJson(property.name) << " symbol=" << member << " flags=" << Hex(property.flags) << "\n";
                     continue;
                 }
-                const std::string typeName = entry.type.name.empty() ? property.reflectedClass : entry.type.name;
                 if (!entry.validBounds)
                 {
-                    stream << "    // Invalid offset description: name=" << EscapeJson(property.name) << " symbol=" << member << " type=" << EscapeJson(typeName)
-                           << " offset=" << property.offset << " element_size=" << property.elementSize
-                           << " array_dim=" << property.arrayDim << "\n";
+                    stream << "    // Field has invalid dimensions or exceeds the reflected extent: symbol="
+                           << member << "\n";
                     recordOpaque(entry);
                     continue;
                 }
-                stream << "    // OffsetDescription name=" << EscapeJson(property.name) << " symbol=" << member << " type=" << EscapeJson(typeName)
-                       << " offset=" << Hex(static_cast<uint64_t>(property.offset))
-                       << " element_size=" << property.elementSize << " array_dim=" << property.arrayDim << "\n";
                 stream << "    static constexpr std::size_t " << member << "_Offset = " << property.offset << ";\n";
                 stream << "    static constexpr std::size_t " << member << "_ElementSize = " << property.elementSize << ";\n";
                 stream << "    static constexpr std::size_t " << member << "_ArrayDim = " << property.arrayDim << ";\n";
@@ -329,7 +329,7 @@ namespace nextdumper::generation::detail
         size_t ordinal = 0;
         for (const FieldDescription *entry : ordered)
         {
-            describe(*entry);
+            describe(*entry, false);
             const PropertyIR &property = *entry->property;
             const int64_t total = static_cast<int64_t>(property.elementSize) * property.arrayDim;
             const int64_t end = static_cast<int64_t>(property.offset) + total;
@@ -390,8 +390,7 @@ namespace nextdumper::generation::detail
                 stream << "    std::uint8_t UnknownData_" << ordinal++ << "[" << Hex(property.offset - cursor) << "];\n";
             if (entry->type.name.empty())
             {
-                stream << "    std::uint8_t " << member << "[" << Hex(static_cast<uint64_t>(total))
-                       << "]; // " << Hex(property.offset) << " (" << Hex(static_cast<uint64_t>(total)) << ") opaque\n";
+                stream << "    std::uint8_t " << member << "[" << Hex(static_cast<uint64_t>(total)) << "]; // opaque\n";
                 recordOpaque(*entry);
             }
             else
@@ -399,7 +398,7 @@ namespace nextdumper::generation::detail
                 stream << "    " << entry->type.name << " " << member;
                 if (property.arrayDim > 1)
                     stream << "[" << property.arrayDim << "]";
-                stream << "; // " << Hex(property.offset) << " (" << Hex(static_cast<uint64_t>(total)) << ")\n";
+                stream << ";\n";
                 if (entry->type.IsOpaque())
                     recordOpaque(*entry);
             }
@@ -585,7 +584,7 @@ namespace nextdumper::generation::detail
             if (!function.headerReadable)
             {
                 stream << "// Unavailable function definition: " << EscapeJson(function.fullName)
-                       << " address=" << Hex(address) << "; see reflection.json and diagnostics.json.\n";
+                       << " address=" << Hex(address) << "; see the reflection shard and diagnostics.json.\n";
                 continue;
             }
             const std::string &functionName = symbols.functions.at(address);

@@ -24,7 +24,8 @@ namespace nextdumper::generation::detail
 
     void ManifestJson(std::ostream &stream, const RuntimeContext &context, const ReflectionIR &reflection,
                       const std::string &packageName, const ArtifactProvenance &provenance,
-                      const GenerationReport &report, ParseStatus status)
+                      const GenerationReport &report, ParseStatus status,
+                      const std::map<std::string, uintmax_t> &fileSizes)
     {
         const ReflectionStats &stats = reflection.stats;
         stream << "{\n";
@@ -81,7 +82,16 @@ namespace nextdumper::generation::detail
         stream << "    \"sdk_layout_events\": " << report.layoutEvents << "\n";
         stream << "  },\n  \"capture\":";
         WriteCaptureJson(stream, reflection.capture);
-        stream << ",\n  \"runtime_value_evidence\":";
+        stream << ",\n  \"artifact_sizes\":{";
+        bool firstSize = true;
+        for (const auto &[name, size] : fileSizes)
+        {
+            if (!firstSize)
+                stream << ',';
+            firstSize = false;
+            stream << '"' << EscapeJson(name) << "\":" << size;
+        }
+        stream << "},\n  \"runtime_value_evidence\":";
         WriteRuntimeEvidenceJson(stream, reflection.runtimeEvidence, false);
         stream << '\n';
         stream << "}\n";
@@ -297,7 +307,7 @@ namespace nextdumper::generation::detail
                << ",\"exported\":" << opaqueExported
                << ",\"omitted\":" << (report.opaqueDetails.size() - opaqueExported)
                << ",\"samples_per_kind\":" << kOpaqueSamplesPerKind << "},\n";
-        stream << "  \"reflection_evidence\":{\"artifact\":\"reflection.json\",\"owner_join_key\":\"types/functions.address\",\"property_join_key\":\"address\",\"generation_types\":\"property.generation.type_id -> generation_types.id\",\"layout_issues\":\"owner.layout_analysis.issues[layout_issue_index]\",\"delegate_signatures\":\"delegate_signatures\",\"container_storage\":\"container_storage_evidence\",\"runtime_values\":\"runtime_value_evidence\"}";
+        stream << "  \"reflection_evidence\":{\"index\":\"reflection.json\",\"records\":\"reflection.json shards[] entries; each shard holds types/functions/enums\",\"owner_join_key\":\"types/functions.address\",\"property_join_key\":\"address\",\"generation_types\":\"property.generation.type_id -> generation_types.id in reflection.json\",\"layout_issues\":\"owner.layout_analysis.issues[layout_issue_index]\",\"delegate_signatures\":\"reflection.json/delegate_signatures\",\"container_storage\":\"reflection.json/container_storage_evidence\",\"runtime_values\":\"reflection.json/runtime_value_evidence\"}";
         stream << ",\n  \"runtime_value_evidence\":";
         WriteRuntimeEvidenceJson(stream, reflection.runtimeEvidence, false);
         stream << ",\n";
@@ -575,11 +585,18 @@ namespace nextdumper::generation::detail
         stream << "\n}\n";
     }
 
-    void ReflectionJson(std::ostream &stream, const RuntimeContext &context, const ReflectionIR &reflection,
-                        const GenerationReport &report, const CppSymbols &symbols)
+    void ReflectionIndexJson(std::ostream &stream, const RuntimeContext &context, const ReflectionIR &reflection,
+                             const ReflectionPartition &partition, const GenerationReport &report)
     {
         const auto &validation = context.Schema().validation;
-        WriteReflectionJson(stream, reflection, {context.Schema().identity.canonicalVersionRange.empty() ? validation.familyEvidence : context.Schema().identity.canonicalVersionRange, validation.profileId, validation.profileLabel, validation.profileVersionRange, &context.Schema().identity}, &report.fields, &symbols);
+        WriteReflectionIndexJson(stream, reflection, {context.Schema().identity.canonicalVersionRange.empty() ? validation.familyEvidence : context.Schema().identity.canonicalVersionRange, validation.profileId, validation.profileLabel, validation.profileVersionRange, &context.Schema().identity}, partition, &report.fields);
+    }
+
+    void ReflectionShardJson(std::ostream &stream, const ReflectionIR &reflection,
+                             const ReflectionPartition::Shard &shard,
+                             const GenerationReport &report, const CppSymbols &symbols)
+    {
+        WriteReflectionShardJson(stream, reflection, shard, &report.fields, &symbols);
     }
 
 } // namespace nextdumper::generation::detail

@@ -6,6 +6,8 @@
 #include <iterator>
 #include <map>
 #include <ostream>
+#include <set>
+#include <string>
 
 #include "nextdumper/common/Hex.hpp"
 
@@ -51,6 +53,95 @@ namespace nextdumper::generation
             first = index + 1;
         }
         result.append(value.substr(first));
+        return result;
+    }
+
+    std::string ObjectPackageName(std::string_view fullName)
+    {
+        // 形如 "<Kind> /<Root>/<Directory...>/<Package>.<Object>"，包名取路径最后一段
+        const size_t space = fullName.find(' ');
+        if (space == std::string_view::npos)
+            return {};
+        const std::string_view path = fullName.substr(space + 1);
+        if (path.size() < 3 || path.front() != '/')
+            return {};
+        const size_t nameStart = path.rfind('/');
+        if (nameStart == std::string_view::npos || nameStart + 1 >= path.size())
+            return {};
+        const std::string_view remainder = path.substr(nameStart + 1);
+        const size_t nameEnd = remainder.find('.');
+        if (nameEnd == std::string_view::npos || nameEnd == 0)
+            return {};
+        return std::string(remainder.substr(0, nameEnd));
+    }
+
+    std::string UnassignedPackageName()
+    {
+        return "_unassigned";
+    }
+
+    ReflectionPartition PartitionReflection(const ir::ReflectionIR &reflection)
+    {
+        ReflectionPartition result;
+        std::map<std::string, size_t> shardByPackage;
+        const auto shardFor = [&](std::string package) -> ReflectionPartition::Shard &
+        {
+            if (package.empty())
+                package = UnassignedPackageName();
+            const auto existing = shardByPackage.find(package);
+            if (existing != shardByPackage.end())
+                return result.shards[existing->second];
+            shardByPackage.emplace(package, result.shards.size());
+            result.shards.push_back({});
+            result.shards.back().package = std::move(package);
+            return result.shards.back();
+        };
+        for (size_t index = 0; index < reflection.types.size(); ++index)
+        {
+            auto &shard = shardFor(ObjectPackageName(reflection.types[index].fullName));
+            shard.types.push_back(index);
+            shard.properties += reflection.types[index].properties.size();
+        }
+        for (size_t index = 0; index < reflection.enums.size(); ++index)
+            shardFor(ObjectPackageName(reflection.enums[index].fullName)).enums.push_back(index);
+        for (const auto &[address, function] : reflection.functions)
+        {
+            (void)address;
+            // 函数自身的全名可能缺失，此时回退到其所属类型的包，避免集中落入未分配分片
+            std::string package = ObjectPackageName(function.fullName);
+            if (package.empty())
+                package = ObjectPackageName(function.outerFullName);
+            auto &shard = shardFor(std::move(package));
+            shard.functions.push_back(&function);
+            shard.properties += function.parameters.size() + function.locals.size();
+        }
+
+        // 分片顺序只由包名决定，读端无需依赖写入顺序
+        std::vector<size_t> order(result.shards.size());
+        for (size_t index = 0; index < order.size(); ++index)
+            order[index] = index;
+        std::sort(order.begin(), order.end(), [&](size_t left, size_t right)
+                  { return result.shards[left].package < result.shards[right].package; });
+        std::vector<ReflectionPartition::Shard> sorted;
+        sorted.reserve(result.shards.size());
+        std::set<std::string> usedFileNames;
+        for (size_t index : order)
+        {
+            auto shard = std::move(result.shards[index]);
+            const std::string stem = SanitizeIdentifier(shard.package, "Package");
+            std::string fileName = "reflection." + stem + ".json";
+            if (!usedFileNames.insert(fileName).second)
+            {
+                size_t suffix = 1;
+                do
+                {
+                    fileName = "reflection." + stem + "_" + std::to_string(++suffix) + ".json";
+                } while (!usedFileNames.insert(fileName).second);
+            }
+            shard.fileName = std::move(fileName);
+            sorted.push_back(std::move(shard));
+        }
+        result.shards = std::move(sorted);
         return result;
     }
 
@@ -310,22 +401,25 @@ namespace nextdumper::generation
         void Property(std::ostream &stream, const ir::PropertyIR &property,
                       const FieldDescriptions *fields = nullptr)
         {
+            // 参数语义与完整性的五个标志在类字段上恒为 false，只输出为真的项
+            // 缺失即表示 false，读端按默认值处理
             stream << "{\"address\":\"" << Hex(property.address) << "\",\"name\":\"" << EscapeJson(property.name)
                    << "\",\"class\":\"" << EscapeJson(property.reflectedClass) << "\",\"offset\":" << property.offset
                    << ",\"element_size\":" << property.elementSize << ",\"array_dim\":" << property.arrayDim
-                   << ",\"storage_size\":" << static_cast<int64_t>(property.elementSize) * property.arrayDim
-                   << ",\"has_physical_storage\":" << (ir::IsVirtualProperty(property) ? "false" : "true")
-                   << ",\"offset_origin\":\""
-                   << (ir::IsVirtualProperty(property) ? "virtual-no-storage"
-                       : property.isParameter          ? "parameter-buffer"
-                                                       : "owner-start")
-                   << "\""
-                   << ",\"is_parameter\":" << (property.isParameter ? "true" : "false")
-                   << ",\"is_return_parameter\":" << (property.isReturnParameter ? "true" : "false")
-                   << ",\"is_out_parameter\":" << (property.isOutParameter ? "true" : "false")
-                   << ",\"is_reference_parameter\":" << (property.isReferenceParameter ? "true" : "false")
-                   << ",\"is_const_parameter\":" << (property.isConstParameter ? "true" : "false")
-                   << ",\"flags\":\"" << Hex(property.flags) << "\",\"kind\":\"" << KindName(property.type.kind)
+                   << ",\"storage_size\":" << static_cast<int64_t>(property.elementSize) * property.arrayDim;
+            if (ir::IsVirtualProperty(property))
+                stream << ",\"has_physical_storage\":false";
+            if (property.isParameter)
+                stream << ",\"is_parameter\":true";
+            if (property.isReturnParameter)
+                stream << ",\"is_return_parameter\":true";
+            if (property.isOutParameter)
+                stream << ",\"is_out_parameter\":true";
+            if (property.isReferenceParameter)
+                stream << ",\"is_reference_parameter\":true";
+            if (property.isConstParameter)
+                stream << ",\"is_const_parameter\":true";
+            stream << ",\"flags\":\"" << Hex(property.flags) << "\",\"kind\":\"" << KindName(property.type.kind)
                    << "\",\"referenced_object\":\"" << Hex(property.type.referencedObject)
                    << "\",\"secondary_object\":\"" << Hex(property.type.secondaryObject)
                    << "\",\"status\":\"" << ir::ParseStatusName(property.status) << "\",\"type_details_resolved\":"
@@ -882,10 +976,10 @@ namespace nextdumper::generation
         stream << "}}";
     }
 
-    void WriteReflectionJson(std::ostream &stream, const ir::ReflectionIR &reflection, const ReflectionIdentity &identity,
-                             const FieldDescriptions *fields, const CppSymbols *symbols)
+    void WriteReflectionIndexJson(std::ostream &stream, const ir::ReflectionIR &reflection, const ReflectionIdentity &identity,
+                                  const ReflectionPartition &partition, const FieldDescriptions *fields)
     {
-        stream << "{\n\"schema_version\":10,\n\"status\":\"" << ir::ParseStatusName(reflection.status)
+        stream << "{\n\"schema_version\":11,\n\"status\":\"" << ir::ParseStatusName(reflection.status)
                << "\",\n\"engine\":\"" << EscapeJson(identity.engine) << "\",\n\"profile\":{\"id\":\"" << EscapeJson(identity.profileId)
                << "\",\"label\":\"" << EscapeJson(identity.profileLabel) << "\",\"version_range\":\"" << EscapeJson(identity.versionRange)
                << "\"}";
@@ -938,12 +1032,39 @@ namespace nextdumper::generation
             }
             stream << "}}";
         }
-        stream << "],\n\"types\":[\n";
-        for (size_t index = 0; index < reflection.types.size(); ++index)
+        stream << "],\n\"shards\":[";
+        for (size_t index = 0; index < partition.shards.size(); ++index)
         {
             if (index != 0)
+                stream << ',';
+            const auto &shard = partition.shards[index];
+            stream << "{\"package\":\"" << EscapeJson(shard.package)
+                   << "\",\"file\":\"" << EscapeJson(shard.fileName)
+                   << "\",\"types\":" << shard.types.size()
+                   << ",\"enums\":" << shard.enums.size()
+                   << ",\"functions\":" << shard.functions.size()
+                   << ",\"properties\":" << shard.properties << '}';
+        }
+        stream << ']';
+        stream << ",\n\"delegate_signatures\":";
+        WriteDelegateDiagnosticsJson(stream, reflection);
+        stream << ",\n\"container_storage_evidence\":";
+        WriteContainerStorageJson(stream, reflection);
+        stream << ",\n\"runtime_value_evidence\":";
+        WriteRuntimeEvidenceJson(stream, reflection.runtimeEvidence, true);
+        stream << "\n}\n";
+    }
+
+    void WriteReflectionShardJson(std::ostream &stream, const ir::ReflectionIR &reflection,
+                                  const ReflectionPartition::Shard &shard,
+                                  const FieldDescriptions *fields, const CppSymbols *symbols)
+    {
+        stream << "{\n\"schema_version\":11,\n\"package\":\"" << EscapeJson(shard.package) << "\",\n\"types\":[\n";
+        for (size_t item = 0; item < shard.types.size(); ++item)
+        {
+            if (item != 0)
                 stream << ",\n";
-            const auto &type = reflection.types[index];
+            const auto &type = reflection.types[shard.types[item]];
             stream << "{\"address\":\"" << Hex(type.address) << "\",\"kind\":\"" << (type.kind == ir::TypeKind::Class ? "Class" : "Struct")
                    << "\",\"name\":\"" << EscapeJson(type.name) << "\",\"full_name\":\"" << EscapeJson(type.fullName)
                    << "\",\"size\":" << type.size << ",\"super\":\"" << Hex(type.superAddress) << "\",\"status\":\""
@@ -963,41 +1084,38 @@ namespace nextdumper::generation
                        << '}';
             }
             stream << ",\"properties\":[";
-            for (size_t item = 0; item < type.properties.size(); ++item)
+            for (size_t property = 0; property < type.properties.size(); ++property)
             {
-                if (item != 0)
+                if (property != 0)
                     stream << ',';
-                Property(stream, type.properties[item], fields);
+                Property(stream, type.properties[property], fields);
             }
             stream << "],\"layout_analysis\":";
             LayoutAnalysis(stream, type.layout);
             stream << ",\"layout_conflicts\":";
             Strings(stream, type.layoutConflicts);
             stream << ",\"function_addresses\":[";
-            for (size_t item = 0; item < type.functionAddresses.size(); ++item)
+            for (size_t address = 0; address < type.functionAddresses.size(); ++address)
             {
-                if (item != 0)
+                if (address != 0)
                     stream << ',';
-                stream << '"' << Hex(type.functionAddresses[item]) << '"';
+                stream << '"' << Hex(type.functionAddresses[address]) << '"';
             }
             stream << "]}";
         }
         stream << "\n],\n\"functions\":[\n";
-        bool firstFunction = true;
-        for (const auto &[address, function] : reflection.functions)
+        for (size_t item = 0; item < shard.functions.size(); ++item)
         {
-            (void)address;
-            if (!firstFunction)
+            if (item != 0)
                 stream << ",\n";
-            firstFunction = false;
-            Function(stream, function, fields, symbols);
+            Function(stream, *shard.functions[item], fields, symbols);
         }
         stream << "\n],\n\"enums\":[\n";
-        for (size_t index = 0; index < reflection.enums.size(); ++index)
+        for (size_t item = 0; item < shard.enums.size(); ++item)
         {
-            if (index != 0)
+            if (item != 0)
                 stream << ",\n";
-            const auto &enumeration = reflection.enums[index];
+            const auto &enumeration = reflection.enums[shard.enums[item]];
             stream << "{\"address\":\"" << Hex(enumeration.address) << "\",\"name\":\"" << EscapeJson(enumeration.name)
                    << "\",\"full_name\":\"" << EscapeJson(enumeration.fullName) << "\",\"cpp_form\":"
                    << static_cast<unsigned int>(enumeration.cppForm) << ",\"flags\":" << static_cast<unsigned int>(enumeration.flags)
@@ -1013,12 +1131,6 @@ namespace nextdumper::generation
             }
             stream << "]}";
         }
-        stream << "\n],\n\"delegate_signatures\":";
-        WriteDelegateDiagnosticsJson(stream, reflection);
-        stream << ",\n\"container_storage_evidence\":";
-        WriteContainerStorageJson(stream, reflection);
-        stream << ",\n\"runtime_value_evidence\":";
-        WriteRuntimeEvidenceJson(stream, reflection.runtimeEvidence, true);
-        stream << "\n}\n";
+        stream << "\n]\n}\n";
     }
 } // namespace nextdumper::generation

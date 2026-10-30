@@ -144,12 +144,12 @@ namespace nextdumper::generation::detail
         if (diagnostic)
             for (const auto &[category, count] : layoutLogOmitted)
                 diagnostic("sdk_layout_log_omitted category=" + category + " normal_records=" + std::to_string(count) +
-                           " samples=8 full_records=diagnostics.json/generation_report-and-reflection.json/layout_analysis");
+                           " samples=8 full_records=diagnostics.json/generation_report-and-reflection-shard/layout_analysis");
         if (diagnostic)
             for (const auto &[kind, count] : opaqueLogOmitted)
                 diagnostic("sdk_opaque_log_omitted class=" + kind + " normal_records=" + std::to_string(count) +
                            " samples=" + std::to_string(opaqueLogSamples.at(kind)) +
-                           " full_records=reflection.json/property.generation-and-diagnostics.json/opaque_fields");
+                           " full_records=reflection-shard/property.generation-and-diagnostics.json/opaque_fields");
     }
 
     std::vector<std::string> GenerationReport::Summaries() const

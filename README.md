@@ -68,7 +68,7 @@ The reflection layout is detected at runtime, not selected by version number. Th
 | `FField` tagged owner | 5.3–5.4 |
 | Modern reflection | 5.5–5.6 |
 
-`runtime.json` and `EngineLayouts.hpp` record the selected layout. `reflection.json` also records compatible profiles and the version confidence. Forks and custom builds can differ; the diagnosis report shows which stage failed instead of assuming a specific version.
+`runtime.json` and `EngineLayouts.hpp` record the selected layout. `reflection.json` also records compatible profiles and the version confidence. Forks and custom builds can differ; the diagnosis report shows which stage failed instead of assuming a specific version. Reflection records are split into per-package shards; `reflection.json` lists them and holds only cross-cutting evidence.
 
 ## Getting started
 
@@ -156,7 +156,8 @@ A successful run creates a directory named after the package and the session tim
 ├── Types.hpp
 ├── Enums.hpp
 ├── Functions.hpp
-├── reflection.json
+├── reflection.json          # index: no type/function/enum records
+├── reflection.<Package>.json  # one shard per UE package
 ├── manifest.json
 ├── diagnostics.json
 └── runtime.json
@@ -176,7 +177,8 @@ The output directory also receives the session log and diagnosis report:
 | `Types.hpp` | Reflected Unreal classes and structs with names, inheritance, and field offsets. |
 | `Enums.hpp` | Reflected enum declarations and values. |
 | `Functions.hpp` | Reflected execution entry RVAs and parameter layouts. |
-| `reflection.json` | Full reflection data, field storage descriptions, generation metadata, and limited runtime samples. |
+| `reflection.json` | Index for the reflection shards: status, profile, statistics, capture evidence, generation metadata, and limited runtime samples. It holds no type, function, or enum records. |
+| `reflection.<Package>.json` | One shard per Unreal package, holding that package's types, functions, and enums with field storage descriptions. Shard names are listed in `reflection.json` under `shards`. |
 | `manifest.json` | Output status, parsing statistics, and build information (commit, version, and worktree state). |
 | `diagnostics.json` | Reflection and generation diagnostics, counters, and references to shared sample data. |
 | `runtime.json` | Module information, binding layout, reflection offsets, and common class addresses. |
@@ -260,7 +262,7 @@ Run `tools/ida/nextdumper_import.py` from IDA and select a NextDumper output dir
 - imports the reflected byte-layout types into IDA's local type library;
 - adds names and comments for validated execution entry RVAs and native function candidates whose RVA falls in an executable segment of the loaded image.
 
-It does not apply runtime heap addresses to the static image and does not create functions automatically. Enum values outside the 32-bit C enum range stay in `reflection.json` and are omitted from the generated IDA header. The importer also checks that the output's architecture and bitness match the IDA database.
+It does not apply runtime heap addresses to the static image and does not create functions automatically. Enum values outside the 32-bit C enum range stay in the reflection shard and are omitted from the generated IDA header. The importer also checks that the output's architecture and bitness match the IDA database.
 
 The output contains no hash of the target binary. Confirm that the file open in IDA is the same image that was captured before relying on RVA annotations.
 
@@ -322,7 +324,7 @@ Open an [issue](https://github.com/Ezeny1337/NextDumper/issues) for a reproducib
 5. `manifest.json`, `diagnostics.json`, and `runtime.json` when available.
 6. A short reproduction description and the expected result.
 
-Remove credentials, private binaries, proprietary assets, and any information you are not authorized to share before uploading logs or output. Large `reflection.json` files can be attached separately or reduced to the relevant object and layout records.
+Remove credentials, private binaries, proprietary assets, and any information you are not authorized to share before uploading logs or output. Large reflection shards can be attached separately, or you can keep only the shard that holds the affected types.
 
 ## Disclaimer
 

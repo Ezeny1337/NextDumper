@@ -7,6 +7,8 @@
 #include <chrono>
 #include <cstdio>
 #include <fstream>
+#include <map>
+#include <string>
 #include <utility>
 
 namespace nextdumper::generation
@@ -106,33 +108,39 @@ namespace nextdumper::generation
             result.error = "temporary output directory creation failed";
             return result;
         }
-        const auto writeFile = [&](const char *name, const auto &emit)
+        std::map<std::string, uintmax_t> fileSizes;
+        const auto writeFile = [&](const std::string &name, const auto &emit)
         {
             std::array<char, 64 * 1024> buffer;
             std::ofstream stream;
             stream.rdbuf()->pubsetbuf(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-            stream.open(transaction.path / name, std::ios::binary | std::ios::trunc);
+            const std::filesystem::path path = transaction.path / name;
+            stream.open(path, std::ios::binary | std::ios::trunc);
             if (!stream.is_open())
             {
-                result.error = "output file open failed: " + std::string(name);
+                result.error = "output file open failed: " + name;
                 return false;
             }
             emit(stream);
             stream.flush();
             if (!stream.good())
             {
-                result.error = "output file write or flush failed: " + std::string(name);
+                result.error = "output file write or flush failed: " + name;
                 return false;
             }
             stream.close();
             if (stream.fail())
             {
-                result.error = "output file close failed: " + std::string(name);
+                result.error = "output file close failed: " + name;
                 return false;
             }
+            std::error_code sizeError;
+            const uintmax_t size = std::filesystem::file_size(path, sizeError);
+            fileSizes.emplace(name, sizeError ? 0 : size);
             ++result.filesWritten;
             return true;
         };
+        const ReflectionPartition partition = PartitionReflection(reflection_);
         if (!writeFile("BasicTypes.hpp", [&](std::ostream &stream)
                        { emitter.BasicTypes(stream, symbols); }) ||
             !writeFile("EngineLayouts.hpp", [&](std::ostream &stream)
@@ -144,8 +152,12 @@ namespace nextdumper::generation
             !writeFile("Functions.hpp", [&](std::ostream &stream)
                        { emitter.Functions(stream, symbols, report); }) ||
             !writeFile("reflection.json", [&](std::ostream &stream)
-                       { detail::ReflectionJson(stream, context_, reflection_, report, symbols); }))
+                       { detail::ReflectionIndexJson(stream, context_, reflection_, partition, report); }))
             return result;
+        for (const ReflectionPartition::Shard &shard : partition.shards)
+            if (!writeFile(shard.fileName, [&](std::ostream &stream)
+                           { detail::ReflectionShardJson(stream, reflection_, shard, report, symbols); }))
+                return result;
         const ParseStatus status = reflection_.status == ParseStatus::Partial || report.Status() == ParseStatus::Partial
                                        ? ParseStatus::Partial
                                        : ParseStatus::Complete;
@@ -174,12 +186,14 @@ namespace nextdumper::generation
             result.error = "output directory check failed: " + error.message();
             return result;
         }
-        if (!writeFile("manifest.json", [&](std::ostream &stream)
-                       { detail::ManifestJson(stream, context_, reflection_, packageName_, provenance_, report, status); }) ||
-            !writeFile("diagnostics.json", [&](std::ostream &stream)
+        // manifest.json 最后写出，使 artifact_sizes 覆盖此前写出的全部文件；
+        // manifest 自身的字节数在写出前无法得知，因此不在表内
+        if (!writeFile("diagnostics.json", [&](std::ostream &stream)
                        { detail::DiagnosticsJson(stream, context_, reflection_, report, status); }) ||
             !writeFile("runtime.json", [&](std::ostream &stream)
-                       { detail::RuntimeJson(stream, context_); }))
+                       { detail::RuntimeJson(stream, context_); }) ||
+            !writeFile("manifest.json", [&](std::ostream &stream)
+                       { detail::ManifestJson(stream, context_, reflection_, packageName_, provenance_, report, status, fileSizes); }))
             return result;
         std::filesystem::rename(transaction.path, finalPath, error);
         if (error)

@@ -585,7 +585,7 @@ namespace nextdumper::app
                                          " producer_worktree_at_configure=" + provenance_.producerWorktree +
                                          " identity_source=cmake-configure run_id=" + provenance_.runId +
                                          " run_timestamp=" + provenance_.runTimestamp);
-        Note(RuntimeLogLevel::Debug, "diagnostic_encoding=6 owner_contexts=referenced-only exec_entries=bounded-normal-samples-and-all-anomalies opaque_fields=bounded-normal-samples-and-all-gaps opaque_normal_samples_per_class=8 generation_types=shared-context full_records=reflection.json-and-diagnostics.json array_dim_default=1 opaque_reason_default=internals-not-expanded valid_bounds_default=1 container_metadata=all-visited-nodes raw_container_evidence=bounded-samples container_normal_log_samples_per_class=8 optional_runtime_values=independent-bounded-capture layout_info_samples_per_category=8");
+        Note(RuntimeLogLevel::Debug, "diagnostic_encoding=6 owner_contexts=referenced-only exec_entries=bounded-normal-samples-and-all-anomalies opaque_fields=bounded-normal-samples-and-all-gaps opaque_normal_samples_per_class=8 generation_types=shared-context full_records=reflection-index-and-shards-plus-diagnostics.json array_dim_default=1 opaque_reason_default=internals-not-expanded valid_bounds_default=1 container_metadata=all-visited-nodes raw_container_evidence=bounded-samples container_normal_log_samples_per_class=8 optional_runtime_values=independent-bounded-capture layout_info_samples_per_category=8");
         Note("Package=" + config_.packageName + " PID=auto UE=auto");
 
         diagnosis_.stage = "process-discovery";
