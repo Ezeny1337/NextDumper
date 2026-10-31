@@ -44,8 +44,11 @@ def package_of(full_name):
     return remainder[:name_end]
 
 
+SHARD_SUBDIR = "reflection"
+
+
 def shard_paths(artifact_dir, index):
-    """Shard names come from the artifact and are untrusted: accept bare file names only."""
+    """Shard paths are untrusted: accept only plain names under the shard subdirectory."""
     shards = index.get("shards")
     if not isinstance(shards, list):
         raise ValueError("reflection.json has no shard list")
@@ -54,9 +57,13 @@ def shard_paths(artifact_dir, index):
         if not isinstance(shard, dict):
             raise ValueError("shard entry is not an object")
         name = str(shard.get("file", ""))
-        if not name or name in (".", "..") or os.path.basename(name) != name:
+        prefix = SHARD_SUBDIR + "/"
+        if not name.startswith(prefix):
+            raise ValueError("shard is outside {0}/: {1!r}".format(SHARD_SUBDIR, name))
+        leaf = name[len(prefix):]
+        if not leaf or leaf in (".", "..") or os.path.basename(leaf) != leaf:
             raise ValueError("unsafe shard file name: {0!r}".format(name))
-        paths.append((shard, os.path.join(artifact_dir, name)))
+        paths.append((shard, os.path.join(artifact_dir, SHARD_SUBDIR, leaf)))
     return paths
 
 
@@ -94,7 +101,7 @@ def check(artifact_dir, verbose):
         if not os.path.isfile(path):
             failures.append("missing shard file: " + os.path.basename(path))
             continue
-        sizes[os.path.basename(path)] = os.path.getsize(path)
+        sizes[SHARD_SUBDIR + "/" + os.path.basename(path)] = os.path.getsize(path)
         shard = load_json(path)
         if shard.get("schema_version") != INDEX_SCHEMA_VERSION:
             failures.append(
@@ -176,6 +183,14 @@ def check(artifact_dir, verbose):
             sizes[name] = os.path.getsize(path)
         else:
             failures.append("missing file: " + name)
+    sdk_dir = os.path.join(artifact_dir, "sdk")
+    if not os.path.isdir(sdk_dir):
+        failures.append("missing directory: sdk")
+    else:
+        for name in sorted(os.listdir(sdk_dir)):
+            path = os.path.join(sdk_dir, name)
+            if os.path.isfile(path):
+                sizes["sdk/" + name] = os.path.getsize(path)
     runtime_path = os.path.join(artifact_dir, "runtime.json")
     if os.path.isfile(runtime_path):
         runtime = load_json(runtime_path)

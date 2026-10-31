@@ -129,13 +129,13 @@ namespace nextdumper::generation
         {
             auto shard = std::move(result.shards[index]);
             const std::string stem = SanitizeIdentifier(shard.package, "Package");
-            std::string fileName = "reflection." + stem + ".json";
+            std::string fileName = stem + ".json";
             if (!usedFileNames.insert(fileName).second)
             {
                 size_t suffix = 1;
                 do
                 {
-                    fileName = "reflection." + stem + "_" + std::to_string(++suffix) + ".json";
+                    fileName = stem + "_" + std::to_string(++suffix) + ".json";
                 } while (!usedFileNames.insert(fileName).second);
             }
             shard.fileName = std::move(fileName);
@@ -1039,7 +1039,7 @@ namespace nextdumper::generation
                 stream << ',';
             const auto &shard = partition.shards[index];
             stream << "{\"package\":\"" << EscapeJson(shard.package)
-                   << "\",\"file\":\"" << EscapeJson(shard.fileName)
+                   << "\",\"file\":\"reflection/" << EscapeJson(shard.fileName)
                    << "\",\"types\":" << shard.types.size()
                    << ",\"enums\":" << shard.enums.size()
                    << ",\"functions\":" << shard.functions.size()

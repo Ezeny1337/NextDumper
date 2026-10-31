@@ -29,8 +29,12 @@ def _read_json(path, expected_version):
 REFLECTION_SCHEMA_VERSION = 11
 
 
+SHARD_SUBDIR = "reflection"
+
+
 def _shard_paths(artifact_dir, index):
-    """Shard names come from the artifact and are untrusted: accept bare file names only."""
+    """Shard names come from the artifact and are untrusted: accept only plain names under the
+    shard subdirectory, so the index cannot point outside the artifact."""
     shards = index.get("shards")
     if not isinstance(shards, list):
         raise ValueError("reflection.json has no shard list")
@@ -39,11 +43,15 @@ def _shard_paths(artifact_dir, index):
         if not isinstance(shard, dict):
             raise ValueError("reflection.json shard entry is not an object")
         name = str(shard.get("file", ""))
-        if not name or name in (".", "..") or os.path.basename(name) != name:
+        prefix = SHARD_SUBDIR + "/"
+        if not name.startswith(prefix):
+            raise ValueError("reflection.json shard is outside " + prefix + ": " + name)
+        leaf = name[len(prefix):]
+        if not leaf or leaf in (".", "..") or os.path.basename(leaf) != leaf:
             raise ValueError("reflection.json shard has an unsafe file name: " + name)
-        if os.sep in name or (os.altsep and os.altsep in name):
+        if os.sep in leaf or (os.altsep and os.altsep in leaf):
             raise ValueError("reflection.json shard has an unsafe file name: " + name)
-        paths.append(os.path.join(artifact_dir, name))
+        paths.append(os.path.join(artifact_dir, SHARD_SUBDIR, leaf))
     return paths
 
 

@@ -20,6 +20,18 @@ namespace nextdumper::generation::detail
     using ir::PropertyKind;
     using ::nextdumper::common::Hex;
 
+    void SdkEmitter::SdkEntry(std::ostream &stream) const
+    {
+        stream << "#pragma once\n\n";
+        stream << "// Umbrella header for the generated SDK. Include this file only.\n";
+        stream << "// These are target-memory descriptions, not native ABI declarations.\n";
+        stream << "#include \"BasicTypes.hpp\"\n";
+        stream << "#include \"EngineLayouts.hpp\"\n";
+        stream << "#include \"Enums.hpp\"\n";
+        stream << "#include \"Types.hpp\"\n";
+        stream << "#include \"Functions.hpp\"\n";
+    }
+
     void SdkEmitter::BasicTypes(std::ostream &stream, const CppSymbols &symbols) const
     {
         const auto &identity = schema_.identity;

@@ -68,7 +68,7 @@ flowchart TD
 | `FField` tagged owner | 5.3–5.4 |
 | 新版反射布局 | 5.5–5.6 |
 
-`runtime.json` 和 `EngineLayouts.hpp` 会记录最终选择的布局，`reflection.json` 还会记录兼容的其他 profile 和版本可信度。不同分支或自定义构建可能存在差异；此时诊断报告会指出失败的阶段，而不是直接假定引擎版本。反射记录按包拆分为分片，`reflection.json` 只列出分片清单并保存跨包证据。
+`runtime.json` 和 `sdk/EngineLayouts.hpp` 会记录最终选择的布局，`reflection.json` 还会记录兼容的其他 profile 和版本可信度。不同分支或自定义构建可能存在差异；此时诊断报告会指出失败的阶段，而不是直接假定引擎版本。反射记录按包拆分为分片，`reflection.json` 只列出分片清单并保存跨包证据。
 
 ## 快速开始
 
@@ -151,16 +151,20 @@ NextDumper -o <输出目录> -p <包名> [options]
 
 ```text
 <输出目录>/com_example_game_20261021163000/
-├── BasicTypes.hpp
-├── EngineLayouts.hpp
-├── Types.hpp
-├── Enums.hpp
-├── Functions.hpp
-├── reflection.json          # 索引，不含类型/函数/枚举记录
-├── reflection.<Package>.json  # 每个 UE 包一个分片
-├── manifest.json
-├── diagnostics.json
-└── runtime.json
+├── manifest.json           # 产物清单与状态
+├── runtime.json            # 模块、绑定与已解析偏移
+├── diagnostics.json        # 反射与生成诊断
+├── reflection.json         # 索引，不含类型/函数/枚举记录
+├── reflection/             # 每个 UE 包一个分片
+│   ├── Engine.json
+│   └── <Package>.json
+└── sdk/                    # C++ 声明
+    ├── SDK.hpp             # 聚合头，只需包含此文件
+    ├── BasicTypes.hpp
+    ├── EngineLayouts.hpp
+    ├── Types.hpp
+    ├── Enums.hpp
+    └── Functions.hpp
 ```
 
 输出目录下还会写入会话日志和诊断报告：
@@ -172,13 +176,14 @@ NextDumper -o <输出目录> -p <包名> [options]
 
 | 文件 | 内容 |
 | --- | --- |
-| `BasicTypes.hpp` | SDK 基础类型、定长不透明存储包装和容器布局描述。 |
-| `EngineLayouts.hpp` | 所选 Unreal 反射结构的运行时偏移；`-1` 表示该偏移未解析。 |
-| `Types.hpp` | 反射出的类和结构体，包含名称、继承关系和字段偏移。 |
-| `Enums.hpp` | 反射出的枚举声明和值。 |
-| `Functions.hpp` | 反射函数的执行入口 RVA 和参数布局。 |
+| `sdk/SDK.hpp` | 聚合头文件；包含此文件即可引入其余 SDK 声明。 |
+| `sdk/BasicTypes.hpp` | SDK 基础类型、定长不透明存储包装和容器布局描述。 |
+| `sdk/EngineLayouts.hpp` | 所选 Unreal 反射结构的运行时偏移；`-1` 表示该偏移未解析。 |
+| `sdk/Types.hpp` | 反射出的类和结构体，包含名称、继承关系和字段偏移。 |
+| `sdk/Enums.hpp` | 反射出的枚举声明和值。 |
+| `sdk/Functions.hpp` | 反射函数的执行入口 RVA 和参数布局。 |
 | `reflection.json` | 反射分片的索引：状态、profile、统计、采集证据、生成信息和少量运行时采样；不包含类型、函数或枚举记录。 |
-| `reflection.<Package>.json` | 每个 Unreal 包一个分片，包含该包的类型、函数、枚举及字段存储描述；分片文件名列在 `reflection.json` 的 `shards` 中。 |
+| `reflection/<Package>.json` | 每个 Unreal 包一个分片，包含该包的类型、函数、枚举及字段存储描述；分片文件名列在 `reflection.json` 的 `shards` 中。 |
 | `manifest.json` | 输出状态、解析统计和构建信息（commit、版本、工作区状态）。 |
 | `diagnostics.json` | 反射与生成诊断、计数，以及对共用采样数据的引用。 |
 | `runtime.json` | 模块信息、绑定布局、反射偏移和常用类地址。 |

@@ -68,7 +68,7 @@ The reflection layout is detected at runtime, not selected by version number. Th
 | `FField` tagged owner | 5.3–5.4 |
 | Modern reflection | 5.5–5.6 |
 
-`runtime.json` and `EngineLayouts.hpp` record the selected layout. `reflection.json` also records compatible profiles and the version confidence. Forks and custom builds can differ; the diagnosis report shows which stage failed instead of assuming a specific version. Reflection records are split into per-package shards; `reflection.json` lists them and holds only cross-cutting evidence.
+`runtime.json` and `sdk/EngineLayouts.hpp` record the selected layout. `reflection.json` also records compatible profiles and the version confidence. Forks and custom builds can differ; the diagnosis report shows which stage failed instead of assuming a specific version. Reflection records are split into per-package shards; `reflection.json` lists them and holds only cross-cutting evidence.
 
 ## Getting started
 
@@ -151,16 +151,20 @@ A successful run creates a directory named after the package and the session tim
 
 ```text
 <output-dir>/com_example_game_20261021163000/
-├── BasicTypes.hpp
-├── EngineLayouts.hpp
-├── Types.hpp
-├── Enums.hpp
-├── Functions.hpp
-├── reflection.json          # index: no type/function/enum records
-├── reflection.<Package>.json  # one shard per UE package
-├── manifest.json
-├── diagnostics.json
-└── runtime.json
+├── manifest.json           # artifact inventory and status
+├── runtime.json            # module, binding, and resolved offsets
+├── diagnostics.json        # reflection and generation diagnostics
+├── reflection.json         # index: no type/function/enum records
+├── reflection/             # one shard per UE package
+│   ├── Engine.json
+│   └── <Package>.json
+└── sdk/                    # C++ declarations
+    ├── SDK.hpp             # umbrella header, include this one
+    ├── BasicTypes.hpp
+    ├── EngineLayouts.hpp
+    ├── Types.hpp
+    ├── Enums.hpp
+    └── Functions.hpp
 ```
 
 The output directory also receives the session log and diagnosis report:
@@ -172,13 +176,14 @@ The output directory also receives the session log and diagnosis report:
 
 | File | Contents |
 | --- | --- |
-| `BasicTypes.hpp` | SDK primitives, fixed-size opaque storage wrappers, and container layout descriptions. |
-| `EngineLayouts.hpp` | Runtime offsets for selected Unreal reflection structures. `-1` means the offset was not resolved for this target. |
-| `Types.hpp` | Reflected Unreal classes and structs with names, inheritance, and field offsets. |
-| `Enums.hpp` | Reflected enum declarations and values. |
-| `Functions.hpp` | Reflected execution entry RVAs and parameter layouts. |
+| `sdk/SDK.hpp` | Umbrella header. Include this file to pull in the rest of the SDK. |
+| `sdk/BasicTypes.hpp` | SDK primitives, fixed-size opaque storage wrappers, and container layout descriptions. |
+| `sdk/EngineLayouts.hpp` | Runtime offsets for selected Unreal reflection structures. `-1` means the offset was not resolved for this target. |
+| `sdk/Types.hpp` | Reflected Unreal classes and structs with names, inheritance, and field offsets. |
+| `sdk/Enums.hpp` | Reflected enum declarations and values. |
+| `sdk/Functions.hpp` | Reflected execution entry RVAs and parameter layouts. |
 | `reflection.json` | Index for the reflection shards: status, profile, statistics, capture evidence, generation metadata, and limited runtime samples. It holds no type, function, or enum records. |
-| `reflection.<Package>.json` | One shard per Unreal package, holding that package's types, functions, and enums with field storage descriptions. Shard names are listed in `reflection.json` under `shards`. |
+| `reflection/<Package>.json` | One shard per Unreal package, holding that package's types, functions, and enums with field storage descriptions. Shard names are listed in `reflection.json` under `shards`. |
 | `manifest.json` | Output status, parsing statistics, and build information (commit, version, and worktree state). |
 | `diagnostics.json` | Reflection and generation diagnostics, counters, and references to shared sample data. |
 | `runtime.json` | Module information, binding layout, reflection offsets, and common class addresses. |

@@ -108,54 +108,64 @@ namespace nextdumper::generation
             result.error = "temporary output directory creation failed";
             return result;
         }
+        // 相对产物根目录的路径，使用 '/' 分隔，使文件在落盘前即按消费者分组
         std::map<std::string, uintmax_t> fileSizes;
-        const auto writeFile = [&](const std::string &name, const auto &emit)
+        const auto writeFile = [&](const std::string &relativeName, const auto &emit)
         {
+            const std::filesystem::path path = transaction.path / relativeName;
+            std::error_code directoryError;
+            std::filesystem::create_directories(path.parent_path(), directoryError);
+            if (directoryError)
+            {
+                result.error = "output directory creation failed: " + relativeName;
+                return false;
+            }
             std::array<char, 64 * 1024> buffer;
             std::ofstream stream;
             stream.rdbuf()->pubsetbuf(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-            const std::filesystem::path path = transaction.path / name;
             stream.open(path, std::ios::binary | std::ios::trunc);
             if (!stream.is_open())
             {
-                result.error = "output file open failed: " + name;
+                result.error = "output file open failed: " + relativeName;
                 return false;
             }
             emit(stream);
             stream.flush();
             if (!stream.good())
             {
-                result.error = "output file write or flush failed: " + name;
+                result.error = "output file write or flush failed: " + relativeName;
                 return false;
             }
             stream.close();
             if (stream.fail())
             {
-                result.error = "output file close failed: " + name;
+                result.error = "output file close failed: " + relativeName;
                 return false;
             }
             std::error_code sizeError;
             const uintmax_t size = std::filesystem::file_size(path, sizeError);
-            fileSizes.emplace(name, sizeError ? 0 : size);
+            fileSizes.emplace(relativeName, sizeError ? 0 : size);
             ++result.filesWritten;
             return true;
         };
         const ReflectionPartition partition = PartitionReflection(reflection_);
-        if (!writeFile("BasicTypes.hpp", [&](std::ostream &stream)
+        if (!writeFile("sdk/SDK.hpp", [&](std::ostream &stream)
+                       { emitter.SdkEntry(stream); }) ||
+            !writeFile("sdk/BasicTypes.hpp", [&](std::ostream &stream)
                        { emitter.BasicTypes(stream, symbols); }) ||
-            !writeFile("EngineLayouts.hpp", [&](std::ostream &stream)
+            !writeFile("sdk/EngineLayouts.hpp", [&](std::ostream &stream)
                        { emitter.EngineLayouts(stream); }) ||
-            !writeFile("Types.hpp", [&](std::ostream &stream)
+            !writeFile("sdk/Types.hpp", [&](std::ostream &stream)
                        { emitter.Types(stream, symbols, report); }) ||
-            !writeFile("Enums.hpp", [&](std::ostream &stream)
+            !writeFile("sdk/Enums.hpp", [&](std::ostream &stream)
                        { emitter.Enums(stream, symbols); }) ||
-            !writeFile("Functions.hpp", [&](std::ostream &stream)
+            !writeFile("sdk/Functions.hpp", [&](std::ostream &stream)
                        { emitter.Functions(stream, symbols, report); }) ||
             !writeFile("reflection.json", [&](std::ostream &stream)
                        { detail::ReflectionIndexJson(stream, context_, reflection_, partition, report); }))
             return result;
         for (const ReflectionPartition::Shard &shard : partition.shards)
-            if (!writeFile(shard.fileName, [&](std::ostream &stream)
+            if (!writeFile("reflection/" + shard.fileName, [&](std::ostream &stream)
                            { detail::ReflectionShardJson(stream, reflection_, shard, report, symbols); }))
                 return result;
         const ParseStatus status = reflection_.status == ParseStatus::Partial || report.Status() == ParseStatus::Partial

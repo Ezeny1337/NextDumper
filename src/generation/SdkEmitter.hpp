@@ -20,6 +20,7 @@ namespace nextdumper::generation::detail
         SdkEmitter(const module::ModuleImage &module, const ue::EngineSchema &schema, const ReflectionIR &reflection)
             : module_(module), schema_(schema), reflection_(reflection) {}
 
+        void SdkEntry(std::ostream &stream) const;
         void BasicTypes(std::ostream &stream, const CppSymbols &symbols) const;
         void EngineLayouts(std::ostream &stream) const;
         void Types(std::ostream &stream, const CppSymbols &symbols, GenerationReport &report) const;
