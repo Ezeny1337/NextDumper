@@ -282,8 +282,7 @@ namespace nextdumper::generation::detail
             event.strategy = "offset-description";
             event.cursorSource = plan.declarationDependencyBlocked ? "declaration-dependency" : "layout-analysis";
             report.Info(std::move(event));
-            stream << "    // Representation: offset-description; reflected order is not asserted.\n";
-            stream << "    // Native data size is the reflected type/parameter size; unreflected bytes are not inferred as padding.\n";
+            stream << "    // Representation: offset-description; see the file header for its meaning.\n";
             size_t ordinal = 0;
             for (const FieldDescription &entry : plan.fields)
             {
@@ -538,6 +537,8 @@ namespace nextdumper::generation::detail
 
         stream << "#pragma once\n#include <cstddef>\n#include <cstdint>\n#include \"BasicTypes.hpp\"\n#include \"Enums.hpp\"\n\n";
         stream << "// Sizes and offsets describe target memory, not native C++ layout.\n";
+        stream << "// Structs marked offset-description list reflected offsets without asserting declaration order;\n";
+        stream << "// their native data size is the reflected type or parameter size, and unreflected bytes are not padding.\n";
         stream << "namespace NextDumper\n{\n";
         for (const TypeIR &type : reflection_.types)
             stream << "struct " << types.at(type.address).name << ";\n";
@@ -591,6 +592,10 @@ namespace nextdumper::generation::detail
         if (reflection_.stats.parsedFunctions == 0)
             stream << "// No UFunction metadata was resolved in this dump.\n";
         stream << "// RVAs describe reflected execution entries, not original C++ business implementations.\n";
+        stream << "// Structs marked offset-description list reflected offsets without asserting declaration order;\n";
+        stream << "// their native data size is the reflected type or parameter size, and unreflected bytes are not padding.\n";
+        stream << "// A zero-parameter function is emitted as an empty struct only when the header and the property\n";
+        stream << "// chain agree that it has no parameters.\n";
         for (const auto &[address, function] : reflection_.functions)
         {
             if (!function.headerReadable)
@@ -612,14 +617,25 @@ namespace nextdumper::generation::detail
             stream << "inline constexpr TargetAddress " << functionName << "_NativeExecRva = "
                    << Hex(function.nativeExecRva.value_or(0)) << ";\n";
             stream << "inline constexpr std::size_t " << functionName << "_ParamsSize = " << function.paramSize << ";\n";
-            stream << "struct " << functionName << "_Params\n{\n";
-            stream << "    static constexpr std::size_t ReflectedSize = " << function.paramSize << ";\n";
-            TypeIR owner;
-            owner.address = function.outerAddress;
-            owner.fullName = function.outerFullName;
-            const FieldGenerationPlan plan = BuildFieldGenerationPlan(owner, &function, function.parameters,
-                                                                      function.paramSize, symbols);
-            WriteFields(stream, owner, &function, plan, symbols, report);
+            // 零参数只在头部与属性链两侧一致时才成立
+            // 不一致说明参数链未被完整读取，此时仍保留结构体，使缺失可见而不是被压成空声明
+            const bool confirmedEmptyParameters = function.numParams == 0 && function.paramSize == 0 &&
+                                                  function.parameterSemanticsConsistent && function.parameters.empty();
+            if (confirmedEmptyParameters)
+            {
+                stream << "struct " << functionName << "_Params { };\n";
+            }
+            else
+            {
+                stream << "struct " << functionName << "_Params\n{\n";
+                stream << "    static constexpr std::size_t ReflectedSize = " << function.paramSize << ";\n";
+                TypeIR owner;
+                owner.address = function.outerAddress;
+                owner.fullName = function.outerFullName;
+                const FieldGenerationPlan plan = BuildFieldGenerationPlan(owner, &function, function.parameters,
+                                                                          function.paramSize, symbols);
+                WriteFields(stream, owner, &function, plan, symbols, report);
+            }
             if (function.referencedAsSignature)
                 stream << "struct " << functionName << "_Signature { using Parameters = " << functionName << "_Params; };\n\n";
         }
