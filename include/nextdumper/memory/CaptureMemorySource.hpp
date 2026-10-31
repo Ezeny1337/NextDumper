@@ -31,9 +31,11 @@ namespace nextdumper::memory
         size_t readFailures = 0;
         std::vector<ReadResult> readFailureSamples;
 
+        // 预算耗尽表示部分读取未被冻结，校验覆盖不完整，但不代表已冻结的字节发生了变化
+        // 它单独由 limitExceeded 与 coverageComplete 表达，不参与稳定性判定
         [[nodiscard]] bool Stable() const
         {
-            return !limitExceeded && !generationChanged && changedRanges == 0 && unreadableRanges == 0;
+            return !generationChanged && changedRanges == 0 && unreadableRanges == 0;
         }
     };
 

@@ -452,13 +452,6 @@ namespace nextdumper::reflection
         }
         for (const FieldMetadata &field : chain.fields)
         {
-            if (memory_.LimitExceeded())
-            {
-                result.complete = false;
-                ++stats.failures;
-                diagnostics.push_back("capture observation limit reached in property chain");
-                break;
-            }
             if (!IsPropertyFieldKind(field.kind))
             {
                 continue;
@@ -558,6 +551,8 @@ namespace nextdumper::reflection
         }
         FunctionIR &function = ir.functions.try_emplace(address).first->second;
         function.address = address;
+        // parsedFunctions 表示已进入 IR 的函数数，与 Functions.hpp 和 reflection 分片的记录数保持一致
+        ++ir.stats.parsedFunctions;
         const auto fail = [&](const std::string &reason)
         {
             ++ir.stats.failures;
@@ -565,9 +560,6 @@ namespace nextdumper::reflection
             function.layoutConflicts.push_back(reason);
             return &function;
         };
-        if (memory_.LimitExceeded())
-            return fail("capture observation limit reached before function read");
-
         const auto field = objects_.UField(address);
         if (field)
         {
@@ -659,7 +651,6 @@ namespace nextdumper::reflection
             function.layoutConflicts.push_back("function parameter chain root unreadable: offset=" +
                                                std::to_string(schema_.features.useFProperty ? schema_.ustruct.childProperties : schema_.ustruct.children));
         }
-        ++ir.stats.parsedFunctions;
         return &function;
     }
 
@@ -709,8 +700,6 @@ namespace nextdumper::reflection
             FunctionIR *function = ReadFunction(pendingSignatures_[nextSignature_++], ir);
             if (function)
                 function->referencedAsSignature = true;
-            if (memory_.LimitExceeded())
-                break;
         }
     }
 
@@ -1239,7 +1228,9 @@ namespace nextdumper::reflection
                 details.changes.push_back({change.address, change.size, static_cast<int32_t>(change.read.error),
                                            change.read.transferred, change.before, change.after});
             if (details.reason.empty())
-                details.reason = validation.Stable() ? "observed-bytes-stable" : "observed-bytes-changed-or-unreadable";
+                details.reason = !validation.Stable()       ? "observed-bytes-changed-or-unreadable"
+                                 : validation.limitExceeded ? "observed-bytes-stable-partial-coverage"
+                                                            : "observed-bytes-stable";
             history.push_back(std::move(details));
             if (progress_)
                 progress_("capture attempt=" + std::to_string(attempt) + " elapsed_ms=" +
@@ -1349,6 +1340,7 @@ namespace nextdumper::reflection
         std::array<std::optional<uintptr_t>, windowSize> classWindow{};
         int32_t windowFirst = 0;
         size_t windowCount = 0;
+        bool observationLimitReported = false;
         auto lastProgress = std::chrono::steady_clock::now();
         const auto recordFailure = [&](const std::string &reason, int32_t index, uintptr_t address)
         {
@@ -1402,7 +1394,9 @@ namespace nextdumper::reflection
                 }
                 if (boundary.count == index)
                 {
-                    details.coverageComplete = true;
+                    // coverageComplete 描述"每个被访问的对象都参与了稳定性校验"
+                    // 预算耗尽使部分字节未冻结，此时枚举虽完整，校验覆盖并不完整
+                    details.coverageComplete = !validation.limitExceeded;
                     break;
                 }
                 result.stats.objectSlots = boundary.count;
@@ -1427,15 +1421,14 @@ namespace nextdumper::reflection
                           " types=" + std::to_string(result.stats.parsedTypes));
                 lastProgress = std::chrono::steady_clock::now();
             }
-            if (memory_.LimitExceeded())
+            // 观测预算只影响字节冻结范围，读取仍然有效
+            // 这里继续枚举并在结束时按已冻结范围校验；未冻结的字节不计入一致性证据
+            if (memory_.LimitExceeded() && !observationLimitReported)
             {
-                enumerationTiming.reset();
-                result.stats.unvisitedObjects = objects_.Count() - index;
+                observationLimitReported = true;
                 ++result.stats.failures;
-                result.diagnostics.push_back("capture observation limit reached; remaining objects were not visited");
-                details.reason = "observation-budget-exceeded";
-                validation = validate();
-                break;
+                result.diagnostics.push_back("capture observation budget exhausted at index=" + std::to_string(index) +
+                                             "; enumeration continues without freezing further bytes");
             }
             if (index < windowFirst || static_cast<size_t>(index - windowFirst) >= windowCount)
             {

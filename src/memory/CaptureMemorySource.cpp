@@ -176,6 +176,8 @@ namespace nextdumper::memory
         const auto previous = position != observations_.end() && position->first == address ? position : observations_.end();
         const size_t previousSize = previous == observations_.end() ? 0 : previous->second.size();
         // 同一批内的重叠请求也逐项验证，不能冻结从未同时成立的字节
+        // 超出预算只停止冻结新的范围，读取本身已经成功
+        // 据此中断调用方会把内存护栏变成采集中止条件，使余下对象永远无法枚举
         if (size > kMaxReadSize || (size > previousSize && size - previousSize > kMaxBytes - observedBytes_) ||
             (previous == observations_.end() && observations_.size() >= kMaxRanges))
         {
