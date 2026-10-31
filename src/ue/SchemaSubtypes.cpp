@@ -550,6 +550,13 @@ namespace nextdumper::ue::schema_probe
             size_t notFieldCaptured = 0;
             size_t wrongKindCaptured = 0;
             std::array<std::string, 4> firstWrongKindNames{};
+            std::array<std::string, 4> firstNotFieldClasses{};
+            std::array<uintptr_t, 4> firstNotFieldSamples{};
+            std::array<int32_t, 4> firstNotFieldOffsets{};
+            std::array<uintptr_t, 4> firstNotFieldOwners{};
+            std::array<std::string, 4> firstNotFieldOwnerClasses{};
+            std::array<uintptr_t, 4> firstNotFieldNeighbors{};
+            std::array<int32_t, 4> firstNotFieldLinkIndex{};
         };
 
         TailDiagnostics DiagnoseTail(const IMemorySource &memory, const RuntimeBinding &binding, const EngineSchema &schema,
@@ -609,7 +616,14 @@ namespace nextdumper::ue::schema_probe
                         ++result.linkNotField;
                         if (result.notFieldCaptured < result.firstNotField.size())
                         {
-                            result.firstNotField[result.notFieldCaptured] = value;
+                            const size_t slot = result.notFieldCaptured;
+                            result.firstNotField[slot] = value;
+                            result.firstNotFieldClasses[slot] = sample.metadata.normalizedClassName;
+                            result.firstNotFieldSamples[slot] = sample.metadata.address;
+                            result.firstNotFieldOffsets[slot] = sample.metadata.offset;
+                            result.firstNotFieldOwners[slot] = sample.metadata.ownerAddress;
+                            result.firstNotFieldNeighbors[slot] = link == 0 ? 0 : links[static_cast<size_t>(link) - 1];
+                            result.firstNotFieldLinkIndex[slot] = link;
                             ++result.notFieldCaptured;
                         }
                         continue;
@@ -1191,7 +1205,13 @@ namespace nextdumper::ue::schema_probe
                                     " not_field=" + std::to_string(diag.linkNotField) +
                                     " wrong_kind=" + std::to_string(diag.linkWrongKind);
             for (size_t index = 0; index < diag.notFieldCaptured; ++index)
-                causeLine += " nf" + std::to_string(index) + "=" + Hex(diag.firstNotField[index]);
+                causeLine += " nf" + std::to_string(index) + "=" + Hex(diag.firstNotField[index]) +
+                             ":" + diag.firstNotFieldClasses[index] +
+                             "@+" + std::to_string(diag.firstNotFieldOffsets[index]) +
+                             "/" + Hex(diag.firstNotFieldSamples[index]) +
+                             " link=" + std::to_string(diag.firstNotFieldLinkIndex[index]) +
+                             " prev=" + Hex(diag.firstNotFieldNeighbors[index]) +
+                             " owner=" + Hex(diag.firstNotFieldOwners[index]);
             for (size_t index = 0; index < diag.wrongKindCaptured; ++index)
                 causeLine += " wk" + std::to_string(index) + "=" + Hex(diag.firstWrongKind[index]) +
                              ":" + diag.firstWrongKindNames[index];
