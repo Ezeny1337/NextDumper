@@ -1,8 +1,6 @@
 #pragma once
 
-#include <array>
 #include <cstdint>
-#include <map>
 #include <functional>
 #include <string>
 #include <utility>
@@ -42,7 +40,6 @@ namespace nextdumper::memory
     };
 
     // 单线程采集视图，只冻结已消费的字节，验证稳定不等于获得原子快照
-    // 冻结以对齐块为单位，预算因此取决于被访问的对象数，而不是读取次数
     class CaptureMemorySource final : public IMemorySource
     {
     public:
@@ -77,25 +74,39 @@ namespace nextdumper::memory
         [[nodiscard]] ReadPerformance *Performance() const override { return source_.Performance(); }
 
     private:
-        static constexpr size_t kBlockSize = 64;
-        static constexpr size_t kMaxBlocks = 512 * 1024;
+        // 冻结以连续区域为单位：属性描述符由 UStruct::Link 一次分配且彼此相邻
+        // 同一类的多次读取落在同一段内存里
+        // 记录数因此取决于被访问的对象簇而不是读取次数
+        static constexpr size_t kMaxRegionBytes = 128 * 1024;
+        // 合并间隙上限
+        // 同一次分配内的相邻描述符间距在数百字节以内
+        // 而不同分配之间通常相距更远，跨过更大的空洞只会为间隙分配内存，却得不到任何校验价值
+        static constexpr uintptr_t kMaxRegionGap = 0x100;
+        // 冻结内存总上限，按各区域实际分配的字节累计
+        static constexpr size_t kMaxObservedBytes = 64 * 1024 * 1024;
+        // 单次逻辑批次的传输预算，与冻结无关
         static constexpr size_t kMaxBytes = 64 * 1024 * 1024;
         static constexpr size_t kMaxReadSize = 2048;
 
-        struct Block
+        // 一段连续的已读取地址范围，bytes 保存原样内容，covered 逐位标记哪些字节真正被读取过
+        // 间隙字节既不参与比较，也不会被回放
+        struct Region
         {
-            std::array<uint8_t, kBlockSize> bytes{};
-            std::array<uint64_t, kBlockSize / 64> covered{};
+            uintptr_t base = 0;
+            std::vector<uint8_t> bytes;
+            std::vector<uint64_t> covered;
         };
 
         void RecordFailure(const ReadResult &read) const;
         void ObserveBytes(uintptr_t address, const uint8_t *bytes, size_t size) const;
-        [[nodiscard]] static bool IsCovered(const Block &block, size_t offset, size_t size);
-        [[nodiscard]] bool ServeFromBlocks(uintptr_t address, void *buffer, size_t size) const;
+        [[nodiscard]] static bool IsCovered(const Region &region, size_t offset, size_t size);
+        [[nodiscard]] bool ServeFromRegion(uintptr_t address, void *buffer, size_t size) const;
 
         IMemorySource &source_;
         std::function<void(const std::string &)> diagnostic_;
-        mutable std::map<uintptr_t, Block> blocks_;
+        // 按 base 升序且互不重叠，二分查找与顺序遍历都依赖这一不变式
+        mutable std::vector<Region> regions_;
+        mutable size_t allocatedBytes_ = 0;
         mutable size_t observedBytes_ = 0;
         mutable bool observing_ = false;
         mutable bool limitExceeded_ = false;
