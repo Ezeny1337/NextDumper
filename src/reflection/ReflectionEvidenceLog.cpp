@@ -84,8 +84,15 @@ namespace nextdumper::reflection::detail
             ++definitionStatuses[signature.definitionStatus];
         for (const auto &[status, count] : definitionStatuses)
             diagnostic("delegate_signature_definition_status status=" + status + " count=" + std::to_string(count));
+        // 签名数量随 delegate 类型增长，逐条输出会淹没其余证据
+        // 完整记录在 reflection 分片的 functions 段，这里只保留有界样本
+        constexpr size_t kDelegateSignatureSamples = 32;
+        size_t delegateSignatureLogged = 0;
         for (const auto &signature : reflection.delegateSignatures)
         {
+            if (delegateSignatureLogged >= kDelegateSignatureSamples)
+                continue;
+            ++delegateSignatureLogged;
             std::ostringstream line;
             line << "delegate_signature address=" << Hex(signature.address) << " outer=" << Hex(signature.outerAddress)
                  << " children_root=" << Hex(signature.childrenRoot)
@@ -99,6 +106,11 @@ namespace nextdumper::reflection::detail
                      << " outer_readable=" << signature.outerReadable;
             diagnostic(line.str());
         }
+        if (reflection.delegateSignatures.size() > delegateSignatureLogged)
+            diagnostic("delegate_signature_log_omitted records_omitted=" +
+                       std::to_string(reflection.delegateSignatures.size() - delegateSignatureLogged) +
+                       " samples=" + std::to_string(delegateSignatureLogged) +
+                       " full_records=reflection.json/functions");
         constexpr size_t kPropertyDiagnosticSamples = 8;
         constexpr size_t kPropertyDetailSamples = 8;
         constexpr size_t kPropertyDetailReadSamples = 2;

@@ -26,6 +26,7 @@ namespace nextdumper::ue::schema_probe
         constexpr size_t kMaxDepth = 32;
         constexpr size_t kMaxFrontier = 1024;
         constexpr size_t kMaxReads = 65536;
+        constexpr size_t kMaxObservedRows = 4;
 
         // 所有读取器共用此视图，连名称与父类链验证也计入预算
         class ProbeMemory final : public IMemorySource
@@ -351,19 +352,34 @@ namespace nextdumper::ue::schema_probe
             return result;
         }
 
+        // 派生属性类在基类之后新增成员的数量随构建而变
+        // 在基类尾部之后枚举有界窗口，由 Verify 的语义判据决定唯一命中的偏移
+        inline constexpr int32_t kMaxPayloadWindow = 2 * static_cast<int32_t>(sizeof(uintptr_t));
+
         std::vector<int32_t> PayloadOffsets(const PropertyTailCandidate &tail, Payload payload)
         {
             const int32_t pointerAlignment = static_cast<int32_t>(alignof(uintptr_t));
+            const int32_t pointer = static_cast<int32_t>(sizeof(uintptr_t));
             const int32_t first = *AlignMember(tail.dataEnd, pointerAlignment);
+            const int32_t last = first + kMaxPayloadWindow;
             std::set<int32_t> offsets;
             if (payload == Payload::Bool)
-                offsets.insert(tail.dataEnd);
-            else if (payload == Payload::Class)
-                offsets.insert(first + static_cast<int32_t>(sizeof(uintptr_t)));
+            {
+                // bool 的四个描述字节是连续的 uint8，不受指针对齐约束
+                for (int32_t offset = tail.dataEnd; offset <= last; ++offset)
+                    offsets.insert(offset);
+            }
             else
-                offsets.insert(first);
-            if (payload == Payload::Array && tail.layout != PropertyTailLayout::UProperty)
-                offsets.insert(*AlignMember(tail.dataEnd + static_cast<int32_t>(sizeof(uint32_t)), pointerAlignment));
+            {
+                for (int32_t offset = first; offset <= last; offset += pointerAlignment)
+                {
+                    // Class 描述 PropertyClass 与 MetaClass 这对相邻指针
+                    // 候选记录后者的位置，前者位于 offset - sizeof(ptr)
+                    const int32_t recorded = payload == Payload::Class ? offset + pointer : offset;
+                    if (recorded + pointer <= last + pointer)
+                        offsets.insert(recorded);
+                }
+            }
             if (payload == Payload::Optional)
                 offsets.insert(tail.completeSize);
             return {offsets.begin(), offsets.end()};
@@ -377,10 +393,8 @@ namespace nextdumper::ue::schema_probe
 
         std::vector<FieldPathCandidate> FieldPathCandidates(const std::vector<PropertyTailCandidate> &tails)
         {
-            // FFieldPathProperty::PropertyClass starts at the complete FProperty size,
-            // including any ABI tail padding.  Do not turn dataEnd into a scan range.
-            // Keep this list structural: scanning neighboring descriptor objects would
-            // incorrectly accept their unrelated FField::ClassPrivate pointers.
+            // FFieldPathProperty::PropertyClass 起始于完整的 FProperty 大小处，包含任何 ABI 尾部填充
+            // 保持此列表的结构化性质，扫描相邻的描述符对象会错误地接受它们不相关的 FField::ClassPrivate 指针
             std::map<int32_t, std::string> byOffset;
             for (const auto &tail : tails)
             {
@@ -1172,6 +1186,7 @@ namespace nextdumper::ue::schema_probe
                 size_t nulls = 0;
                 size_t unreadable = 0;
                 size_t mismatches = 0;
+                size_t observedRows = 0;
                 std::ostringstream observations;
                 std::set<uintptr_t> owners;
                 for (const auto &sample : samples)
@@ -1196,11 +1211,15 @@ namespace nextdumper::ue::schema_probe
                         ++mismatches;
                         break;
                     }
-                    observations << " {property=" << Hex(sample.metadata.address)
-                                 << " owner=" << Hex(sample.metadata.ownerAddress) << " root_owner=" << Hex(sample.rootOwner)
-                                 << " raw=" << Hex(first) << " secondary=" << Hex(second)
-                                 << " class=" << sample.metadata.normalizedClassName << " name=" << std::quoted(sample.metadata.name)
-                                 << " scope=" << sample.scope << " state=" << ObservationName(state) << '}';
+                    if (observedRows < kMaxObservedRows)
+                    {
+                        observations << " {property=" << Hex(sample.metadata.address)
+                                     << " owner=" << Hex(sample.metadata.ownerAddress) << " root_owner=" << Hex(sample.rootOwner)
+                                     << " raw=" << Hex(first) << " secondary=" << Hex(second)
+                                     << " class=" << sample.metadata.normalizedClassName << " name=" << std::quoted(sample.metadata.name)
+                                     << " scope=" << sample.scope << " state=" << ObservationName(state) << '}';
+                    }
+                    ++observedRows;
                 }
                 report.evidence.push_back("property subtype observations: member=" + std::string(spec.name) +
                                           " offset=" + std::to_string(offset) + " rows=" + observations.str());
@@ -1214,7 +1233,7 @@ namespace nextdumper::ue::schema_probe
                                           " matches=" + std::to_string(matches) + " independent_owners=" + std::to_string(owners.size()) +
                                           " null=" + std::to_string(nulls) + " unreadable=" + std::to_string(unreadable) +
                                           " mismatches=" + std::to_string(mismatches) +
-                                          " observation_samples_omitted=0" +
+                                          " observation_samples_omitted=" + std::to_string(observedRows > kMaxObservedRows ? observedRows - kMaxObservedRows : 0) +
                                           " read_budget_exhausted=" + std::to_string(budget.exhausted || budget.memory.Exhausted()));
             }
             if (accepted.size() == 1 && !budget.exhausted && !budget.memory.Exhausted())

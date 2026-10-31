@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstring>
 #include <array>
+#include <iterator>
 #include <stdexcept>
 
 #include "nextdumper/common/Hex.hpp"
@@ -18,8 +19,7 @@ namespace nextdumper::memory
     {
         auto *performance = Performance();
         ScopedReadTiming timing(performance ? &performance->captureReset : nullptr, 1);
-        observations_.clear();
-        observationsDisjoint_ = true;
+        blocks_.clear();
         observedBytes_ = 0;
         observing_ = false;
         limitExceeded_ = false;
@@ -66,15 +66,13 @@ namespace nextdumper::memory
         }
         if (performance)
             ++performance->captureLookups;
-        const auto previous = observations_.find(address);
-        if (source_.IsInitialized() && previous != observations_.end() && previous->second.size() >= size)
+        if (source_.IsInitialized() && ServeFromBlocks(address, buffer, size))
         {
             if (performance)
             {
                 ++performance->captureHits;
                 performance->captureHitBytes += size;
             }
-            std::memcpy(buffer, previous->second.data(), size);
             return {ReadError::None, address, size, size};
         }
         const auto read = ReadFreshBytes(address, buffer, size);
@@ -147,15 +145,13 @@ namespace nextdumper::memory
             }
             if (performance)
                 ++performance->captureLookups;
-            const auto previous = observations_.find(request.address);
-            if (request.buffer && request.size && previous != observations_.end() && previous->second.size() >= request.size)
+            if (request.buffer && request.size && ServeFromBlocks(request.address, request.buffer, request.size))
             {
                 if (performance)
                 {
                     ++performance->captureHits;
                     performance->captureHitBytes += request.size;
                 }
-                std::memcpy(request.buffer, previous->second.data(), request.size);
                 results[index].transferred = request.size;
                 continue;
             }
@@ -168,90 +164,99 @@ namespace nextdumper::memory
         return true;
     }
 
+    bool CaptureMemorySource::IsCovered(const Block &block, size_t offset, size_t size)
+    {
+        for (size_t index = offset; index < offset + size; ++index)
+        {
+            if ((block.covered[index / 64] & (uint64_t{1} << (index % 64))) == 0)
+                return false;
+        }
+        return true;
+    }
+
+    // 只有在请求的每个字节都已冻结时才从块内取值
+    // 部分覆盖必须回落到真实读取，否则会把未观测的字节补成零
+    bool CaptureMemorySource::ServeFromBlocks(uintptr_t address, void *buffer, size_t size) const
+    {
+        if (!buffer || !size ||
+            (address % kBlockSize) + size > kBlockSize)
+            return false;
+        const uintptr_t base = address - address % kBlockSize;
+        const auto found = blocks_.find(base);
+        if (found == blocks_.end())
+            return false;
+        const size_t offset = static_cast<size_t>(address - base);
+        if (!IsCovered(found->second, offset, size))
+            return false;
+        std::memcpy(buffer, found->second.bytes.data() + offset, size);
+        return true;
+    }
+
     void CaptureMemorySource::ObserveBytes(uintptr_t address, const uint8_t *bytes, size_t size) const
     {
         auto *performance = Performance();
         ScopedReadTiming timing(performance ? &performance->captureObserve : nullptr);
-        const auto position = observations_.lower_bound(address);
-        const auto previous = position != observations_.end() && position->first == address ? position : observations_.end();
-        const size_t previousSize = previous == observations_.end() ? 0 : previous->second.size();
-        // 同一批内的重叠请求也逐项验证，不能冻结从未同时成立的字节
-        // 超出预算只停止冻结新的范围，读取本身已经成功
+        // 超出预算只停止冻结新的块，读取本身已经成功
         // 据此中断调用方会把内存护栏变成采集中止条件，使余下对象永远无法枚举
-        if (size > kMaxReadSize || (size > previousSize && size - previousSize > kMaxBytes - observedBytes_) ||
-            (previous == observations_.end() && observations_.size() >= kMaxRanges))
+        if (size > kMaxReadSize)
         {
             limitExceeded_ = true;
             return;
         }
-        auto overlap = position;
-        if (observationsDisjoint_)
+        // 逐块冻结，只标记本次实际覆盖到的字节
+        size_t consumed = 0;
+        while (consumed < size)
         {
-            // 互不重叠时，起点之前最多只有直接前驱可能覆盖本次读取
-            if (overlap != observations_.begin())
+            const uintptr_t current = address + consumed;
+            const uintptr_t base = current - current % kBlockSize;
+            const size_t offset = static_cast<size_t>(current - base);
+            const size_t length = std::min(kBlockSize - offset, size - consumed);
+            auto found = blocks_.find(base);
+            const bool inserted = found == blocks_.end();
+            if (inserted && blocks_.size() >= kMaxBlocks)
             {
-                const auto preceding = std::prev(overlap);
-                if (address - preceding->first < preceding->second.size())
-                    overlap = preceding;
+                limitExceeded_ = true;
+                return;
             }
-        }
-        else
-        {
-            // 存在嵌套范围后不能只看前驱，继续使用由最大读取长度限定的完整扫描
-            const uintptr_t first = address >= kMaxReadSize ? address - kMaxReadSize : 0;
-            overlap = observations_.lower_bound(first);
-        }
-        bool crossOverlap = false;
-        for (; overlap != observations_.end(); ++overlap)
-        {
-            if (overlap->first >= address && overlap->first - address >= size)
-                break;
-            if (performance)
-                ++performance->captureOverlapCandidates;
-            const uintptr_t start = std::max(address, overlap->first);
-            const size_t oldOffset = static_cast<size_t>(start - overlap->first), newOffset = static_cast<size_t>(start - address);
-            if (oldOffset >= overlap->second.size() || newOffset >= size)
-                continue;
-            const size_t length = std::min(overlap->second.size() - oldOffset, size - newOffset);
-            crossOverlap = crossOverlap || overlap->first != address;
-            if (performance)
+            if (inserted)
+                found = blocks_.emplace(base, Block{}).first;
+            Block &block = found->second;
+            size_t fresh = 0;
+            for (size_t index = 0; index < length; ++index)
             {
-                ++performance->captureOverlapComparisons;
-                performance->captureOverlapBytes += length;
+                const size_t position = offset + index;
+                const uint64_t bit = uint64_t{1} << (position % 64);
+                if (block.covered[position / 64] & bit)
+                {
+                    if (block.bytes[position] == bytes[consumed + index])
+                        continue;
+                    changedDuringRead_ = true;
+                    if (changesDuringRead_.size() < 8)
+                    {
+                        CaptureValidation::Change change;
+                        change.address = current + index;
+                        change.size = 1;
+                        change.read = {ReadError::None, current + index, 1, 1};
+                        change.before.assign(1, block.bytes[position]);
+                        change.after.assign(1, bytes[consumed + index]);
+                        changesDuringRead_.push_back(std::move(change));
+                    }
+                    if (diagnostic_)
+                        diagnostic_("capture_overlap_change address=" + Hex(current + index) + " size=1");
+                }
+                block.covered[position / 64] |= bit;
+                block.bytes[position] = bytes[consumed + index];
+                ++fresh;
             }
-            if (std::memcmp(bytes + newOffset, overlap->second.data() + oldOffset, length) == 0)
-                continue;
-            changedDuringRead_ = true;
-            if (diagnostic_)
-                diagnostic_("capture_overlap_change address=" + Hex(start) + " size=" + std::to_string(length));
-            if (changesDuringRead_.size() < 8)
-            {
-                const size_t sampleSize = std::min<size_t>(length, 16);
-                CaptureValidation::Change change;
-                change.address = start;
-                change.size = length;
-                change.read = {ReadError::None, start, length, length};
-                change.before.assign(overlap->second.data() + oldOffset, overlap->second.data() + oldOffset + sampleSize);
-                change.after.assign(bytes + newOffset, bytes + newOffset + sampleSize);
-                changesDuringRead_.push_back(std::move(change));
-            }
-        }
-        // 已观测的较长范围不能被同批中的较短请求截断
-        if (size >= previousSize)
-        {
-            if (previous == observations_.end())
-                observations_.emplace_hint(position, address, std::vector<uint8_t>(bytes, bytes + size));
-            else
-                previous->second.assign(bytes, bytes + size);
-            observationsDisjoint_ = observationsDisjoint_ && !crossOverlap;
             if (performance)
             {
-                if (previousSize == 0)
+                if (inserted)
                     ++performance->captureInsertedRanges;
-                else if (size > previousSize)
+                else if (fresh)
                     ++performance->captureGrownRanges;
             }
-            observedBytes_ += size - previousSize;
+            observedBytes_ += fresh;
+            consumed += length;
         }
     }
 
@@ -268,11 +273,11 @@ namespace nextdumper::memory
         ScopedReadTiming timing(performance ? &performance->captureValidate : nullptr, 1);
         if (performance)
         {
-            performance->captureValidationRanges += observations_.size();
+            performance->captureValidationRanges += blocks_.size();
             performance->captureValidationBytes += observedBytes_;
         }
         CaptureValidation result;
-        result.observedRanges = observations_.size();
+        result.observedRanges = blocks_.size();
         result.observedBytes = observedBytes_;
         result.limitExceeded = limitExceeded_;
         result.generationChanged = generation_ != source_.AddressSpaceGeneration();
@@ -280,26 +285,26 @@ namespace nextdumper::memory
         result.changes = changesDuringRead_;
         result.readFailures = readFailures_;
         result.readFailureSamples = readFailureSamples_;
-        if (observations_.empty())
+        if (blocks_.empty())
         {
             result.generationChanged = result.generationChanged || generation_ != source_.AddressSpaceGeneration();
             return result;
         }
         constexpr size_t maxBatchSize = 64 * 1024;
         constexpr size_t maxGap = 64;
-        std::vector<uint8_t> current;
-        const auto compare = [&](uintptr_t address, const std::vector<uint8_t> &bytes,
+        constexpr size_t kBatchBlocks = 16;
+        const auto compare = [&](uintptr_t address, const uint8_t *expected, size_t size,
                                  const uint8_t *data, const ReadResult &read)
         {
             if (!read.Ok())
                 ++result.unreadableRanges;
-            else if (std::memcmp(data, bytes.data(), bytes.size()) != 0)
+            else if (std::memcmp(data, expected, size) != 0)
                 ++result.changedRanges;
             else
                 return;
             if (diagnostic_)
                 diagnostic_("capture_validation_range address=" + Hex(address) +
-                            " size=" + std::to_string(bytes.size()) +
+                            " size=" + std::to_string(size) +
                             " changed=" + std::to_string(read.Ok()) +
                             " error=" + std::to_string(static_cast<int32_t>(read.error)) +
                             " requested=" + std::to_string(read.requested) +
@@ -308,46 +313,63 @@ namespace nextdumper::memory
                 result.failedAddresses.push_back(address);
             if (result.changes.size() < 8)
             {
-                const size_t sampleSize = std::min<size_t>(bytes.size(), 16);
+                const size_t sampleSize = std::min<size_t>(size, 16);
                 CaptureValidation::Change change;
                 change.address = address;
-                change.size = bytes.size();
+                change.size = size;
                 change.read = read;
-                change.before.assign(bytes.begin(), bytes.begin() + sampleSize);
+                change.before.assign(expected, expected + sampleSize);
                 if (read.Ok())
                     change.after.assign(data, data + sampleSize);
                 result.changes.push_back(std::move(change));
             }
         };
-        using Iterator = decltype(observations_)::const_iterator;
-        struct BatchRange
+        const auto compareBlock = [&](uintptr_t base, const Block &block, const uint8_t *data, const ReadResult &read)
         {
-            Iterator first;
-            Iterator last;
-            uintptr_t start;
+            size_t begin = kBlockSize;
+            size_t end = 0;
+            for (size_t index = 0; index < kBlockSize; ++index)
+            {
+                if ((block.covered[index / 64] & (uint64_t{1} << (index % 64))) == 0)
+                    continue;
+                begin = std::min(begin, index);
+                end = index + 1;
+            }
+            if (begin >= end)
+                return;
+            // 诊断字段跟随被比较的区间，而不是整块起点
+            ReadResult aligned = read;
+            aligned.address = base + begin;
+            aligned.requested = end - begin;
+            if (read.Ok())
+                aligned.transferred = end - begin;
+            compare(base + begin, block.bytes.data() + begin, end - begin, data + begin, aligned);
         };
-        std::array<BatchRange, 16> ranges{};
-        std::array<ReadRequest, 16> requests{};
-        std::array<ReadResult, 16> reads{};
-        current.resize(maxBatchSize * ranges.size());
-        for (auto first = observations_.cbegin(); first != observations_.cend();)
+        std::array<uintptr_t, kBatchBlocks> starts{};
+        std::array<size_t, kBatchBlocks> spans{};
+        std::array<ReadRequest, kBatchBlocks> requests{};
+        std::array<ReadResult, kBatchBlocks> reads{};
+        std::vector<uint8_t> current;
+        current.resize(maxBatchSize * kBatchBlocks);
+        for (auto first = blocks_.cbegin(); first != blocks_.cend();)
         {
             size_t count = 0;
-            while (count < ranges.size() && first != observations_.cend())
+            while (count < kBatchBlocks && first != blocks_.cend())
             {
                 auto last = std::next(first);
                 const uintptr_t start = first->first;
-                size_t span = first->second.size();
-                while (last != observations_.cend())
+                size_t span = kBlockSize;
+                while (last != blocks_.cend())
                 {
                     const uintptr_t offset = last->first - start;
-                    if (offset > maxBatchSize || last->second.size() > maxBatchSize - offset ||
+                    if (offset > maxBatchSize || kBlockSize > maxBatchSize - offset ||
                         (offset > span && offset - span > maxGap))
                         break;
-                    span = std::max(span, static_cast<size_t>(offset) + last->second.size());
+                    span = std::max(span, static_cast<size_t>(offset) + kBlockSize);
                     ++last;
                 }
-                ranges[count] = {first, last, start};
+                starts[count] = start;
+                spans[count] = span;
                 requests[count] = {start, current.data() + count * maxBatchSize, span};
                 ++count;
                 first = last;
@@ -358,23 +380,24 @@ namespace nextdumper::memory
                 throw std::runtime_error("Capture validation batch contract failed");
             for (size_t index = 0; index < count; ++index)
             {
-                const auto &range = ranges[index];
-                for (auto item = range.first; item != range.last; ++item)
+                const uint8_t *data = current.data() + index * maxBatchSize;
+                // 块在批内按地址有序排列，逐个对齐到各自的批内偏移
+                size_t block = 0;
+                for (auto item = blocks_.lower_bound(starts[index]);
+                     item != blocks_.end() && item->first < starts[index] + spans[index]; ++item, ++block)
                 {
-                    const auto &[address, bytes] = *item;
+                    (void)block;
+                    const auto &[base, contents] = *item;
                     if (reads[index].Ok())
-                    {
-                        // 间隙只参与传输，不参与冻结或比较
-                        compare(address, bytes, current.data() + index * maxBatchSize + (address - range.start),
-                                {ReadError::None, address, bytes.size(), bytes.size()});
-                    }
+                        compareBlock(base, contents, data + (base - starts[index]),
+                                     {ReadError::None, base, kBlockSize, kBlockSize});
                     else
                     {
                         if (performance)
                             ++performance->captureValidationFallbacks;
-                        std::vector<uint8_t> exact(bytes.size());
-                        const auto read = source_.ReadFreshBytes(address, exact.data(), bytes.size());
-                        compare(address, bytes, exact.data(), read);
+                        std::array<uint8_t, kBlockSize> exact{};
+                        const auto read = source_.ReadFreshBytes(base, exact.data(), exact.size());
+                        compareBlock(base, contents, exact.data(), read);
                     }
                 }
             }

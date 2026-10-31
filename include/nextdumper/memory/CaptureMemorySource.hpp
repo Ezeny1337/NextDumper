@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+#include <cstdint>
 #include <map>
 #include <functional>
 #include <string>
@@ -40,6 +42,7 @@ namespace nextdumper::memory
     };
 
     // 单线程采集视图，只冻结已消费的字节，验证稳定不等于获得原子快照
+    // 冻结以对齐块为单位，预算因此取决于被访问的对象数，而不是读取次数
     class CaptureMemorySource final : public IMemorySource
     {
     public:
@@ -74,17 +77,25 @@ namespace nextdumper::memory
         [[nodiscard]] ReadPerformance *Performance() const override { return source_.Performance(); }
 
     private:
-        static constexpr size_t kMaxRanges = 2 * 1024 * 1024;
+        static constexpr size_t kBlockSize = 64;
+        static constexpr size_t kMaxBlocks = 512 * 1024;
         static constexpr size_t kMaxBytes = 64 * 1024 * 1024;
         static constexpr size_t kMaxReadSize = 2048;
 
+        struct Block
+        {
+            std::array<uint8_t, kBlockSize> bytes{};
+            std::array<uint64_t, kBlockSize / 64> covered{};
+        };
+
         void RecordFailure(const ReadResult &read) const;
         void ObserveBytes(uintptr_t address, const uint8_t *bytes, size_t size) const;
+        [[nodiscard]] static bool IsCovered(const Block &block, size_t offset, size_t size);
+        [[nodiscard]] bool ServeFromBlocks(uintptr_t address, void *buffer, size_t size) const;
 
         IMemorySource &source_;
         std::function<void(const std::string &)> diagnostic_;
-        mutable std::map<uintptr_t, std::vector<uint8_t>> observations_;
-        mutable bool observationsDisjoint_ = true;
+        mutable std::map<uintptr_t, Block> blocks_;
         mutable size_t observedBytes_ = 0;
         mutable bool observing_ = false;
         mutable bool limitExceeded_ = false;
