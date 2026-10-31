@@ -326,24 +326,24 @@ namespace nextdumper::memory
         };
         const auto compareBlock = [&](uintptr_t base, const Block &block, const uint8_t *data, const ReadResult &read)
         {
-            size_t begin = kBlockSize;
-            size_t end = 0;
-            for (size_t index = 0; index < kBlockSize; ++index)
+            size_t index = 0;
+            while (index < kBlockSize)
             {
-                if ((block.covered[index / 64] & (uint64_t{1} << (index % 64))) == 0)
-                    continue;
-                begin = std::min(begin, index);
-                end = index + 1;
+                while (index < kBlockSize && (block.covered[index / 64] & (uint64_t{1} << (index % 64))) == 0)
+                    ++index;
+                const size_t begin = index;
+                while (index < kBlockSize && (block.covered[index / 64] & (uint64_t{1} << (index % 64))) != 0)
+                    ++index;
+                if (begin == index)
+                    break;
+                // 诊断字段跟随被比较的区间，而不是整块起点
+                ReadResult aligned = read;
+                aligned.address = base + begin;
+                aligned.requested = index - begin;
+                if (read.Ok())
+                    aligned.transferred = index - begin;
+                compare(base + begin, block.bytes.data() + begin, index - begin, data + begin, aligned);
             }
-            if (begin >= end)
-                return;
-            // 诊断字段跟随被比较的区间，而不是整块起点
-            ReadResult aligned = read;
-            aligned.address = base + begin;
-            aligned.requested = end - begin;
-            if (read.Ok())
-                aligned.transferred = end - begin;
-            compare(base + begin, block.bytes.data() + begin, end - begin, data + begin, aligned);
         };
         std::array<uintptr_t, kBatchBlocks> starts{};
         std::array<size_t, kBatchBlocks> spans{};
