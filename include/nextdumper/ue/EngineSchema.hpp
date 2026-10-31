@@ -301,6 +301,30 @@ namespace nextdumper::ue
         [[nodiscard]] bool operator==(const PropertySubtypesSchema &other) const = default;
     };
 
+    // 已接受 tail 布局下仍不成立的单个属性对象
+    // 布局由多数 owner 确立，这些例外逐条保留
+    struct PropertyTailException
+    {
+        std::string owner;
+        std::string propertyName;
+        uintptr_t address = 0;
+        uintptr_t rawValue = 0;
+        int32_t linkIndex = -1;
+        std::string reason;
+
+        [[nodiscard]] bool operator==(const PropertyTailException &other) const = default;
+    };
+
+    struct PropertyTailEvidence
+    {
+        size_t samples = 0;
+        size_t validSamples = 0;
+        size_t validOwners = 0;
+        std::vector<PropertyTailException> exceptions;
+
+        [[nodiscard]] bool operator==(const PropertyTailEvidence &other) const = default;
+    };
+
     struct OptionalPropertySupport
     {
         bool presentInProfile = false;
@@ -331,8 +355,6 @@ namespace nextdumper::ue
     {
         EngineFamily family = EngineFamily::Unknown;
         SchemaLayoutVariant layout = SchemaLayoutVariant::Unknown;
-        // profileFeatures preserves the catalog expectation; features is the
-        // operational layout after runtime probes have normalized build options.
         EngineFeatures profileFeatures;
         EngineFeatures features;
         FNameSchema fname;
@@ -347,6 +369,7 @@ namespace nextdumper::ue
         PropertySchema property;
         PropertySubtypesSchema propertySubtypes;
         OptionalPropertySupport optionalPropertySupport;
+        PropertyTailEvidence propertyTail;
         SchemaIdentity identity;
         SchemaValidation validation;
 

@@ -532,7 +532,24 @@ namespace nextdumper::generation::detail
                << "\",\"rep_notify\":" << schema.property.repNotify
                << ",\"property_links\":" << schema.property.propertyLinks
                << ",\"property_links_end\":" << schema.property.propertyLinksEnd
-               << ",\"subtype_start\":" << schema.property.subtypeStart << "},\n";
+               << ",\"subtype_start\":" << schema.property.subtypeStart
+               << ",\"samples\":" << schema.propertyTail.samples
+               << ",\"valid_samples\":" << schema.propertyTail.validSamples
+               << ",\"valid_owners\":" << schema.propertyTail.validOwners
+               << ",\"exceptions\":[";
+        for (size_t index = 0; index < schema.propertyTail.exceptions.size(); ++index)
+        {
+            const auto &exception = schema.propertyTail.exceptions[index];
+            if (index != 0)
+                stream << ",";
+            stream << "{\"owner\":\"" << EscapeJson(exception.owner)
+                   << "\",\"property\":\"" << EscapeJson(exception.propertyName)
+                   << "\",\"address\":\"" << Hex(exception.address)
+                   << "\",\"link\":" << exception.linkIndex
+                   << ",\"raw_value\":\"" << Hex(exception.rawValue)
+                   << "\",\"reason\":\"" << EscapeJson(exception.reason) << "\"}";
+        }
+        stream << "]},\n";
         stream << "    \"property_subtypes\": {\"bool_base\":" << schema.propertySubtypes.boolBase
                << ",\"byte_enum\":" << schema.propertySubtypes.byteEnum
                << ",\"object_class\":" << schema.propertySubtypes.objectClass

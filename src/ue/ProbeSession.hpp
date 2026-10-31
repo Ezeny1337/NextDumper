@@ -63,6 +63,7 @@ namespace nextdumper::ue
             PropertySubtypesSchema subtypes;
             OptionalPropertySupport optional;
             PropertyTailLayout tail;
+            PropertyTailEvidence evidence;
         };
         struct FunctionResult
         {
@@ -136,7 +137,7 @@ namespace nextdumper::ue
             case SchemaProbeStage::Field:
                 return FieldResult{s.ufield, s.ffield, s.ffieldClass, s.ustruct.children, s.ustruct.childProperties};
             case SchemaProbeStage::Property:
-                return PropertyResult{s.property, s.propertySubtypes, s.optionalPropertySupport, s.features.propertyTailLayout};
+                return PropertyResult{s.property, s.propertySubtypes, s.optionalPropertySupport, s.features.propertyTailLayout, s.propertyTail};
             case SchemaProbeStage::Function:
                 return FunctionResult{s.ufield, s.ufunction, s.ustruct.children};
             case SchemaProbeStage::Enum:
@@ -161,7 +162,7 @@ namespace nextdumper::ue
                   s.ustruct.children = r.children; s.ustruct.childProperties = r.properties; s.validation.fields = true; }
                 else if constexpr (std::is_same_v<T, PropertyResult>)
                 { s.property = r.property; s.propertySubtypes = r.subtypes; s.optionalPropertySupport = r.optional;
-                  s.features.propertyTailLayout = r.tail; s.validation.properties = true; }
+                  s.features.propertyTailLayout = r.tail; s.propertyTail = r.evidence; s.validation.properties = true; }
                 else if constexpr (std::is_same_v<T, FunctionResult>)
                 { s.ufield = r.field; s.ufunction = r.function; s.ustruct.children = r.children; s.validation.functions = true; }
                 else if constexpr (std::is_same_v<T, EnumResult>)

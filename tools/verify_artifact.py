@@ -47,6 +47,39 @@ def package_of(full_name):
 SHARD_SUBDIR = "reflection"
 
 
+def check_property_tail(runtime):
+    """A resolved property tail must not carry more failing owners than passing ones."""
+    failures = []
+    schema = runtime.get("schema")
+    if not isinstance(schema, dict):
+        return failures
+    tail = schema.get("property_tail")
+    if not isinstance(tail, dict):
+        return failures
+    subtype_start = int(tail.get("subtype_start", -1))
+    owners = int(tail.get("valid_owners", 0))
+    samples = int(tail.get("samples", 0))
+    valid_samples = int(tail.get("valid_samples", 0))
+    exceptions = tail.get("exceptions")
+    if not isinstance(exceptions, list):
+        failures.append("property_tail.exceptions is not a list")
+        return failures
+    if subtype_start >= 0 and valid_samples * 2 < samples:
+        failures.append(
+            "property_tail resolved with valid_samples={0} of {1}".format(valid_samples, samples)
+        )
+    if subtype_start >= 0 and owners < 2:
+        failures.append("property_tail resolved with valid_owners={0}".format(owners))
+    for entry in exceptions:
+        if not isinstance(entry, dict):
+            failures.append("property_tail exception is not an object")
+            continue
+        for key in ("owner", "property", "reason"):
+            if not str(entry.get(key, "")):
+                failures.append("property_tail exception is missing {0}".format(key))
+    return failures
+
+
 def shard_paths(artifact_dir, index):
     """Shard paths are untrusted: accept only plain names under the shard subdirectory."""
     shards = index.get("shards")
@@ -196,6 +229,7 @@ def check(artifact_dir, verbose):
         runtime = load_json(runtime_path)
         if runtime.get("schema_version") != RUNTIME_SCHEMA_VERSION:
             failures.append("runtime.json schema_version is not {0}".format(RUNTIME_SCHEMA_VERSION))
+        failures.extend(check_property_tail(runtime))
     manifest_path = os.path.join(artifact_dir, "manifest.json")
     if os.path.isfile(manifest_path):
         manifest = load_json(manifest_path)

@@ -18,6 +18,7 @@ namespace nextdumper::ue::schema_probe
     namespace
     {
         using ::nextdumper::common::Hex;
+        using ::nextdumper::ue::PropertyTailException;
 
         constexpr size_t kMaxSamplesPerKind = 32;
         constexpr size_t kMaxSamplesPerOwner = 4;
@@ -482,53 +483,118 @@ namespace nextdumper::ue::schema_probe
             return false;
         }
 
-        bool TailValid(ObjectModelReader &model, Budget &budget, const EngineSchema &schema,
-                       const PropertyTailCandidate &tail, const std::vector<Sample> &samples, SchemaResolutionReport &report)
+        // 单个属性对象的尾部槽位可能被内存复用或厂商写入破坏
+        // 而 tail 布局是进程级常量，因此判定按 owner 计票
+        // 多数 owner 上成立即接受布局，剩余样本作为例外逐条上报，而不是让单个损坏对象否决全局布局
+        // 反过来，偏移错误时随机值不可能在多个 owner 上稳定解析出合法 FProperty
+        // 所以多数成立不会把错误偏移放行
+        struct TailVerdict
         {
-            std::set<uintptr_t> owners;
+            bool accepted = false;
+            size_t samples = 0;
+            size_t owners = 0;
+            size_t validOwners = 0;
+            size_t validSamples = 0;
+            size_t linkPointerHits = 0;
+            bool limited = false;
+            std::vector<PropertyTailException> exceptions;
+        };
+
+        TailVerdict EvaluateTail(ObjectModelReader &model, Budget &budget,
+                                 const PropertyTailCandidate &tail, const std::vector<Sample> &samples,
+                                 SchemaResolutionReport &report)
+        {
+            constexpr size_t kMaxExceptions = 8;
+            TailVerdict result;
             if (samples.size() < 2)
-                return false;
+            {
+                report.evidence.push_back("property subtype tail rejected: layout=" + std::string(PropertyTailName(tail.layout)) +
+                                          " reason=insufficient-samples samples=" + std::to_string(samples.size()));
+                return result;
+            }
+            std::set<uintptr_t> owners;
+            std::set<uintptr_t> validOwners;
             for (const auto &sample : samples)
             {
                 owners.insert(sample.rootOwner);
-                std::array<uint8_t, 12> name{};
-                if (!budget.Read(sample.metadata.address, tail.repNotify, name.data(), static_cast<size_t>(schema.fname.size)))
-                {
-                    report.evidence.push_back("property subtype tail rejected: layout=" + std::string(PropertyTailName(tail.layout)) +
-                                              " sample=" + Hex(sample.metadata.address) + " reason=repnotify-unreadable");
-                    return false;
-                }
-                const auto address = Add(sample.metadata.address, tail.repNotify);
-                if (!address || !model.Names().ReadFName(*address))
-                {
-                    report.evidence.push_back("property subtype tail rejected: layout=" + std::string(PropertyTailName(tail.layout)) +
-                                              " sample=" + Hex(sample.metadata.address) + " reason=repnotify-invalid");
-                    return false;
-                }
-                for (int32_t link = 0; link < 4; ++link)
+                if (budget.memory.Exhausted())
+                    break;
+                ++result.samples;
+                bool sampleValid = true;
+                std::string reason;
+                int32_t linkIndex = -1;
+                uintptr_t rawValue = 0;
+                // RepNotifyFunc 几乎总是空 FName，任何偏移都能通过名称解析
+                // 因此它没有区分力，只作为诊断输出，不参与布局判定
+                for (int32_t link = 0; sampleValid && link < 4; ++link)
                 {
                     uintptr_t value = 0;
                     if (!budget.Read(sample.metadata.address, tail.links + link * static_cast<int32_t>(sizeof(uintptr_t)), value))
                     {
-                        report.evidence.push_back("property subtype tail rejected: layout=" + std::string(PropertyTailName(tail.layout)) +
-                                                  " sample=" + Hex(sample.metadata.address) + " link=" + std::to_string(link) +
-                                                  " reason=property-link-unreadable");
-                        return false;
+                        sampleValid = false;
+                        reason = "property-link-unreadable";
+                        linkIndex = link;
+                        break;
                     }
-                    if (value != 0)
+                    if (value == 0)
+                        continue;
+                    const auto field = model.Field(value);
+                    if (!field)
                     {
-                        const auto field = model.Field(value);
-                        if (!field || !IsPropertyFieldKind(field->kind))
-                        {
-                            report.evidence.push_back("property subtype tail rejected: layout=" + std::string(PropertyTailName(tail.layout)) +
-                                                      " sample=" + Hex(sample.metadata.address) + " link=" + std::to_string(link) +
-                                                      " raw_value=" + Hex(value) + " reason=property-link-invalid");
-                            return false;
-                        }
+                        sampleValid = false;
+                        reason = "property-link-invalid";
+                        linkIndex = link;
+                        rawValue = value;
+                        break;
                     }
+                    if (!IsPropertyFieldKind(field->kind))
+                    {
+                        sampleValid = false;
+                        reason = "property-link-wrong-kind";
+                        linkIndex = link;
+                        rawValue = value;
+                        break;
+                    }
+                    // 只有首个槽位是 PropertyLinkNext，其余槽位是否非零取决于
+                    // ContainsObjectReference 等条件，不能用来识别偏移
+                    if (link == 0)
+                        ++result.linkPointerHits;
+                }
+                if (sampleValid)
+                {
+                    ++result.validSamples;
+                    validOwners.insert(sample.rootOwner);
+                    continue;
+                }
+                if (result.exceptions.size() < kMaxExceptions)
+                {
+                    // owner 以类名标识：地址每次运行都不同，不能作为可读的例外键
+                    PropertyTailException exception;
+                    exception.owner = model.ClassName(sample.rootOwner).value_or(std::string("<unreadable>"));
+                    exception.propertyName = sample.metadata.name;
+                    exception.address = sample.metadata.address;
+                    exception.rawValue = rawValue;
+                    exception.linkIndex = linkIndex;
+                    exception.reason = std::move(reason);
+                    result.exceptions.push_back(std::move(exception));
                 }
             }
-            return owners.size() >= 2 && !budget.memory.Exhausted();
+            result.owners = owners.size();
+            result.validOwners = validOwners.size();
+            result.limited = budget.exhausted || budget.memory.Exhausted();
+            if (result.limited)
+            {
+                report.evidence.push_back("property subtype tail incomplete: layout=" + std::string(PropertyTailName(tail.layout)) +
+                                          " reason=read-budget-exhausted samples=" + std::to_string(result.samples));
+                return result;
+            }
+            // 两个 owner 起才具备跨对象一致的证据，同时要求过半 owner 成立。
+            // UStruct::Link 对每个被迭代属性都写入 PropertyLinkNext，只有各条链的链尾为 NULL
+            // 因此至少要有一半样本在首个槽位读到合法 FProperty 指针
+            // 落在 FName 等非指针字段上的候选读到的是名称索引，无法满足这一条
+            result.accepted = result.validOwners >= 2 && result.validOwners * 2 > result.owners &&
+                              result.linkPointerHits * 2 >= result.validSamples;
+            return result;
         }
 
         struct TailDiagnostics
@@ -1190,6 +1256,7 @@ namespace nextdumper::ue::schema_probe
         schema.property.subtypeStart = -1;
         schema.features.propertyTailLayout = PropertyTailLayout::Unknown;
         schema.optionalPropertySupport = {};
+        schema.propertyTail = {};
         ProbeMemory probeMemory(memory_);
         ObjectModelReader model(probeMemory, binding_, schema);
         if (!model.Initialize())
@@ -1211,16 +1278,23 @@ namespace nextdumper::ue::schema_probe
         }
         probeMemory.ResetBudget(kMaxReads);
         Budget budget{probeMemory};
-        std::vector<PropertyTailCandidate> tails;
+        std::vector<std::pair<PropertyTailCandidate, TailVerdict>> accepted;
         for (const auto &candidate : PropertyTails(schema))
         {
-            const bool valid = TailValid(model, budget, schema, candidate, samples.tail, report);
+            const TailVerdict verdict = EvaluateTail(model, budget, candidate, samples.tail, report);
             report.evidence.push_back("property subtype tail candidate: layout=" + std::string(PropertyTailName(candidate.layout)) +
                                       " rep_notify=" + std::to_string(candidate.repNotify) + " links=" + std::to_string(candidate.links) +
                                       " data_end=" + std::to_string(candidate.dataEnd) + " complete_size=" + std::to_string(candidate.completeSize) +
-                                      " samples=" + std::to_string(samples.tail.size()) + " valid=" + std::to_string(valid));
-            // 有界诊断：TailValid 在首个失败处返回，只留下一条证据。这里用独立预算遍历全部
-            // 样本，给出 repNotify 与 property-link 各自单独成立的比例，用来区分
+                                      " samples=" + std::to_string(verdict.samples) + " valid_samples=" + std::to_string(verdict.validSamples) +
+                                      " valid_owners=" + std::to_string(verdict.validOwners) + " owners=" + std::to_string(verdict.owners) +
+                                      " link_pointer_hits=" + std::to_string(verdict.linkPointerHits) +
+                                      " valid=" + std::to_string(verdict.accepted));
+            for (const auto &exception : verdict.exceptions)
+                report.evidence.push_back("property subtype tail exception: layout=" + std::string(PropertyTailName(candidate.layout)) +
+                                          " owner=" + exception.owner + " property=" + exception.propertyName +
+                                          " address=" + Hex(exception.address) + " link=" + std::to_string(exception.linkIndex) +
+                                          " raw_value=" + Hex(exception.rawValue) + " reason=" + exception.reason);
+            // 给出 repNotify 与 property-link 各自单独成立的比例，用来区分
             // 「两个字段都错」与「只有一个字段错」。仅统计，不参与判定。
             const TailDiagnostics diag = DiagnoseTail(memory_, binding_, schema, candidate, samples.tail);
             std::string diagLine = "property subtype tail diagnostics: layout=" +
@@ -1270,8 +1344,8 @@ namespace nextdumper::ue::schema_probe
             }
             if (diag.rescanCaptured != 0)
                 report.evidence.push_back(std::move(rescanLine));
-            if (valid)
-                tails.push_back(candidate);
+            if (verdict.accepted)
+                accepted.push_back({candidate, verdict});
         }
         if (budget.exhausted || probeMemory.Exhausted())
         {
@@ -1281,34 +1355,54 @@ namespace nextdumper::ue::schema_probe
             report.evidence.push_back("property subtype result: reason=tail-read-budget-exhausted");
             return true;
         }
+        // 多个候选同时通过多数判据时不取交集，也不按取值投票
+        // 这属于布局歧义，交给上层按歧义处理，而不是从两个布局里拼出一个
+        std::vector<PropertyTailCandidate> tails;
+        std::string tailReason;
+        if (accepted.size() == 1)
+        {
+            tails.push_back(accepted.front().first);
+            tailReason = "unique-validated-tail";
+        }
+        else if (accepted.size() > 1)
+        {
+            tailReason = "multiple-validated-tails";
+        }
+        else
+        {
+            tailReason = "no-validated-tail";
+        }
         if (!tails.empty())
         {
-            // 成员顺序存在歧义不会使独立达成一致的偏移量失效
-            const auto consensus = [&](int32_t PropertyTailCandidate::*member)
-            {
-                const int32_t value = tails.front().*member;
-                return std::all_of(tails.begin(), tails.end(), [&](const auto &tail)
-                                   { return tail.*member == value; })
-                           ? value
-                           : -1;
-            };
-            schema.property.baseSize = consensus(&PropertyTailCandidate::completeSize);
-            schema.property.repNotify = consensus(&PropertyTailCandidate::repNotify);
-            schema.property.propertyLinks = consensus(&PropertyTailCandidate::links);
-            schema.property.propertyLinksEnd = consensus(&PropertyTailCandidate::linksEnd);
-            schema.property.subtypeStart = consensus(&PropertyTailCandidate::dataEnd);
-            if (tails.size() == 1)
-                schema.features.propertyTailLayout = tails.front().layout;
+            const auto &chosen = tails.front();
+            schema.property.baseSize = chosen.completeSize;
+            schema.property.repNotify = chosen.repNotify;
+            schema.property.propertyLinks = chosen.links;
+            schema.property.propertyLinksEnd = chosen.linksEnd;
+            schema.property.subtypeStart = chosen.dataEnd;
+            schema.features.propertyTailLayout = chosen.layout;
+            const TailVerdict &verdict = accepted.front().second;
+            schema.propertyTail.samples = verdict.samples;
+            schema.propertyTail.validSamples = verdict.validSamples;
+            schema.propertyTail.validOwners = verdict.validOwners;
+            schema.propertyTail.exceptions = verdict.exceptions;
         }
-        report.evidence.push_back("property tail selection: accepted_candidates=" + std::to_string(tails.size()) +
+        else if (accepted.size() > 1)
+        {
+            // 布局未确立仍要保留观测规模，便于区分样本不足与候选冲突
+            schema.propertyTail.samples = accepted.front().second.samples;
+            schema.propertyTail.validOwners = accepted.front().second.validOwners;
+        }
+        report.evidence.push_back("property tail selection: accepted_candidates=" + std::to_string(accepted.size()) +
                                   " selected_layout=" + std::string(PropertyTailName(schema.features.propertyTailLayout)) +
                                   " consensus_complete_size=" + std::to_string(schema.property.baseSize) +
                                   " consensus_rep_notify=" + std::to_string(schema.property.repNotify) +
                                   " consensus_links=" + std::to_string(schema.property.propertyLinks) +
                                   " consensus_links_end=" + std::to_string(schema.property.propertyLinksEnd) +
                                   " consensus_data_end=" + std::to_string(schema.property.subtypeStart) +
-                                  " reason=" + (tails.empty() ? "no-validated-tail" : tails.size() == 1 ? "unique-validated-tail"
-                                                                                                        : "multiple-validated-tails") +
+                                  " valid_owners=" + std::to_string(schema.propertyTail.validOwners) +
+                                  " exceptions=" + std::to_string(schema.propertyTail.exceptions.size()) +
+                                  " reason=" + tailReason +
                                   "; subtype candidates remain constrained to validated tails");
         probeMemory.ResetBudget(4 * kMaxReads);
         Budget expansionBudget{probeMemory};
