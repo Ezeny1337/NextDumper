@@ -557,6 +557,17 @@ namespace nextdumper::ue::schema_probe
             std::array<std::string, 4> firstNotFieldOwnerClasses{};
             std::array<uintptr_t, 4> firstNotFieldNeighbors{};
             std::array<int32_t, 4> firstNotFieldLinkIndex{};
+            // 失败样本的重扫结果：记录每个失败属性在自身之后哪个偏移能读到合法 FProperty
+            // 若多个样本在同一偏移命中，说明该类的 FProperty 比预期长或短，而不是布局错误
+            struct Rescan
+            {
+                uintptr_t property = 0;
+                int32_t firstHitOffset = -1;
+                uintptr_t firstHitValue = 0;
+                size_t hitCount = 0;
+            };
+            std::array<Rescan, 4> rescans{};
+            size_t rescanCaptured = 0;
         };
 
         TailDiagnostics DiagnoseTail(const IMemorySource &memory, const RuntimeBinding &binding, const EngineSchema &schema,
@@ -625,6 +636,33 @@ namespace nextdumper::ue::schema_probe
                             result.firstNotFieldNeighbors[slot] = link == 0 ? 0 : links[static_cast<size_t>(link) - 1];
                             result.firstNotFieldLinkIndex[slot] = link;
                             ++result.notFieldCaptured;
+                            if (result.rescanCaptured < result.rescans.size())
+                            {
+                                // 有界重扫：仅在声明的链接位置上失败时，向对象尾部探测是否存在
+                                // 其他能指向合法字段的槽位，用来区分大小差异与真正的布局错误
+                                TailDiagnostics::Rescan rescan;
+                                rescan.property = sample.metadata.address;
+                                for (int32_t probe = tail.links;
+                                     probe <= tail.links + static_cast<int32_t>(8 * sizeof(uintptr_t));
+                                     probe += static_cast<int32_t>(sizeof(uintptr_t)))
+                                {
+                                    uintptr_t candidate = 0;
+                                    if (!budget.Read(sample.metadata.address, probe, candidate) || candidate == 0)
+                                        continue;
+                                    const auto candidateField = diagModel.Field(candidate);
+                                    if (!candidateField || !IsPropertyFieldKind(candidateField->kind))
+                                        continue;
+                                    if (rescan.firstHitOffset < 0)
+                                    {
+                                        rescan.firstHitOffset = probe;
+                                        rescan.firstHitValue = candidate;
+                                    }
+                                    ++rescan.hitCount;
+                                }
+                                // 预算耗尽时的空结果不代表没有命中，只记录完整扫描
+                                if (!budget.exhausted && !budget.memory.Exhausted())
+                                    result.rescans[result.rescanCaptured++] = rescan;
+                            }
                         }
                         continue;
                     }
@@ -1216,6 +1254,22 @@ namespace nextdumper::ue::schema_probe
                 causeLine += " wk" + std::to_string(index) + "=" + Hex(diag.firstWrongKind[index]) +
                              ":" + diag.firstWrongKindNames[index];
             report.evidence.push_back(std::move(causeLine));
+            std::string rescanLine = "property subtype tail link rescan: layout=" +
+                                     std::string(PropertyTailName(candidate.layout)) +
+                                     " base=" + std::to_string(candidate.links) +
+                                     " span=" + std::to_string(8 * sizeof(uintptr_t));
+            for (size_t index = 0; index < diag.rescanCaptured; ++index)
+            {
+                const auto &rescan = diag.rescans[index];
+                rescanLine += " r" + std::to_string(index) + "=@" + Hex(rescan.property);
+                if (rescan.firstHitOffset >= 0)
+                    rescanLine += "+" + std::to_string(rescan.firstHitOffset - candidate.links) +
+                                  "->" + Hex(rescan.firstHitValue) + "x" + std::to_string(rescan.hitCount);
+                else
+                    rescanLine += "+none";
+            }
+            if (diag.rescanCaptured != 0)
+                report.evidence.push_back(std::move(rescanLine));
             if (valid)
                 tails.push_back(candidate);
         }
