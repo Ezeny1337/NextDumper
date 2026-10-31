@@ -510,6 +510,7 @@ namespace nextdumper::generation::detail
                                    {"ElementSize", schema_.property.elementSize},
                                    {"PropertyFlags", schema_.property.propertyFlags},
                                    {"OffsetInternal", schema_.property.offsetInternal},
+                                   {"TailPadding", schema_.property.tailPadding},
                                    {"BaseSize", schema_.property.baseSize},
                                    {"RepNotify", schema_.property.repNotify},
                                    {"PropertyLinks", schema_.property.propertyLinks},

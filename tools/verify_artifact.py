@@ -70,6 +70,14 @@ def check_property_tail(runtime):
         )
     if subtype_start >= 0 and owners < 2:
         failures.append("property_tail resolved with valid_owners={0}".format(owners))
+    rep_hits = int(tail.get("rep_notify_hits", 0))
+    link_hits = int(tail.get("link_pointer_hits", 0))
+    if subtype_start >= 0 and (rep_hits * 2 < samples or link_hits * 2 < samples):
+        failures.append(
+            "property_tail resolved with rep_notify_hits={0} link_pointer_hits={1} of {2}".format(
+                rep_hits, link_hits, samples
+            )
+        )
     for entry in exceptions:
         if not isinstance(entry, dict):
             failures.append("property_tail exception is not an object")

@@ -524,6 +524,7 @@ namespace nextdumper::generation::detail
                << ",\"element_size\":" << schema.property.elementSize
                << ",\"flags\":" << schema.property.propertyFlags
                << ",\"offset_internal\":" << schema.property.offsetInternal
+               << ",\"tail_padding\":" << schema.property.tailPadding
                << ",\"base_size\":" << schema.property.baseSize << "},\n";
         stream << "    \"property_tail\": {\"layout\":\""
                << (schema.features.propertyTailLayout == ::nextdumper::ue::PropertyTailLayout::UProperty ? "uproperty" : schema.features.propertyTailLayout == ::nextdumper::ue::PropertyTailLayout::RepNotifyBeforeLinks ? "repnotify-before-links"
@@ -536,6 +537,8 @@ namespace nextdumper::generation::detail
                << ",\"samples\":" << schema.propertyTail.samples
                << ",\"valid_samples\":" << schema.propertyTail.validSamples
                << ",\"valid_owners\":" << schema.propertyTail.validOwners
+               << ",\"rep_notify_hits\":" << schema.propertyTail.repNotifyHits
+               << ",\"link_pointer_hits\":" << schema.propertyTail.linkPointerHits
                << ",\"exceptions\":[";
         for (size_t index = 0; index < schema.propertyTail.exceptions.size(); ++index)
         {

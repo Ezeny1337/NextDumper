@@ -1422,11 +1422,11 @@ namespace nextdumper::reflection
                 lastProgress = std::chrono::steady_clock::now();
             }
             // 观测预算只影响字节冻结范围，读取仍然有效
-            // 这里继续枚举并在结束时按已冻结范围校验；未冻结的字节不计入一致性证据
+            // 这里继续枚举并在结束时按已冻结范围校验，未冻结的字节不计入一致性证据
+            // 覆盖不完整由 capture.coverageComplete 与 limitExceeded 表达
             if (memory_.LimitExceeded() && !observationLimitReported)
             {
                 observationLimitReported = true;
-                ++result.stats.failures;
                 result.diagnostics.push_back("capture observation budget exhausted at index=" + std::to_string(index) +
                                              "; enumeration continues without freezing further bytes");
             }

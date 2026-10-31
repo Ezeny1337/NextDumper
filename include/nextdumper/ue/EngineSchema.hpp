@@ -273,6 +273,7 @@ namespace nextdumper::ue
         int32_t elementSize = -1;
         int32_t propertyFlags = -1;
         int32_t offsetInternal = -1;
+        int32_t tailPadding = -1;
         int32_t baseSize = -1;
         int32_t repNotify = -1;
         int32_t propertyLinks = -1;
@@ -320,6 +321,8 @@ namespace nextdumper::ue
         size_t samples = 0;
         size_t validSamples = 0;
         size_t validOwners = 0;
+        size_t repNotifyHits = 0;
+        size_t linkPointerHits = 0;
         std::vector<PropertyTailException> exceptions;
 
         [[nodiscard]] bool operator==(const PropertyTailEvidence &other) const = default;

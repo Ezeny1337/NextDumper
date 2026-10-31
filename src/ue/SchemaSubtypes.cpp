@@ -496,11 +496,14 @@ namespace nextdumper::ue::schema_probe
             size_t validOwners = 0;
             size_t validSamples = 0;
             size_t linkPointerHits = 0;
+            // RepNotifyFunc 能解析成 FName 的样本数
+            // 它不足以单独定位偏移，但错位候选会把它落到指针数据上，因此作为必要条件参与判定
+            size_t repNotifyHits = 0;
             bool limited = false;
             std::vector<PropertyTailException> exceptions;
         };
 
-        TailVerdict EvaluateTail(ObjectModelReader &model, Budget &budget,
+        TailVerdict EvaluateTail(ObjectModelReader &model, Budget &budget, const EngineSchema &schema,
                                  const PropertyTailCandidate &tail, const std::vector<Sample> &samples,
                                  SchemaResolutionReport &report)
         {
@@ -524,8 +527,23 @@ namespace nextdumper::ue::schema_probe
                 std::string reason;
                 int32_t linkIndex = -1;
                 uintptr_t rawValue = 0;
-                // RepNotifyFunc 几乎总是空 FName，任何偏移都能通过名称解析
-                // 因此它没有区分力，只作为诊断输出，不参与布局判定
+                // RepNotifyFunc 几乎总是空 FName，因此它不能单独确定偏移
+                // 但它仍是必须成立的必要条件，错位的候选会把它落到 subtype 指针等非 FName 数据上
+                std::array<uint8_t, 12> repNotifyBytes{};
+                bool repNotifyValid = budget.Read(sample.metadata.address, tail.repNotify, repNotifyBytes.data(),
+                                                  static_cast<size_t>(schema.fname.size));
+                if (repNotifyValid)
+                {
+                    const auto repNotifyAddress = Add(sample.metadata.address, tail.repNotify);
+                    repNotifyValid = repNotifyAddress && model.Names().ReadFName(*repNotifyAddress).has_value();
+                }
+                if (repNotifyValid)
+                    ++result.repNotifyHits;
+                else
+                {
+                    sampleValid = false;
+                    reason = "repnotify-invalid";
+                }
                 for (int32_t link = 0; sampleValid && link < 4; ++link)
                 {
                     uintptr_t value = 0;
@@ -568,9 +586,10 @@ namespace nextdumper::ue::schema_probe
                 }
                 if (result.exceptions.size() < kMaxExceptions)
                 {
-                    // owner 以类名标识：地址每次运行都不同，不能作为可读的例外键
+                    // 例外键用对象的自身名称而非元类名，地址每次运行都不同
+                    // 而 ClassName 返回的是 Class，无法区分具体 owner
                     PropertyTailException exception;
-                    exception.owner = model.ClassName(sample.rootOwner).value_or(std::string("<unreadable>"));
+                    exception.owner = model.Name(sample.rootOwner).value_or(std::string("<unreadable>"));
                     exception.propertyName = sample.metadata.name;
                     exception.address = sample.metadata.address;
                     exception.rawValue = rawValue;
@@ -593,7 +612,8 @@ namespace nextdumper::ue::schema_probe
             // 因此至少要有一半样本在首个槽位读到合法 FProperty 指针
             // 落在 FName 等非指针字段上的候选读到的是名称索引，无法满足这一条
             result.accepted = result.validOwners >= 2 && result.validOwners * 2 > result.owners &&
-                              result.linkPointerHits * 2 >= result.validSamples;
+                              result.linkPointerHits * 2 >= result.validSamples &&
+                              result.repNotifyHits * 2 >= result.validSamples;
             return result;
         }
 
@@ -1249,6 +1269,7 @@ namespace nextdumper::ue::schema_probe
     bool SchemaProbeContext::ResolvePropertySubtypes(EngineSchema &schema, SchemaResolutionReport &report) const
     {
         schema.propertySubtypes = {};
+        schema.property.tailPadding = -1;
         schema.property.baseSize = -1;
         schema.property.repNotify = -1;
         schema.property.propertyLinks = -1;
@@ -1281,16 +1302,19 @@ namespace nextdumper::ue::schema_probe
         std::vector<std::pair<PropertyTailCandidate, TailVerdict>> accepted;
         for (const auto &candidate : PropertyTails(schema))
         {
-            const TailVerdict verdict = EvaluateTail(model, budget, candidate, samples.tail, report);
+            const TailVerdict verdict = EvaluateTail(model, budget, schema, candidate, samples.tail, report);
             report.evidence.push_back("property subtype tail candidate: layout=" + std::string(PropertyTailName(candidate.layout)) +
+                                      " padding=" + std::to_string(candidate.padding) +
                                       " rep_notify=" + std::to_string(candidate.repNotify) + " links=" + std::to_string(candidate.links) +
                                       " data_end=" + std::to_string(candidate.dataEnd) + " complete_size=" + std::to_string(candidate.completeSize) +
                                       " samples=" + std::to_string(verdict.samples) + " valid_samples=" + std::to_string(verdict.validSamples) +
                                       " valid_owners=" + std::to_string(verdict.validOwners) + " owners=" + std::to_string(verdict.owners) +
                                       " link_pointer_hits=" + std::to_string(verdict.linkPointerHits) +
+                                      " rep_notify_hits=" + std::to_string(verdict.repNotifyHits) +
                                       " valid=" + std::to_string(verdict.accepted));
             for (const auto &exception : verdict.exceptions)
                 report.evidence.push_back("property subtype tail exception: layout=" + std::string(PropertyTailName(candidate.layout)) +
+                                          " padding=" + std::to_string(candidate.padding) +
                                           " owner=" + exception.owner + " property=" + exception.propertyName +
                                           " address=" + Hex(exception.address) + " link=" + std::to_string(exception.linkIndex) +
                                           " raw_value=" + Hex(exception.rawValue) + " reason=" + exception.reason);
@@ -1375,6 +1399,7 @@ namespace nextdumper::ue::schema_probe
         if (!tails.empty())
         {
             const auto &chosen = tails.front();
+            schema.property.tailPadding = chosen.padding;
             schema.property.baseSize = chosen.completeSize;
             schema.property.repNotify = chosen.repNotify;
             schema.property.propertyLinks = chosen.links;
@@ -1385,6 +1410,8 @@ namespace nextdumper::ue::schema_probe
             schema.propertyTail.samples = verdict.samples;
             schema.propertyTail.validSamples = verdict.validSamples;
             schema.propertyTail.validOwners = verdict.validOwners;
+            schema.propertyTail.repNotifyHits = verdict.repNotifyHits;
+            schema.propertyTail.linkPointerHits = verdict.linkPointerHits;
             schema.propertyTail.exceptions = verdict.exceptions;
         }
         else if (accepted.size() > 1)
