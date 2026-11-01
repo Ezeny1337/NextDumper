@@ -100,6 +100,11 @@ namespace nextdumper::memory
             std::vector<uint64_t> covered;
         };
 
+        [[nodiscard]] size_t RemainingBudget() const
+        {
+            return allocatedBytes_ < kMaxObservedBytes ? kMaxObservedBytes - allocatedBytes_ : 0;
+        }
+
         void RecordFailure(const ReadResult &read) const;
         void ObserveBytes(uintptr_t address, const uint8_t *bytes, size_t size) const;
         [[nodiscard]] static bool IsCovered(const Region &region, size_t offset, size_t size);

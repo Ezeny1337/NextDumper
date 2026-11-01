@@ -296,15 +296,18 @@ namespace nextdumper::memory
             // 区域达到上限时另起一段继续冻结：单个区域的上限是布局约束，不应升级为整个采集的终止条件
             if (next == regions_.end() || (next->first > last && next->first - last > kMaxRegionGap))
             {
-                const uintptr_t grown = last - region->base;
+                // 区域只能向后增长：last 落在已有末端之前时保留原尺寸
+                // 截断会丢弃已冻结的字节并使分配量统计与真实占用失配
+                const uintptr_t wanted = std::max(last, currentEnd);
+                const size_t grown = static_cast<size_t>(wanted - region->base);
                 if (grown <= kMaxRegionBytes &&
-                    (grown <= region->bytes.size() || grown - region->bytes.size() <= kMaxObservedBytes - allocatedBytes_))
+                    (grown <= region->bytes.size() || grown - region->bytes.size() <= RemainingBudget()))
                 {
-                    if (last > currentEnd)
+                    if (grown > region->bytes.size())
                     {
-                        allocatedBytes_ += static_cast<size_t>(last - currentEnd);
-                        region->bytes.resize(static_cast<size_t>(grown), 0);
-                        region->covered.resize((static_cast<size_t>(grown) + 63) / 64, 0);
+                        allocatedBytes_ += grown - region->bytes.size();
+                        region->bytes.resize(grown, 0);
+                        region->covered.resize((grown + 63) / 64, 0);
                     }
                     observedBytes_ += WriteRegion(*region, static_cast<size_t>(address - region->base), bytes, size);
                     if (performance)
@@ -340,18 +343,23 @@ namespace nextdumper::memory
             begin = end = regions_.upper_bound(first);
             newBase = first;
             newEnd = last;
-            if (newEnd - newBase > kMaxRegionBytes)
+            // 新区域必须与已有区域互斥，region 已满且本次读取落在它内部时
+            // 单独建区会与它重叠并破坏有序不变量，此时放弃冻结这一次读取
+            if (begin != regions_.begin())
             {
-                limitExceeded_ = true;
-                return;
+                const auto preceding = std::prev(begin);
+                if (preceding->second.base + preceding->second.bytes.size() > newBase)
+                    return;
             }
+            if (begin != regions_.end() && begin->first < newEnd)
+                return;
         }
         // 预算按合并后的净增量检查：被并入的旧区域会随合并释放
         size_t replaced = 0;
         for (auto item = begin; item != end; ++item)
             replaced += item->second.bytes.size();
         const size_t grown = static_cast<size_t>(newEnd - newBase);
-        if (grown > replaced && grown - replaced > kMaxObservedBytes - allocatedBytes_)
+        if (grown > replaced && grown - replaced > RemainingBudget())
         {
             limitExceeded_ = true;
             return;
@@ -372,7 +380,10 @@ namespace nextdumper::memory
             allocatedBytes_ -= item->second.bytes.size();
         }
         regions_.erase(begin, end);
-        auto position = regions_.emplace(newBase, std::move(merged)).first;
+        // 键由本轮区间决定，与已擦除范围不重叠，插入必然成功
+        const auto [position, emplaced] = regions_.emplace(newBase, std::move(merged));
+        if (!emplaced)
+            throw std::logic_error("capture region overlap");
         allocatedBytes_ += position->second.bytes.size();
         observedBytes_ += WriteRegion(position->second, static_cast<size_t>(address - newBase), bytes, size);
         if (performance)
