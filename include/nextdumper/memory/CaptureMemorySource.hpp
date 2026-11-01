@@ -78,7 +78,7 @@ namespace nextdumper::memory
         // 冻结以连续区域为单位：属性描述符由 UStruct::Link 一次分配且彼此相邻
         // 同一类的多次读取落在同一段内存里
         // 记录数因此取决于被访问的对象簇而不是读取次数
-        static constexpr size_t kMaxRegionBytes = 128 * 1024;
+        static constexpr size_t kMaxRegionBytes = 64 * 1024;
         // 合并间隙上限
         // 同一次分配内的相邻描述符间距在数百字节以内
         // 而不同分配之间通常相距更远，跨过更大的空洞只会为间隙分配内存，却得不到任何校验价值

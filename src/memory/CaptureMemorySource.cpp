@@ -265,6 +265,11 @@ namespace nextdumper::memory
             limitExceeded_ = true;
             return;
         }
+        // 预算一旦耗尽就停止冻结
+        // 继续写入会让冻结内容的采集时刻跨度整个枚举
+        // 校验时与当前内存比较必然出现大量并不存在的差异
+        if (limitExceeded_)
+            return;
         // 快路径：读取完全落在已有区域内时原地写入
         // 属性头部、链接槽与派生成员落在同一段描述符数组内，绝大多数读取走这条路径
         if (Region *region = FindRegion(address))
@@ -403,7 +408,8 @@ namespace nextdumper::memory
             result.generationChanged = result.generationChanged || generation_ != source_.AddressSpaceGeneration();
             return result;
         }
-        constexpr size_t maxBatchSize = 64 * 1024;
+        // 批槽位取自区域上限：任何区域都能整体放入一个槽位，两者的关系由类型强制
+        constexpr size_t maxBatchSize = kMaxRegionBytes;
         constexpr size_t maxGap = 64;
         constexpr size_t kBatchRegions = 8;
         const auto compare = [&](uintptr_t address, const uint8_t *expected, size_t size,
@@ -480,7 +486,8 @@ namespace nextdumper::memory
                 while (end != regions_.cend())
                 {
                     const uintptr_t offset = end->second.base - start;
-                    if (offset > maxBatchSize || end->second.bytes.size() > maxBatchSize - offset ||
+                    // 批缓冲区按 maxBatchSize 划分槽位，跨度不得超过一个槽位
+                    if (offset >= maxBatchSize || end->second.bytes.size() > maxBatchSize - offset ||
                         (offset > span && offset - span > maxGap))
                         break;
                     span = std::max(span, static_cast<size_t>(offset) + end->second.bytes.size());
