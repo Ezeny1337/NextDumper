@@ -193,26 +193,65 @@ namespace nextdumper::memory
         return true;
     }
 
+    // 返回包含 address 的区域，区域按基址升序且互不重叠
+    CaptureMemorySource::Region *CaptureMemorySource::FindRegion(uintptr_t address) const
+    {
+        auto found = regions_.upper_bound(address);
+        if (found == regions_.begin())
+            return nullptr;
+        --found;
+        Region &region = found->second;
+        return address - region.base < region.bytes.size() ? &region : nullptr;
+    }
+
     // 只有请求范围内每个字节都已冻结时才从区域取值
     // 部分覆盖必须回落到真实读取，否则会把未观测的字节补成零
     bool CaptureMemorySource::ServeFromRegion(uintptr_t address, void *buffer, size_t size) const
     {
         if (!buffer || !size || address + size < address)
             return false;
-        // regions_ 按 base 升序且互不重叠，落在某个区域内时其 base 必然是不大于 address 的最大值
-        const auto found = std::upper_bound(regions_.begin(), regions_.end(), address,
-                                            [](uintptr_t value, const Region &region)
-                                            { return value < region.base; });
-        if (found == regions_.begin())
+        const Region *region = FindRegion(address);
+        if (!region)
             return false;
-        const Region &region = *std::prev(found);
-        if (address - region.base >= region.bytes.size() || size > region.bytes.size() - (address - region.base))
+        const size_t offset = static_cast<size_t>(address - region->base);
+        if (size > region->bytes.size() - offset || !IsCovered(*region, offset, size))
             return false;
-        const size_t offset = static_cast<size_t>(address - region.base);
-        if (!IsCovered(region, offset, size))
-            return false;
-        std::memcpy(buffer, region.bytes.data() + offset, size);
+        std::memcpy(buffer, region->bytes.data() + offset, size);
         return true;
+    }
+
+    // 把一次读取写入区域，返回此前未冻结的字节数
+    // 已冻结字节若与本次读到的不一致，说明同一批内出现了相互矛盾的内容
+    size_t CaptureMemorySource::WriteRegion(Region &region, size_t offset, const uint8_t *bytes, size_t size) const
+    {
+        size_t fresh = 0;
+        for (size_t index = 0; index < size; ++index)
+        {
+            const size_t position = offset + index;
+            const uint64_t bit = uint64_t{1} << (position % 64);
+            if (region.covered[position / 64] & bit)
+            {
+                if (region.bytes[position] == bytes[index])
+                    continue;
+                changedDuringRead_ = true;
+                if (changesDuringRead_.size() < 8)
+                {
+                    CaptureValidation::Change change;
+                    change.address = region.base + position;
+                    change.size = 1;
+                    change.read = {ReadError::None, region.base + position, 1, 1};
+                    change.before.assign(1, region.bytes[position]);
+                    change.after.assign(1, bytes[index]);
+                    changesDuringRead_.push_back(std::move(change));
+                }
+                if (diagnostic_)
+                    diagnostic_("capture_overlap_change address=" + Hex(region.base + position) + " size=1");
+            }
+            region.covered[position / 64] |= bit;
+            region.bytes[position] = bytes[index];
+            ++fresh;
+        }
+        return fresh;
     }
 
     void CaptureMemorySource::ObserveBytes(uintptr_t address, const uint8_t *bytes, size_t size) const
@@ -226,29 +265,68 @@ namespace nextdumper::memory
             limitExceeded_ = true;
             return;
         }
-        // 区域基址按 64 字节对齐，使覆盖位图中的整字可以直接搬运
+        // 快路径：读取完全落在已有区域内时原地写入
+        // 属性头部、链接槽与派生成员落在同一段描述符数组内，绝大多数读取走这条路径
+        if (Region *region = FindRegion(address))
+        {
+            const size_t offset = static_cast<size_t>(address - region->base);
+            if (size <= region->bytes.size() - offset)
+            {
+                observedBytes_ += WriteRegion(*region, offset, bytes, size);
+                if (performance)
+                    ++performance->captureGrownRanges;
+                return;
+            }
+        }
+        // 向后扩展：读取起点仍在区域内而末端越界时，直接追加到区域末尾
+        // 属性尾部与链接槽紧接头部之后，这条路径承担了区域生长的主要部分
         const uintptr_t first = address - address % 64;
         const uintptr_t last = (address + size + 63) / 64 * 64;
-        // 定位可能与新区间相接或重叠的区域，把间隙不超过上限的相邻区域一并并入
-        auto begin = std::upper_bound(regions_.begin(), regions_.end(), first,
-                                      [](uintptr_t value, const Region &region)
-                                      { return value < region.base; });
+        if (Region *region = FindRegion(address))
+        {
+            auto found = regions_.find(region->base);
+            const auto next = std::next(found);
+            const uintptr_t currentEnd = region->base + region->bytes.size();
+            // 仅当后续区域不与新范围相接下才原地追加，否则交给合并路径
+            if (next == regions_.end() || (next->first > last && next->first - last > kMaxRegionGap))
+            {
+                const uintptr_t grown = last - region->base;
+                if (grown > kMaxRegionBytes ||
+                    (grown > region->bytes.size() && grown - region->bytes.size() > kMaxObservedBytes - allocatedBytes_))
+                {
+                    limitExceeded_ = true;
+                    return;
+                }
+                if (last > currentEnd)
+                {
+                    allocatedBytes_ += static_cast<size_t>(last - currentEnd);
+                    region->bytes.resize(static_cast<size_t>(grown), 0);
+                    region->covered.resize((static_cast<size_t>(grown) + 63) / 64, 0);
+                }
+                observedBytes_ += WriteRegion(*region, static_cast<size_t>(address - region->base), bytes, size);
+                if (performance)
+                    ++performance->captureGrownRanges;
+                return;
+            }
+        }
+        // 新建区域或向前并入先前区域
+        auto begin = regions_.upper_bound(first);
         if (begin != regions_.begin())
         {
             const auto preceding = std::prev(begin);
-            if (first - preceding->base <= preceding->bytes.size() + kMaxRegionGap)
+            if (first - preceding->second.base <= preceding->second.bytes.size() + kMaxRegionGap)
                 begin = preceding;
         }
-        const uintptr_t newBase = begin != regions_.end() ? std::min(first, begin->base) : first;
+        const uintptr_t newBase = begin != regions_.end() ? std::min(first, begin->first) : first;
         uintptr_t newEnd = last;
         auto end = begin;
         while (end != regions_.end())
         {
-            // 与当前合并范围只有小间隙的区域才并入,更大间隙留给独立区域
-            const uintptr_t gap = end->base > newEnd ? end->base - newEnd : 0;
+            // 与当前合并范围只有小间隙的区域才并入，更大间隙留给独立区域
+            const uintptr_t gap = end->first > newEnd ? end->first - newEnd : 0;
             if (gap > kMaxRegionGap)
                 break;
-            newEnd = std::max(newEnd, end->base + end->bytes.size());
+            newEnd = std::max(newEnd, end->second.base + end->second.bytes.size());
             ++end;
         }
         // 合并后仍超出单区域上限时放弃冻结：拆分会破坏相邻读取共享一条记录的意图
@@ -260,71 +338,39 @@ namespace nextdumper::memory
         // 预算按合并后的净增量检查：被并入的旧区域会随合并释放
         size_t replaced = 0;
         for (auto item = begin; item != end; ++item)
-            replaced += item->bytes.size();
+            replaced += item->second.bytes.size();
         const size_t grown = static_cast<size_t>(newEnd - newBase);
         if (grown > replaced && grown - replaced > kMaxObservedBytes - allocatedBytes_)
         {
             limitExceeded_ = true;
             return;
         }
-        // 新区间只覆盖已被真实读取的字节,其余位置保持未覆盖，不参与比较或回放
+        const bool inserted = begin == end;
+        // 新范围只承载已被真实读取的字节，间隙保持未覆盖，不参与比较或回放
         Region merged;
         merged.base = newBase;
-        merged.bytes.assign(static_cast<size_t>(newEnd - newBase), 0);
-        merged.covered.assign((merged.bytes.size() + 63) / 64, 0);
+        merged.bytes.assign(grown, 0);
+        merged.covered.assign((grown + 63) / 64, 0);
         for (auto item = begin; item != end; ++item)
         {
-            const size_t offset = static_cast<size_t>(item->base - newBase);
-            std::copy(item->bytes.begin(), item->bytes.end(), merged.bytes.begin() + static_cast<ptrdiff_t>(offset));
-            std::copy(item->covered.begin(), item->covered.end(),
+            const size_t offset = static_cast<size_t>(item->second.base - newBase);
+            std::copy(item->second.bytes.begin(), item->second.bytes.end(),
+                      merged.bytes.begin() + static_cast<ptrdiff_t>(offset));
+            std::copy(item->second.covered.begin(), item->second.covered.end(),
                       merged.covered.begin() + static_cast<ptrdiff_t>(offset / 64));
+            allocatedBytes_ -= item->second.bytes.size();
         }
-        const size_t offset = static_cast<size_t>(address - newBase);
-        size_t fresh = 0;
-        for (size_t index = 0; index < size; ++index)
-        {
-            const size_t position = offset + index;
-            const uint64_t bit = uint64_t{1} << (position % 64);
-            if (merged.covered[position / 64] & bit)
-            {
-                // 同一批内的重叠读取逐字节验证：冻结内容必须与本次读到的一致
-                if (merged.bytes[position] == bytes[index])
-                    continue;
-                changedDuringRead_ = true;
-                if (changesDuringRead_.size() < 8)
-                {
-                    CaptureValidation::Change change;
-                    change.address = address + index;
-                    change.size = 1;
-                    change.read = {ReadError::None, address + index, 1, 1};
-                    change.before.assign(1, merged.bytes[position]);
-                    change.after.assign(1, bytes[index]);
-                    changesDuringRead_.push_back(std::move(change));
-                }
-                if (diagnostic_)
-                    diagnostic_("capture_overlap_change address=" + Hex(address + index) + " size=1");
-            }
-            merged.covered[position / 64] |= bit;
-            merged.bytes[position] = bytes[index];
-            ++fresh;
-        }
+        regions_.erase(begin, end);
+        auto position = regions_.emplace(newBase, std::move(merged)).first;
+        allocatedBytes_ += position->second.bytes.size();
+        observedBytes_ += WriteRegion(position->second, static_cast<size_t>(address - newBase), bytes, size);
         if (performance)
         {
-            if (end == begin)
+            if (inserted)
                 ++performance->captureInsertedRanges;
-            else if (fresh)
+            else
                 ++performance->captureGrownRanges;
         }
-        // 旧区域的字节被并进 merged，先归还可分配量再计入新占用
-        for (auto item = begin; item != end; ++item)
-            allocatedBytes_ -= item->bytes.size();
-        allocatedBytes_ += merged.bytes.size();
-        observedBytes_ += fresh;
-        regions_.erase(begin, end);
-        regions_.insert(std::upper_bound(regions_.begin(), regions_.end(), merged.base,
-                                         [](uintptr_t value, const Region &region)
-                                         { return value < region.base; }),
-                        std::move(merged));
     }
 
     bool CaptureMemorySource::RefreshAddressSpace()
@@ -416,34 +462,34 @@ namespace nextdumper::memory
         };
         std::array<ReadRequest, kBatchRegions> requests{};
         std::array<ReadResult, kBatchRegions> reads{};
-        // 每个批次记录首尾区域下标，回放时据此确定批内包含的区域
-        std::array<std::pair<size_t, size_t>, kBatchRegions> batches{};
+        using Iterator = decltype(regions_)::const_iterator;
+        // 每个批次记录首尾区域迭代器，回放时据此确定批内包含的区域
+        std::array<std::pair<Iterator, Iterator>, kBatchRegions> batches{};
         std::vector<uint8_t> current;
         current.resize(maxBatchSize * kBatchRegions);
-        for (size_t index = 0; index < regions_.size();)
+        for (auto first = regions_.cbegin(); first != regions_.cend();)
         {
             size_t count = 0;
-            while (count < kBatchRegions && index < regions_.size())
+            while (count < kBatchRegions && first != regions_.cend())
             {
-                const size_t begin = index;
-                const uintptr_t start = regions_[begin].base;
-                size_t span = regions_[begin].bytes.size();
-                size_t end = begin + 1;
+                const auto begin = first;
+                const uintptr_t start = begin->second.base;
+                size_t span = begin->second.bytes.size();
+                auto end = std::next(begin);
                 // 相邻区域常落在同一页内，合并成一次读取以减少系统调用
-                while (end < regions_.size())
+                while (end != regions_.cend())
                 {
-                    const Region &next = regions_[end];
-                    const uintptr_t offset = next.base - start;
-                    if (offset > maxBatchSize || next.bytes.size() > maxBatchSize - offset ||
+                    const uintptr_t offset = end->second.base - start;
+                    if (offset > maxBatchSize || end->second.bytes.size() > maxBatchSize - offset ||
                         (offset > span && offset - span > maxGap))
                         break;
-                    span = std::max(span, static_cast<size_t>(offset) + next.bytes.size());
+                    span = std::max(span, static_cast<size_t>(offset) + end->second.bytes.size());
                     ++end;
                 }
                 requests[count] = {start, current.data() + count * maxBatchSize, span};
                 batches[count] = {begin, end};
                 ++count;
-                index = end;
+                first = end;
             }
             if (performance)
                 ++performance->captureValidationBatches;
@@ -453,9 +499,9 @@ namespace nextdumper::memory
             {
                 const uint8_t *data = current.data() + batch * maxBatchSize;
                 const uintptr_t start = requests[batch].address;
-                for (size_t item = batches[batch].first; item < batches[batch].second; ++item)
+                for (auto item = batches[batch].first; item != batches[batch].second; ++item)
                 {
-                    const Region &region = regions_[item];
+                    const Region &region = item->second;
                     if (reads[batch].Ok())
                         compareRegion(region, data + (region.base - start),
                                       {ReadError::None, region.base, region.bytes.size(), region.bytes.size()});

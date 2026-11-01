@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <string>
 #include <utility>
 #include <vector>
@@ -100,12 +101,15 @@ namespace nextdumper::memory
         void RecordFailure(const ReadResult &read) const;
         void ObserveBytes(uintptr_t address, const uint8_t *bytes, size_t size) const;
         [[nodiscard]] static bool IsCovered(const Region &region, size_t offset, size_t size);
+        [[nodiscard]] Region *FindRegion(uintptr_t address) const;
         [[nodiscard]] bool ServeFromRegion(uintptr_t address, void *buffer, size_t size) const;
+        // 把一次读取写入区域，返回此前未冻结的字节数
+        size_t WriteRegion(Region &region, size_t offset, const uint8_t *bytes, size_t size) const;
 
         IMemorySource &source_;
         std::function<void(const std::string &)> diagnostic_;
-        // 按 base 升序且互不重叠，二分查找与顺序遍历都依赖这一不变式
-        mutable std::vector<Region> regions_;
+        // 键为区域基址，按升序排列，插入与删除不搬移其他区域，迭代器保持有效
+        mutable std::map<uintptr_t, Region> regions_;
         mutable size_t allocatedBytes_ = 0;
         mutable size_t observedBytes_ = 0;
         mutable bool observing_ = false;
