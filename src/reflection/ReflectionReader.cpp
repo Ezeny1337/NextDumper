@@ -1240,6 +1240,7 @@ namespace nextdumper::reflection
             result.capture.generationChanged = validation.generationChanged;
             result.capture.observedRanges = validation.observedRanges;
             result.capture.observedBytes = validation.observedBytes;
+            result.capture.allocatedBytes = validation.allocatedBytes;
             result.capture.changedRanges = validation.changedRanges;
             result.capture.unreadableRanges = validation.unreadableRanges;
             result.capture.attempts = attempt;

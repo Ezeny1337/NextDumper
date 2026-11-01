@@ -569,6 +569,7 @@ namespace nextdumper::generation
                << ",\"limit_exceeded\":" << (capture.limitExceeded ? "true" : "false")
                << ",\"generation_changed\":" << (capture.generationChanged ? "true" : "false")
                << ",\"observed_ranges\":" << capture.observedRanges << ",\"observed_bytes\":" << capture.observedBytes
+               << ",\"allocated_bytes\":" << capture.allocatedBytes
                << ",\"changed_ranges\":" << capture.changedRanges << ",\"unreadable_ranges\":" << capture.unreadableRanges
                << ",\"attempts\":" << capture.attempts
                << ",\"read_failures\":" << capture.readFailures

@@ -1321,6 +1321,8 @@ namespace nextdumper::app
         Note(RuntimeLogLevel::Info, "Capture observations_stable=" + std::to_string(reflection_.capture.observationsStable) +
                                         " attempts=" + std::to_string(reflection_.capture.attempts) +
                                         " observed_ranges=" + std::to_string(reflection_.capture.observedRanges) +
+                                        " observed_bytes=" + std::to_string(reflection_.capture.observedBytes) +
+                                        " allocated_bytes=" + std::to_string(reflection_.capture.allocatedBytes) +
                                         " changed_ranges=" + std::to_string(reflection_.capture.changedRanges) +
                                         " unreadable_ranges=" + std::to_string(reflection_.capture.unreadableRanges) +
                                         " limit_exceeded=" + std::to_string(reflection_.capture.limitExceeded) + " atomic_snapshot=0");

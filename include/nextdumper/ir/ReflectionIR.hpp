@@ -437,6 +437,7 @@ namespace nextdumper::ir
         bool generationChanged = false;
         size_t observedRanges = 0;
         size_t observedBytes = 0;
+        size_t allocatedBytes = 0;
         size_t changedRanges = 0;
         size_t unreadableRanges = 0;
         uint32_t attempts = 0;

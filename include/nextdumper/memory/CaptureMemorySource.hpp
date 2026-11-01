@@ -23,6 +23,7 @@ namespace nextdumper::memory
         };
         size_t observedRanges = 0;
         size_t observedBytes = 0;
+        size_t allocatedBytes = 0;
         size_t changedRanges = 0;
         size_t unreadableRanges = 0;
         bool limitExceeded = false;
@@ -84,7 +85,8 @@ namespace nextdumper::memory
         // 而不同分配之间通常相距更远，跨过更大的空洞只会为间隙分配内存，却得不到任何校验价值
         static constexpr uintptr_t kMaxRegionGap = 0x100;
         // 冻结内存总上限，按各区域实际分配的字节累计
-        static constexpr size_t kMaxObservedBytes = 64 * 1024 * 1024;
+        // 冻结的字节在校验阶段会被逐个重读比对，上限因此同时约束内存与校验耗时
+        static constexpr size_t kMaxObservedBytes = 256 * 1024 * 1024;
         // 单次逻辑批次的传输预算，与冻结无关
         static constexpr size_t kMaxBytes = 64 * 1024 * 1024;
         static constexpr size_t kMaxReadSize = 2048;

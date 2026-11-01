@@ -293,25 +293,24 @@ namespace nextdumper::memory
             const auto next = std::next(found);
             const uintptr_t currentEnd = region->base + region->bytes.size();
             // 仅当后续区域不与新范围相接下才原地追加，否则交给合并路径
+            // 区域达到上限时另起一段继续冻结：单个区域的上限是布局约束，不应升级为整个采集的终止条件
             if (next == regions_.end() || (next->first > last && next->first - last > kMaxRegionGap))
             {
                 const uintptr_t grown = last - region->base;
-                if (grown > kMaxRegionBytes ||
-                    (grown > region->bytes.size() && grown - region->bytes.size() > kMaxObservedBytes - allocatedBytes_))
+                if (grown <= kMaxRegionBytes &&
+                    (grown <= region->bytes.size() || grown - region->bytes.size() <= kMaxObservedBytes - allocatedBytes_))
                 {
-                    limitExceeded_ = true;
+                    if (last > currentEnd)
+                    {
+                        allocatedBytes_ += static_cast<size_t>(last - currentEnd);
+                        region->bytes.resize(static_cast<size_t>(grown), 0);
+                        region->covered.resize((static_cast<size_t>(grown) + 63) / 64, 0);
+                    }
+                    observedBytes_ += WriteRegion(*region, static_cast<size_t>(address - region->base), bytes, size);
+                    if (performance)
+                        ++performance->captureGrownRanges;
                     return;
                 }
-                if (last > currentEnd)
-                {
-                    allocatedBytes_ += static_cast<size_t>(last - currentEnd);
-                    region->bytes.resize(static_cast<size_t>(grown), 0);
-                    region->covered.resize((static_cast<size_t>(grown) + 63) / 64, 0);
-                }
-                observedBytes_ += WriteRegion(*region, static_cast<size_t>(address - region->base), bytes, size);
-                if (performance)
-                    ++performance->captureGrownRanges;
-                return;
             }
         }
         // 新建区域或向前并入先前区域
@@ -322,7 +321,7 @@ namespace nextdumper::memory
             if (first - preceding->second.base <= preceding->second.bytes.size() + kMaxRegionGap)
                 begin = preceding;
         }
-        const uintptr_t newBase = begin != regions_.end() ? std::min(first, begin->first) : first;
+        uintptr_t newBase = begin != regions_.end() ? std::min(first, begin->first) : first;
         uintptr_t newEnd = last;
         auto end = begin;
         while (end != regions_.end())
@@ -334,11 +333,18 @@ namespace nextdumper::memory
             newEnd = std::max(newEnd, end->second.base + end->second.bytes.size());
             ++end;
         }
-        // 合并后仍超出单区域上限时放弃冻结：拆分会破坏相邻读取共享一条记录的意图
+        // 合并会超出单区域上限时只放弃合并，按本次读取单独建区
+        // 合并只是减少记录数的优化，放弃它不应丢弃已读到的字节
         if (newEnd - newBase > kMaxRegionBytes)
         {
-            limitExceeded_ = true;
-            return;
+            begin = end = regions_.upper_bound(first);
+            newBase = first;
+            newEnd = last;
+            if (newEnd - newBase > kMaxRegionBytes)
+            {
+                limitExceeded_ = true;
+                return;
+            }
         }
         // 预算按合并后的净增量检查：被并入的旧区域会随合并释放
         size_t replaced = 0;
@@ -397,6 +403,7 @@ namespace nextdumper::memory
         CaptureValidation result;
         result.observedRanges = regions_.size();
         result.observedBytes = observedBytes_;
+        result.allocatedBytes = allocatedBytes_;
         result.limitExceeded = limitExceeded_;
         result.generationChanged = generation_ != source_.AddressSpaceGeneration();
         result.changedRanges = changedDuringRead_ ? 1 : 0;
