@@ -438,7 +438,7 @@ namespace nextdumper::generation::detail
         stream << "// Runtime-resolved metadata offsets, not complete native C++ object layouts.\n";
         stream << "// A value of -1 means that the member offset was not resolved for this target.\n";
         stream << "// Layout profile: " << ::nextdumper::ue::SchemaLayoutVariantName(schema_.layout) << ".\n";
-        stream << "namespace NextDumper::Engine\n{\n";
+        stream << "namespace NextDumper::EngineLayout\n{\n";
         stream << "inline constexpr const char *LayoutProfileId = \"" << EscapeJson(schema_.validation.profileId) << "\";\n";
         stream << "inline constexpr const char *LayoutVariant = \""
                << ::nextdumper::ue::SchemaLayoutVariantName(schema_.layout) << "\";\n";
