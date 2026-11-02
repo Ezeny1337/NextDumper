@@ -94,23 +94,6 @@ namespace nextdumper::ue::schema_probe
             mutable bool exhausted_ = false;
         };
 
-        enum class Payload
-        {
-            Bool,
-            Byte,
-            Object,
-            Class,
-            Interface,
-            Struct,
-            Array,
-            Set,
-            Map,
-            Enum,
-            Delegate,
-            FieldPath,
-            Optional,
-        };
-
         struct SubtypeSpec
         {
             const char *name;
@@ -352,39 +335,6 @@ namespace nextdumper::ue::schema_probe
             return result;
         }
 
-        // 派生属性类在基类之后新增成员的数量随构建而变
-        // 在基类尾部之后枚举有界窗口，由 Verify 的语义判据决定唯一命中的偏移
-        inline constexpr int32_t kMaxPayloadWindow = 2 * static_cast<int32_t>(sizeof(uintptr_t));
-
-        std::vector<int32_t> PayloadOffsets(const PropertyTailCandidate &tail, Payload payload)
-        {
-            const int32_t pointerAlignment = static_cast<int32_t>(alignof(uintptr_t));
-            const int32_t pointer = static_cast<int32_t>(sizeof(uintptr_t));
-            const int32_t first = *AlignMember(tail.dataEnd, pointerAlignment);
-            const int32_t last = first + kMaxPayloadWindow;
-            std::set<int32_t> offsets;
-            if (payload == Payload::Bool)
-            {
-                // bool 的四个描述字节是连续的 uint8，不受指针对齐约束
-                for (int32_t offset = tail.dataEnd; offset <= last; ++offset)
-                    offsets.insert(offset);
-            }
-            else
-            {
-                for (int32_t offset = first; offset <= last; offset += pointerAlignment)
-                {
-                    // Class 描述 PropertyClass 与 MetaClass 这对相邻指针
-                    // 候选记录后者的位置，前者位于 offset - sizeof(ptr)
-                    const int32_t recorded = payload == Payload::Class ? offset + pointer : offset;
-                    if (recorded + pointer <= last + pointer)
-                        offsets.insert(recorded);
-                }
-            }
-            if (payload == Payload::Optional)
-                offsets.insert(tail.completeSize);
-            return {offsets.begin(), offsets.end()};
-        }
-
         struct FieldPathCandidate
         {
             int32_t offset = -1;
@@ -543,6 +493,10 @@ namespace nextdumper::ue::schema_probe
                 uintptr_t rawValue = 0;
                 // RepNotifyFunc 几乎总是空 FName，因此它不能单独确定偏移
                 // 但它仍是必须成立的必要条件，错位的候选会把它落到 subtype 指针等非 FName 数据上
+                //
+                // 必须先判 rep_notify 再统计链接槽：rep_notify 不成立时样本立即出局
+                // 链接槽不再计入 linkPointerHits，这个顺序是判据排他力的一部分
+                // 交换会让错位候选在链接槽上取得虚假命中，且 accepted 表达式本身无法察觉
                 std::array<uint8_t, 12> repNotifyBytes{};
                 bool repNotifyValid = budget.Read(sample.metadata.address, tail.repNotify, repNotifyBytes.data(),
                                                   static_cast<size_t>(schema.fname.size));
@@ -625,9 +579,13 @@ namespace nextdumper::ue::schema_probe
             // UStruct::Link 对每个被迭代属性都写入 PropertyLinkNext，只有各条链的链尾为 NULL
             // 因此至少要有一半样本在首个槽位读到合法 FProperty 指针
             // 落在 FName 等非指针字段上的候选读到的是名称索引，无法满足这一条
+            //
+            // 分母取全部样本而不是 validSamples：rep_notify 不成立时链接槽根本不参与统计
+            // （见上面的 sampleValid 短路），用 validSamples 会让 repNotifyHits 判据恒真
+            // 而失去排除能力。判据的分母必须与被排除的样本集合一致
             result.accepted = result.validOwners >= 2 && result.validOwners * 2 > result.owners &&
-                              result.linkPointerHits * 2 >= result.validSamples &&
-                              result.repNotifyHits * 2 >= result.validSamples;
+                              result.linkPointerHits * 2 >= result.samples &&
+                              result.repNotifyHits * 2 >= result.samples;
             return result;
         }
 

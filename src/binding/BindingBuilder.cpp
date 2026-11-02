@@ -142,7 +142,7 @@ namespace nextdumper::binding
             }
         }
 
-        // analyzer 的 ObjObjects/GUObjectArray 候选可能是指针槽；有限追踪解引用链
+        // ObjObjects/GUObjectArray 的符号候选可能是指针槽，有限追踪解引用链
         for (size_t index = 0; index < roots.size(); ++index)
         {
             if (roots[index].depth >= kMaxPointerDepth)

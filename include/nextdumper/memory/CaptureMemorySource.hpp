@@ -31,6 +31,7 @@ namespace nextdumper::memory
         std::vector<uintptr_t> failedAddresses;
         std::vector<Change> changes;
         size_t readFailures = 0;
+        size_t unfrozenReads = 0;
         std::vector<ReadResult> readFailureSamples;
 
         // 预算耗尽表示部分读取未被冻结，校验覆盖不完整，但不代表已冻结的字节发生了变化
@@ -89,7 +90,14 @@ namespace nextdumper::memory
         static constexpr size_t kMaxObservedBytes = 256 * 1024 * 1024;
         // 单次逻辑批次的传输预算，与冻结无关
         static constexpr size_t kMaxBytes = 64 * 1024 * 1024;
+        // 单次冻结的读取上限
+        // 超过它的读取本身仍然有效，只是不进入冻结集合
+        // 该值必须覆盖最宽的单次读取：名称文本按 UTF-16 读取时上界为 1024 字符 × 2 字节
+        static constexpr size_t kMaxNameTextBytes = 1024 * sizeof(uint16_t);
         static constexpr size_t kMaxReadSize = 2048;
+        static_assert(kMaxReadSize >= kMaxNameTextBytes,
+                      "kMaxReadSize 必须覆盖名称文本的 UTF-16 读取上界，"
+                      "否则每次采集都会因名称读取而提前停止冻结");
 
         // 一段连续的已读取地址范围，bytes 保存原样内容，covered 逐位标记哪些字节真正被读取过
         // 间隙字节既不参与比较，也不会被回放
@@ -120,7 +128,14 @@ namespace nextdumper::memory
         mutable size_t allocatedBytes_ = 0;
         mutable size_t observedBytes_ = 0;
         mutable bool observing_ = false;
+        // 冻结因超出单次读取上限或总量预算而停止过，此时覆盖率不是全量
+        // 区域上限与区域互斥导致的个别遗漏不计入此位，见 unfrozenReads_
         mutable bool limitExceeded_ = false;
+        // 总量预算耗尽后不再冻结新字节，与 limitExceeded_ 的区别见 ObserveBytes
+        mutable bool freezeStopped_ = false;
+        // 因单次上限、区域上限或区域互斥而未冻结的读取次数
+        // 这些字节不在校验范围内，供分析覆盖率缺口，不参与门禁判定
+        mutable size_t unfrozenReads_ = 0;
         mutable bool changedDuringRead_ = false;
         mutable std::vector<CaptureValidation::Change> changesDuringRead_;
         mutable uint64_t generation_ = 0;

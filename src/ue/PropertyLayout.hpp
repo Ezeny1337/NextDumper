@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <optional>
+#include <set>
 #include <vector>
 
 #include "nextdumper/ue/EngineSchema.hpp"
@@ -95,5 +96,56 @@ namespace nextdumper::ue::schema_probe
             }
         }
         return result;
+    }
+
+    // 派生属性类携带的引用载荷种类
+    enum class Payload
+    {
+        Bool,
+        Byte,
+        Object,
+        Class,
+        Interface,
+        Struct,
+        Array,
+        Set,
+        Map,
+        Enum,
+        Delegate,
+        FieldPath,
+        Optional,
+    };
+
+    // 派生属性类在基类之后新增成员的数量随构建而变
+    // 在基类尾部之后枚举有界窗口，由 Verify 的语义判据决定唯一命中的偏移
+    inline constexpr int32_t kMaxPayloadWindow = 2 * static_cast<int32_t>(sizeof(uintptr_t));
+
+    inline std::vector<int32_t> PayloadOffsets(const PropertyTailCandidate &tail, Payload payload)
+    {
+        const int32_t pointerAlignment = static_cast<int32_t>(alignof(uintptr_t));
+        const int32_t pointer = static_cast<int32_t>(sizeof(uintptr_t));
+        const int32_t first = *AlignMember(tail.dataEnd, pointerAlignment);
+        const int32_t last = first + kMaxPayloadWindow;
+        std::set<int32_t> offsets;
+        if (payload == Payload::Bool)
+        {
+            // bool 的四个描述字节是连续的 uint8，不受指针对齐约束
+            for (int32_t offset = tail.dataEnd; offset <= last; ++offset)
+                offsets.insert(offset);
+        }
+        else
+        {
+            for (int32_t offset = first; offset <= last; offset += pointerAlignment)
+            {
+                // Class 描述 PropertyClass 与 MetaClass 这对相邻指针
+                // 候选记录后者的位置，前者位于 offset - sizeof(ptr)
+                const int32_t recorded = payload == Payload::Class ? offset + pointer : offset;
+                if (recorded + pointer <= last + pointer)
+                    offsets.insert(recorded);
+            }
+        }
+        if (payload == Payload::Optional)
+            offsets.insert(tail.completeSize);
+        return {offsets.begin(), offsets.end()};
     }
 } // namespace nextdumper::ue::schema_probe

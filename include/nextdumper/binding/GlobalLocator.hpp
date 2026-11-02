@@ -25,8 +25,6 @@ namespace nextdumper::binding
         [[nodiscard]] BindingCandidates LocateSymbols(const std::vector<std::string> &objectSymbols,
                                                       const std::vector<std::string> &nameSymbols,
                                                       const std::function<void(const std::string &)> &progress = {}) const;
-        [[nodiscard]] BindingCandidates LocateAnalysis(const BindingCandidates &existing,
-                                                       const std::function<void(const std::string &)> &progress = {}) const;
 
     private:
         [[nodiscard]] std::vector<LocatedAddress> SymbolCandidates(uintptr_t address,

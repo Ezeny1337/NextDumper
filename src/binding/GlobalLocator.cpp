@@ -1,36 +1,17 @@
 #include "nextdumper/binding/GlobalLocator.hpp"
-#include "nextdumper/analyzer/AnalyzerMemoryAdapter.hpp"
 
 #include <algorithm>
 #include <chrono>
-#include <memory>
 
 #include "nextdumper/common/Hex.hpp"
 #include "nextdumper/memory/ReadDiagnostics.hpp"
 #include "nextdumper/module/ElfSymbols.hpp"
-
-#include "Architecture/IArchDecoder.h"
-#include "UEAnalyzer/UEAnalyzer.h"
 
 namespace nextdumper::binding
 {
     namespace
     {
         using ::nextdumper::common::Hex;
-
-        EArch ToAnalyzerArchitecture(module::ModuleArchitecture architecture)
-        {
-            switch (architecture)
-            {
-            case module::ModuleArchitecture::Arm32:
-                return EArch::Arm32;
-            case module::ModuleArchitecture::Arm64:
-                return EArch::Arm64;
-            case module::ModuleArchitecture::Unknown:
-                return EArch::Unknown;
-            }
-            return EArch::Unknown;
-        }
 
         RootTarget TargetForSymbol(const std::string &symbol)
         {
@@ -126,71 +107,6 @@ namespace nextdumper::binding
             }
         }
         phases.Finish("symbol-cleanup");
-        return result;
-    }
-
-    BindingCandidates GlobalLocator::LocateAnalysis(const BindingCandidates &existing,
-                                                    const std::function<void(const std::string &)> &progress) const
-    {
-        BindingCandidates result = existing;
-        LocatorPhases phases(memory_, progress);
-        const auto analyze = [&]
-        {
-            analyzer::AnalyzerMemoryAdapter adapter(memory_, module_);
-            if (!adapter.Initialize())
-            {
-                phases.Finish("adapter-failed");
-                return;
-            }
-            const std::unique_ptr<IArchDecoder> decoder = CreateArchDecoder(ToAnalyzerArchitecture(module_.architecture));
-            if (!decoder)
-            {
-                phases.Finish("decoder-failed");
-                return;
-            }
-            phases.Finish("analyzer-initialization");
-            analyzer::AnalyzerOptions options;
-            options.ThreadMode = analyzer::EThreadMode::Single;
-            options.Progress = progress;
-            options.PhaseCompleted = [&](const char *id)
-            { phases.Finish(id); };
-            options.Targets = {analyzer::Targets::Names, analyzer::Targets::GUObjectArray, analyzer::Targets::ObjObjects};
-            const auto analysis = analyzer::UEAnalyzer::Analyze(&adapter, decoder.get(), options);
-            if (!analysis.IsValid())
-            {
-                if (progress)
-                    progress("locator_analysis status=failed reason=" + analysis.GetError());
-                phases.Finish("analysis-failed");
-                return;
-            }
-            const auto append = [](auto &out, const analyzer::LocateResult &located, RootTarget target)
-            {
-                for (const auto &candidate : located.Candidates)
-                {
-                    if (candidate.Address == 0)
-                        continue;
-                    const auto existing = std::find_if(out.begin(), out.end(), [&](const auto &item)
-                                                       { return item.address == candidate.Address && item.meaning == AddressMeaning::Direct; });
-                    if (existing != out.end())
-                    {
-                        if (existing->target == RootTarget::Unknown)
-                            existing->target = target;
-                        continue;
-                    }
-                    out.push_back({static_cast<uintptr_t>(candidate.Address), AddressMeaning::Direct,
-                                   static_cast<uint8_t>(std::clamp(candidate.Confidence, 0.0f, 1.0f) * 100.0f),
-                                   std::string("analyzer:") + located.Target, target});
-                }
-            };
-            append(result.objectRoots, analysis.Find(analyzer::Targets::GUObjectArray), RootTarget::GUObjectArray);
-            phases.Finish("resolve-GUObjectArray");
-            append(result.objectRoots, analysis.Find(analyzer::Targets::ObjObjects), RootTarget::ObjObjects);
-            phases.Finish("resolve-ObjObjects");
-            append(result.nameRoots, analysis.Find(analyzer::Targets::Names), RootTarget::NamePool);
-            phases.Finish("resolve-Names");
-        };
-        analyze();
-        phases.Finish("analyzer-cleanup");
         return result;
     }
 } // namespace nextdumper::binding

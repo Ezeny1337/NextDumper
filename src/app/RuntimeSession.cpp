@@ -865,10 +865,8 @@ namespace nextdumper::app
 
         if (!binding)
         {
-            Note("locator_path source=analyzer reason=symbol-binding-incomplete");
-            BeginMemoryStage("analyzer-locator");
-            candidates = locator.LocateAnalysis(candidates, progress);
-            finishStage("analyzer-locator");
+            // 符号定位不足时，根候选由分析契约提供
+            Note("locator_path source=analysis reason=symbol-binding-incomplete");
             profileExecutionState->stage = "binding";
 
             std::optional<NameBindingProposal> nameProposal;
@@ -981,11 +979,11 @@ namespace nextdumper::app
                     return builder.Build(candidates, fallbackDecode, bindingProgress, fallbackHints);
                 };
                 discardFailedProfileDecoders();
-                BeginMemoryStage("analyzer-binding");
+                BeginMemoryStage("analysis-binding-retry");
                 binding = buildWithPreservedName();
                 if (discardFailedProfileDecoders())
                     binding = buildWithPreservedName();
-                finishStage("analyzer-binding");
+                finishStage("analysis-binding-retry");
             }
         }
         else
@@ -1009,7 +1007,7 @@ namespace nextdumper::app
 
         if (!binding)
         {
-            failures_.push_back("runtime binding failed after symbol and analyzer validation");
+            failures_.push_back("runtime binding failed after symbol and analysis validation");
             const std::string bindingSummary = failures_.back() +
                                                "; object_root_candidates=" + std::to_string(candidates.objectRoots.size()) +
                                                " name_root_candidates=" + std::to_string(candidates.nameRoots.size());

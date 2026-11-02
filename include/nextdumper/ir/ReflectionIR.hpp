@@ -449,6 +449,7 @@ namespace nextdumper::ir
             size_t transferred = 0;
         };
         size_t readFailures = 0;
+        size_t unfrozenReads = 0;
         std::vector<ReadFailure> readFailureSamples;
         struct Change
         {
@@ -469,6 +470,7 @@ namespace nextdumper::ir
             bool limitExceeded = false;
             bool generationChanged = false;
             size_t readFailures = 0;
+            size_t unfrozenReads = 0;
             std::vector<ReadFailure> readFailureSamples;
             int32_t failures = 0;
             int32_t identityFailures = 0;

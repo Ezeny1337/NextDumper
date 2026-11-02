@@ -57,19 +57,6 @@ if(NEXTDUMPER_FORCE_NDEBUG AND NEXTDUMPER_DISABLE_NDEBUG)
     message(FATAL_ERROR "NEXTDUMPER_FORCE_NDEBUG and NEXTDUMPER_DISABLE_NDEBUG are mutually exclusive")
 endif()
 
-file(GLOB UE_ANALYZER_SOURCES CONFIGURE_DEPENDS
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/analyzer/Architecture/*.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/analyzer/UEAnalyzer/*.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/analyzer/UEAnalyzer/Analysis/*.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/analyzer/UEAnalyzer/Core/*.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/analyzer/UEAnalyzer/Strategies/*.cpp"
-)
-
-add_library(ue_analyzer STATIC ${UE_ANALYZER_SOURCES})
-target_include_directories(ue_analyzer PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src/analyzer")
-target_compile_features(ue_analyzer PUBLIC cxx_std_20)
-target_compile_options(ue_analyzer PRIVATE -Wall -Wextra -Wno-unused-parameter -fexceptions)
-
 file(GLOB UE_ANALYSIS_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/analysis/*.cpp"
 )
@@ -84,7 +71,6 @@ add_library(nextdumper_core STATIC
     src/app/CompatibilityDiagnosis.cpp
     src/app/MemoryPerformanceLog.cpp
     src/app/RuntimeSession.cpp
-    src/analyzer/AnalyzerMemoryAdapter.cpp
     src/binding/BindingBuilder.cpp
     src/binding/CommonObjectCollector.cpp
     src/binding/GlobalLocator.cpp
@@ -140,9 +126,6 @@ target_include_directories(nextdumper_core
     PRIVATE
         "${CMAKE_CURRENT_BINARY_DIR}/generated"
 )
-target_include_directories(nextdumper_core SYSTEM PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/analyzer"
-)
 
 target_compile_definitions(nextdumper_core PUBLIC _FILE_OFFSET_BITS=64)
 
@@ -153,14 +136,13 @@ target_compile_options(nextdumper_core PRIVATE
     -Werror
     -fexceptions
 )
-target_link_libraries(nextdumper_core PUBLIC ue_analyzer)
 target_link_libraries(nextdumper_core PRIVATE ue_analysis)
 
 add_executable(NextDumper src/app/main.cpp)
 target_link_libraries(NextDumper PRIVATE nextdumper_core)
 target_compile_options(NextDumper PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
-set(NEXTDUMPER_NATIVE_TARGETS ue_analyzer ue_analysis nextdumper_core NextDumper)
+set(NEXTDUMPER_NATIVE_TARGETS ue_analysis nextdumper_core NextDumper)
 foreach(target IN LISTS NEXTDUMPER_NATIVE_TARGETS)
     target_compile_options(${target} PRIVATE
         -ffunction-sections

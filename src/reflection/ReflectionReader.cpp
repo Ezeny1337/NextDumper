@@ -1217,6 +1217,7 @@ namespace nextdumper::reflection
             details.limitExceeded = validation.limitExceeded;
             details.generationChanged = validation.generationChanged;
             details.readFailures = validation.readFailures;
+            details.unfrozenReads = validation.unfrozenReads;
             details.failures = result.stats.failures;
             details.identityFailures = result.stats.identityFailures;
             const size_t diagnosticSamples = std::min<size_t>(result.diagnostics.size(), 32);
@@ -1245,6 +1246,7 @@ namespace nextdumper::reflection
             result.capture.unreadableRanges = validation.unreadableRanges;
             result.capture.attempts = attempt;
             result.capture.readFailures = validation.readFailures;
+            result.capture.unfrozenReads = validation.unfrozenReads;
             for (const auto &failure : validation.readFailureSamples)
                 result.capture.readFailureSamples.push_back({failure.address, static_cast<int32_t>(failure.error),
                                                              failure.requested, failure.transferred});

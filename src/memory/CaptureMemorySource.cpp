@@ -25,6 +25,8 @@ namespace nextdumper::memory
         observedBytes_ = 0;
         observing_ = false;
         limitExceeded_ = false;
+        freezeStopped_ = false;
+        unfrozenReads_ = 0;
         changedDuringRead_ = false;
         changesDuringRead_.clear();
         generation_ = source_.AddressSpaceGeneration();
@@ -258,8 +260,9 @@ namespace nextdumper::memory
     {
         auto *performance = Performance();
         ScopedReadTiming timing(performance ? &performance->captureObserve : nullptr);
-        // 超出预算只停止冻结新的字节，读取本身已经成功
-        // 据此中断调用方会把内存护栏变成采集中止条件，使余下对象永远无法枚举
+        // 超出单次上限只是这一次不冻结，读取本身已经成功
+        // 它让覆盖不完整，但不构成停止冻结的理由：后续的普通读取仍可安全冻结
+        // 只有总量预算耗尽才需要停冻，见下面的 freezeStopped_
         if (size > kMaxReadSize || address + size < address)
         {
             limitExceeded_ = true;
@@ -268,7 +271,7 @@ namespace nextdumper::memory
         // 预算一旦耗尽就停止冻结
         // 继续写入会让冻结内容的采集时刻跨度整个枚举
         // 校验时与当前内存比较必然出现大量并不存在的差异
-        if (limitExceeded_)
+        if (freezeStopped_)
             return;
         // 快路径：读取完全落在已有区域内时原地写入
         // 属性头部、链接槽与派生成员落在同一段描述符数组内，绝大多数读取走这条路径
@@ -345,14 +348,25 @@ namespace nextdumper::memory
             newEnd = last;
             // 新区域必须与已有区域互斥，region 已满且本次读取落在它内部时
             // 单独建区会与它重叠并破坏有序不变量，此时放弃冻结这一次读取
+            // 放弃同时意味着该读取的字节不在校验范围内，计入覆盖缺口
+            //
+            // 这里只计数不置 limitExceeded_：区域已满后再遇到落在其内部的读取
+            // 是区域布局的常规结果，每次采集都会发生若干次
+            // 用它判定覆盖不完整会让每次运行都降级为 Partial，失去门禁的区分度
             if (begin != regions_.begin())
             {
                 const auto preceding = std::prev(begin);
                 if (preceding->second.base + preceding->second.bytes.size() > newBase)
+                {
+                    ++unfrozenReads_;
                     return;
+                }
             }
             if (begin != regions_.end() && begin->first < newEnd)
+            {
+                ++unfrozenReads_;
                 return;
+            }
         }
         // 预算按合并后的净增量检查：被并入的旧区域会随合并释放
         size_t replaced = 0;
@@ -362,6 +376,7 @@ namespace nextdumper::memory
         if (grown > replaced && grown - replaced > RemainingBudget())
         {
             limitExceeded_ = true;
+            freezeStopped_ = true;
             return;
         }
         const bool inserted = begin == end;
@@ -420,6 +435,7 @@ namespace nextdumper::memory
         result.changedRanges = changedDuringRead_ ? 1 : 0;
         result.changes = changesDuringRead_;
         result.readFailures = readFailures_;
+        result.unfrozenReads = unfrozenReads_;
         result.readFailureSamples = readFailureSamples_;
         if (regions_.empty())
         {

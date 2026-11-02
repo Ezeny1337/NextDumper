@@ -573,6 +573,7 @@ namespace nextdumper::generation
                << ",\"changed_ranges\":" << capture.changedRanges << ",\"unreadable_ranges\":" << capture.unreadableRanges
                << ",\"attempts\":" << capture.attempts
                << ",\"read_failures\":" << capture.readFailures
+               << ",\"unfrozen_reads\":" << capture.unfrozenReads
                << ",\"read_failure_samples_omitted\":" << (capture.readFailures > capture.readFailureSamples.size() ? capture.readFailures - capture.readFailureSamples.size() : 0)
                << ",\"read_failure_samples\":[";
         for (size_t index = 0; index < capture.readFailureSamples.size(); ++index)
@@ -601,6 +602,7 @@ namespace nextdumper::generation
                    << ",\"tail_rounds\":" << attempt.tailRounds
                    << ",\"additional_types\":" << attempt.additionalTypes << ",\"additional_enums\":" << attempt.additionalEnums
                    << ",\"read_failures\":" << attempt.readFailures
+                   << ",\"unfrozen_reads\":" << attempt.unfrozenReads
                    << ",\"failures\":" << attempt.failures << ",\"identity_failures\":" << attempt.identityFailures
                    << ",\"coverage_complete\":" << (attempt.coverageComplete ? "true" : "false")
                    << ",\"reason\":\"" << EscapeJson(attempt.reason) << "\",\"changes\":[";
