@@ -134,12 +134,15 @@ namespace nextdumper::reflection
         diagnostic.normalizedClass = metadata.normalizedClassName;
         diagnostic.reason = reason;
         diagnostic.detailsStatus = ::nextdumper::ue::PropertyDetailsStatusName(metadata.detailsStatus);
+        if (metadata.inferredObjectPropertyBase)
+            diagnostic.inferredPropertyFamily = "object-reference";
         diagnostic.offset = metadata.offset;
         diagnostic.elementSize = metadata.elementSize;
         diagnostic.arrayDim = metadata.arrayDim;
         diagnostic.flags = metadata.flags;
         diagnostic.referencedAddress = metadata.referencedAddress;
         diagnostic.secondaryAddress = metadata.secondaryAddress;
+        diagnostic.objectClassMetadataAddress = metadata.objectClassMetadataAddress;
         diagnostic.boolean = {metadata.boolLayout[0], metadata.boolLayout[1], metadata.boolLayout[2], metadata.boolLayout[3]};
         AddPropertyClassEvidence(metadata, diagnostic);
         for (size_t index = 0; index < metadata.detailReadCount; ++index)
@@ -173,6 +176,29 @@ namespace nextdumper::reflection
             const auto cls = objects_.ClassName(address);
             return cls ? *cls : "<unreadable>";
         };
+        if (metadata.inferredObjectPropertyBase)
+        {
+            if (metadata.objectClassMetadataAddress == 0)
+                diagnostic.objectClassMetadataStatus = metadata.detailsStatus == PropertyMetadata::DetailsStatus::Complete
+                                                           ? "null"
+                                                           : ::nextdumper::ue::PropertyDetailsStatusName(metadata.detailsStatus);
+            else
+            {
+                const auto classObjectMetaClass = objects_.Class(metadata.objectClassMetadataAddress);
+                const auto kind = classObjectMetaClass
+                                      ? objects_.DefinitionKindForClass(*classObjectMetaClass)
+                                      : std::nullopt;
+                if (!kind || *kind != ::nextdumper::ue::DefinitionKind::Class)
+                    diagnostic.objectClassMetadataStatus = "not-a-validated-uclass";
+                else if (const auto name = objects_.Name(metadata.objectClassMetadataAddress))
+                {
+                    diagnostic.objectClassMetadataStatus = "validated-uclass";
+                    diagnostic.objectClassMetadataName = *name;
+                }
+                else
+                    diagnostic.objectClassMetadataStatus = "uclass-name-unreadable";
+            }
+        }
         diagnostic.referencedClass = referenceClass(metadata.referencedAddress, false);
         diagnostic.secondaryClass = referenceClass(metadata.secondaryAddress, true);
         property.detailDiagnostics.push_back(std::move(diagnostic));

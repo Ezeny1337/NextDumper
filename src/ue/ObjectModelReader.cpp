@@ -75,6 +75,49 @@ namespace nextdumper::ue
         return sawClassTail ? fallback : nameFallback;
     }
 
+    std::optional<bool> ObjectModelReader::InheritsObjectPropertyBase(uintptr_t classAddress) const
+    {
+        if (classAddress == 0 || !schema_.features.useFProperty ||
+            schema_.ffieldClass.castFlags < 0 || schema_.ffieldClass.superClass < 0)
+            return std::nullopt;
+        if (const auto cached = objectPropertyBaseCache_.find(classAddress); cached != objectPropertyBaseCache_.end())
+            return cached->second;
+
+        constexpr size_t kMaxFieldClassDepth = 32;
+        constexpr size_t kMaxCachedFieldClasses = 1024;
+        std::optional<bool> result;
+        std::unordered_set<uintptr_t> visited;
+        uintptr_t current = classAddress;
+        uint64_t childCastFlags = UINT64_MAX;
+        bool objectPropertyBase = false;
+        for (size_t depth = 0; current != 0 && depth < kMaxFieldClassDepth; ++depth)
+        {
+            if (!visited.insert(current).second)
+                break;
+            const auto fieldClass = FieldClass(current);
+            if (!fieldClass ||
+                (fieldClass->id != 0 && (fieldClass->castFlags & fieldClass->id) != fieldClass->id) ||
+                (childCastFlags & fieldClass->castFlags) != fieldClass->castFlags)
+                break;
+
+            objectPropertyBase = objectPropertyBase ||
+                                 NormalizeRuntimeFieldName(fieldClass->name) == "ObjectPropertyBase";
+            if (fieldClass->superClass == 0)
+            {
+                if (NormalizeRuntimeFieldName(fieldClass->name) == "Field")
+                    result = objectPropertyBase;
+                break;
+            }
+
+            childCastFlags = fieldClass->castFlags;
+            current = fieldClass->superClass;
+        }
+
+        if (objectPropertyBaseCache_.size() < kMaxCachedFieldClasses)
+            objectPropertyBaseCache_.emplace(classAddress, result);
+        return result;
+    }
+
     FieldKind ObjectModelReader::ResolveUFieldKind(uintptr_t classAddress, FieldKind fallback) const
     {
         if (schema_.ustruct.superStruct < 0)
@@ -432,8 +475,17 @@ namespace nextdumper::ue
             propertyClassName == "LazyObjectProperty")
         {
             result.referencedAddress = readOptionalPointer("object_class", schema_.propertySubtypes.objectClass);
+            result.objectClassMetadataAddress = result.referencedAddress;
             result.objectPropertyClassNull = result.referencedAddress == 0 &&
                                              result.detailsStatus == PropertyMetadata::DetailsStatus::NullReference;
+            if (result.objectPropertyClassNull && result.detailReadCount != 0)
+                result.objectPropertyClassPointerAddress = result.detailReads[result.detailReadCount - 1].address;
+        }
+        else if (InheritsObjectPropertyBase(base.classAddress).value_or(false))
+        {
+            result.inferredObjectPropertyBase = true;
+            result.objectClassMetadataAddress = readOptionalPointer("object_class", schema_.propertySubtypes.objectClass, true);
+            result.objectPropertyClassNull = result.objectClassMetadataAddress == 0;
             if (result.objectPropertyClassNull && result.detailReadCount != 0)
                 result.objectPropertyClassPointerAddress = result.detailReads[result.detailReadCount - 1].address;
         }

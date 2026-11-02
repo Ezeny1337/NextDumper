@@ -768,6 +768,11 @@ namespace nextdumper::generation
                    << "\",\"referenced_address\":\"" << Hex(detail.referencedAddress)
                    << "\",\"secondary_address\":\"" << Hex(detail.secondaryAddress)
                    << "\"";
+            if (!detail.inferredPropertyFamily.empty())
+                stream << ",\"inferred_property_family\":\"" << EscapeJson(detail.inferredPropertyFamily)
+                       << "\",\"object_class_metadata_address\":\"" << Hex(detail.objectClassMetadataAddress)
+                       << "\",\"object_class_metadata_status\":\"" << EscapeJson(detail.objectClassMetadataStatus)
+                       << "\",\"object_class_metadata_name\":\"" << EscapeJson(detail.objectClassMetadataName) << '"';
             if (!detail.fieldClassHierarchyStatus.empty())
             {
                 stream << ",\"field_class_hierarchy\":{\"status\":\""

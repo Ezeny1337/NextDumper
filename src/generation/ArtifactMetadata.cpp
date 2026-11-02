@@ -100,7 +100,7 @@ namespace nextdumper::generation::detail
     void DiagnosticsJson(std::ostream &stream, const RuntimeContext &context, const ReflectionIR &reflection,
                          const GenerationReport &report, ParseStatus status)
     {
-        stream << "{\n  \"schema_version\": 10,\n  \"status\": \""
+        stream << "{\n  \"schema_version\": 11,\n  \"status\": \""
                << ParseStatusName(status) << "\",\n";
         stream << "  \"reflection_status\":\"" << ParseStatusName(reflection.status) << "\",\n";
         stream << "  \"sdk_status\":\"" << ParseStatusName(report.Status()) << "\",\n";

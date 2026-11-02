@@ -79,6 +79,8 @@ namespace nextdumper::ue
         uint64_t flags = 0;
         uintptr_t referencedAddress = 0;
         uintptr_t secondaryAddress = 0;
+        uintptr_t objectClassMetadataAddress = 0;
+        bool inferredObjectPropertyBase = false;
         enum class DetailsStatus
         {
             Complete,
@@ -218,6 +220,7 @@ namespace nextdumper::ue
 
     private:
         [[nodiscard]] FieldKind ResolveFFieldKind(uintptr_t classAddress, FieldKind fallback) const;
+        [[nodiscard]] std::optional<bool> InheritsObjectPropertyBase(uintptr_t classAddress) const;
         [[nodiscard]] FieldKind ResolveUFieldKind(uintptr_t classAddress, FieldKind fallback) const;
         [[nodiscard]] std::optional<std::string> NameField(uintptr_t object) const;
         [[nodiscard]] bool IsReadableObject(uintptr_t object) const;
@@ -231,5 +234,6 @@ namespace nextdumper::ue
         bool initialized_ = false;
         // 键是 FName 字段地址：同一地址总是解析出同一字符串，缓存可随会话存活
         mutable std::unordered_map<uintptr_t, std::string> nameCache_;
+        mutable std::unordered_map<uintptr_t, std::optional<bool>> objectPropertyBaseCache_;
     };
 } // namespace nextdumper::ue

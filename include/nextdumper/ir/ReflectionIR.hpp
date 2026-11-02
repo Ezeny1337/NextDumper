@@ -266,12 +266,16 @@ namespace nextdumper::ir
         std::string normalizedClass;
         std::string reason;
         std::string detailsStatus;
+        std::string inferredPropertyFamily;
         int32_t offset = 0;
         int32_t elementSize = 0;
         int32_t arrayDim = 0;
         uint64_t flags = 0;
         uintptr_t referencedAddress = 0;
         uintptr_t secondaryAddress = 0;
+        uintptr_t objectClassMetadataAddress = 0;
+        std::string objectClassMetadataStatus;
+        std::string objectClassMetadataName;
         std::string fieldClassHierarchyStatus;
         std::vector<FieldClassNode> fieldClassHierarchy;
         std::string referencedClass;
