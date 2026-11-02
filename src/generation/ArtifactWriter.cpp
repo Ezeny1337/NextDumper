@@ -193,7 +193,7 @@ namespace nextdumper::generation
             return result;
         for (const auto &shard : typeShards)
         {
-            const std::vector<std::string> dependencies = emitter.ShardDependencies(shard, symbols);
+            const auto dependencies = emitter.DependenciesOf(shard, symbols);
             if (!writeFile("sdk/Types/" + shard.fileName + ".hpp", [&](std::ostream &stream)
                            { emitter.TypeShard(stream, symbols, shard, dependencies, report); }))
                 return result;

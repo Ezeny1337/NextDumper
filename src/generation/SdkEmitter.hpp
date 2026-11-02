@@ -40,16 +40,22 @@ namespace nextdumper::generation::detail
         // 头文件索引：只列出各分片的 include，供整体引用
         void TypesEntry(std::ostream &stream, const std::vector<std::string> &shardNames) const;
         void FunctionsEntry(std::ostream &stream, const std::vector<std::string> &shardNames) const;
+        // 分片的外部依赖，按包名排序且不含自身
+        // 继承要求基类完整定义，字段引用只需标识符可见，两者对 include 的要求不同
+        struct ShardDependencies
+        {
+            std::vector<std::string> inheritancePackages;
+            std::vector<std::string> referencePackages;
+        };
         // 单个分片：只包含该包的类型，依赖的包通过 include 引入
         void TypeShard(std::ostream &stream, const CppSymbols &symbols, const SdkShard &shard,
-                       const std::vector<std::string> &dependencies, GenerationReport &report) const;
+                       const ShardDependencies &dependencies, GenerationReport &report) const;
         void FunctionShard(std::ostream &stream, const CppSymbols &symbols, const SdkShard &shard,
                            const std::vector<std::string> &dependencies, GenerationReport &report) const;
         void Enums(std::ostream &stream, const CppSymbols &symbols) const;
         [[nodiscard]] std::vector<SdkShard> TypeShards(const CppSymbols &symbols) const;
         [[nodiscard]] std::vector<SdkShard> FunctionShards() const;
-        // 分片依赖的包名列表，按包名排序且不含自身
-        [[nodiscard]] std::vector<std::string> ShardDependencies(const SdkShard &shard, const CppSymbols &symbols) const;
+        [[nodiscard]] ShardDependencies DependenciesOf(const SdkShard &shard, const CppSymbols &symbols) const;
         [[nodiscard]] std::vector<std::string> FunctionShardDependencies(const SdkShard &shard,
                                                                          const CppSymbols &symbols) const;
         [[nodiscard]] std::unordered_map<uintptr_t, size_t> TypeIndexByAddress() const;
