@@ -141,6 +141,7 @@ namespace nextdumper::reflection
         diagnostic.referencedAddress = metadata.referencedAddress;
         diagnostic.secondaryAddress = metadata.secondaryAddress;
         diagnostic.boolean = {metadata.boolLayout[0], metadata.boolLayout[1], metadata.boolLayout[2], metadata.boolLayout[3]};
+        AddPropertyClassEvidence(metadata, diagnostic);
         for (size_t index = 0; index < metadata.detailReadCount; ++index)
         {
             const auto &read = metadata.detailReads[index];
@@ -175,6 +176,79 @@ namespace nextdumper::reflection
         diagnostic.referencedClass = referenceClass(metadata.referencedAddress, false);
         diagnostic.secondaryClass = referenceClass(metadata.secondaryAddress, true);
         property.detailDiagnostics.push_back(std::move(diagnostic));
+    }
+
+    void ReflectionReader::AddPropertyClassEvidence(
+        const PropertyMetadata &metadata,
+        ::nextdumper::ir::PropertyDetailDiagnostic &diagnostic) const
+    {
+        if (PropertyKindFromName(metadata.className) != PropertyKind::Unknown)
+            return;
+        if (!schema_.features.useFProperty)
+        {
+            diagnostic.fieldClassHierarchyStatus = "field-class-model-unavailable";
+            return;
+        }
+        if (metadata.classAddress == 0)
+        {
+            diagnostic.fieldClassHierarchyStatus = "null-field-class";
+            return;
+        }
+
+        constexpr size_t kMaxPropertyClassEvidenceClasses = 64;
+        constexpr size_t kMaxPropertyClassHierarchyDepth = 32;
+        constexpr size_t kMaxPropertyClassHierarchySamples = 8;
+        auto evidence = propertyClassEvidence_.find(metadata.classAddress);
+        if (evidence == propertyClassEvidence_.end())
+        {
+            if (propertyClassEvidence_.size() >= kMaxPropertyClassEvidenceClasses)
+            {
+                diagnostic.fieldClassHierarchyStatus = "class-budget-exceeded";
+                return;
+            }
+
+            PropertyClassEvidence collected;
+            uintptr_t current = metadata.classAddress;
+            std::unordered_set<uintptr_t> visited;
+            collected.status = "depth-limit";
+            for (size_t depth = 0; depth < kMaxPropertyClassHierarchyDepth && current != 0; ++depth)
+            {
+                if (!visited.insert(current).second)
+                {
+                    collected.status = "cycle";
+                    break;
+                }
+
+                const auto fieldClass = objects_.FieldClass(current);
+                if (!fieldClass)
+                {
+                    collected.status = "unreadable";
+                    break;
+                }
+
+                collected.hierarchy.push_back({current, fieldClass->name, fieldClass->id,
+                                               fieldClass->castFlags, fieldClass->classFlags,
+                                               fieldClass->superClass});
+                if (fieldClass->superClass == 0)
+                {
+                    collected.status = "terminated";
+                    break;
+                }
+                current = fieldClass->superClass;
+            }
+
+            evidence = propertyClassEvidence_.emplace(metadata.classAddress, std::move(collected)).first;
+        }
+
+        if (evidence->second.diagnosticSamples >= kMaxPropertyClassHierarchySamples)
+        {
+            diagnostic.fieldClassHierarchyStatus = "sample-limit";
+            return;
+        }
+
+        ++evidence->second.diagnosticSamples;
+        diagnostic.fieldClassHierarchyStatus = evidence->second.status;
+        diagnostic.fieldClassHierarchy = evidence->second.hierarchy;
     }
 
     TypeReferenceIR ReflectionReader::ReadTypeReference(const PropertyMetadata &metadata, PropertyIR &property,

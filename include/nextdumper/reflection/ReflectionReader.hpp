@@ -79,7 +79,15 @@ namespace nextdumper::reflection
             TypeReferenceIR reference;
             int priority = 2;
         };
+        struct PropertyClassEvidence
+        {
+            std::string status;
+            std::vector<::nextdumper::ir::PropertyDetailDiagnostic::FieldClassNode> hierarchy;
+            size_t diagnosticSamples = 0;
+        };
         [[nodiscard]] ::nextdumper::ir::ContainerStorageObservation ReadContainerStorage(const ContainerCandidate &candidate) const;
+        void AddPropertyClassEvidence(const PropertyMetadata &metadata,
+                                      ::nextdumper::ir::PropertyDetailDiagnostic &diagnostic) const;
         void CollectContainerStorage(ReflectionIR &reflection) const;
         [[nodiscard]] std::optional<TypeIR> ReadType(uintptr_t object, TypeKind kind, ReflectionIR &ir) const;
         [[nodiscard]] ReflectionIR ReadAttempt(::nextdumper::memory::CaptureValidation &validation,
@@ -101,6 +109,7 @@ namespace nextdumper::reflection
         mutable std::map<uintptr_t, std::shared_ptr<::nextdumper::ir::ContainerStorageIR>> containerStorage_;
         mutable std::vector<ContainerCandidate> pendingContainers_;
         mutable std::map<uintptr_t, ::nextdumper::ir::ContainerStorageObservation> containerEvidence_;
+        mutable std::map<uintptr_t, PropertyClassEvidence> propertyClassEvidence_;
         mutable std::map<std::string, size_t> containerCandidates_;
         mutable std::map<std::string, size_t> containerNotObserved_;
         mutable std::vector<::nextdumper::ir::ContainerStorageObservation> containerObservations_;

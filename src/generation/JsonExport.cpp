@@ -767,7 +767,26 @@ namespace nextdumper::generation
                    << ",\"array_dim\":" << detail.arrayDim << ",\"flags\":\"" << Hex(detail.flags)
                    << "\",\"referenced_address\":\"" << Hex(detail.referencedAddress)
                    << "\",\"secondary_address\":\"" << Hex(detail.secondaryAddress)
-                   << "\",\"referenced_class\":\"" << EscapeJson(detail.referencedClass)
+                   << "\"";
+            if (!detail.fieldClassHierarchyStatus.empty())
+            {
+                stream << ",\"field_class_hierarchy\":{\"status\":\""
+                       << EscapeJson(detail.fieldClassHierarchyStatus) << "\",\"classes\":[";
+                for (size_t classIndex = 0; classIndex < detail.fieldClassHierarchy.size(); ++classIndex)
+                {
+                    if (classIndex != 0)
+                        stream << ',';
+                    const auto &fieldClass = detail.fieldClassHierarchy[classIndex];
+                    stream << "{\"address\":\"" << Hex(fieldClass.address)
+                           << "\",\"name\":\"" << EscapeJson(fieldClass.name)
+                           << "\",\"id\":\"" << Hex(fieldClass.id)
+                           << "\",\"cast_flags\":\"" << Hex(fieldClass.castFlags)
+                           << "\",\"class_flags\":\"" << Hex(fieldClass.classFlags)
+                           << "\",\"super_class\":\"" << Hex(fieldClass.superClass) << "\"}";
+                }
+                stream << "]}";
+            }
+            stream << ",\"referenced_class\":\"" << EscapeJson(detail.referencedClass)
                    << "\",\"secondary_class\":\"" << EscapeJson(detail.secondaryClass)
                    << "\",\"object_property_class_null\":" << (detail.objectPropertyClassNull ? "true" : "false")
                    << ",\"object_property_class_pointer_address\":\"" << Hex(detail.objectPropertyClassPointerAddress) << "\""

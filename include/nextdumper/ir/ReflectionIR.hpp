@@ -245,6 +245,16 @@ namespace nextdumper::ir
 
     struct PropertyDetailDiagnostic
     {
+        struct FieldClassNode
+        {
+            uintptr_t address = 0;
+            std::string name;
+            uint64_t id = 0;
+            uint64_t castFlags = 0;
+            uint32_t classFlags = 0;
+            uintptr_t superClass = 0;
+        };
+
         bool headerAvailable = true;
         uintptr_t address = 0;
         uintptr_t classAddress = 0;
@@ -262,6 +272,8 @@ namespace nextdumper::ir
         uint64_t flags = 0;
         uintptr_t referencedAddress = 0;
         uintptr_t secondaryAddress = 0;
+        std::string fieldClassHierarchyStatus;
+        std::vector<FieldClassNode> fieldClassHierarchy;
         std::string referencedClass;
         std::string secondaryClass;
         bool objectPropertyClassNull = false;
