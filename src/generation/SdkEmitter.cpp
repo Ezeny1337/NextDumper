@@ -627,20 +627,20 @@ namespace nextdumper::generation::detail
         return shards;
     }
 
-    std::vector<std::string> SdkEmitter::ShardDependencies(const SdkShard &shard, const CppSymbols &symbols) const
+    SdkEmitter::ShardDependencies SdkEmitter::DependenciesOf(const SdkShard &shard, const CppSymbols &symbols) const
     {
         const auto byAddress = TypeIndexByAddress();
-        std::set<std::string> packages;
-        const auto addType = [&](uintptr_t typeAddress)
+        std::set<std::string> inheritance, references;
+        const auto addType = [&](uintptr_t typeAddress, std::set<std::string> &into)
         {
             const auto found = byAddress.find(typeAddress);
             if (found != byAddress.end())
-                packages.insert(PackageOfType(reflection_.types[found->second]));
+                into.insert(PackageOfType(reflection_.types[found->second]));
         };
         const auto walk = [&](const ir::TypeReferenceIR &reference, const auto &self) -> void
         {
-            addType(reference.referencedObject);
-            addType(reference.secondaryObject);
+            addType(reference.referencedObject, references);
+            addType(reference.secondaryObject, references);
             if (reference.inner)
                 self(*reference.inner, self);
             if (reference.key)
@@ -651,19 +651,32 @@ namespace nextdumper::generation::detail
         for (size_t index : shard.types)
         {
             const TypeIR &type = reflection_.types[index];
-            // 基类必须完整定义，前置声明不足以支撑继承
+            // 基类的完整定义是生成 "struct X : public Base" 的前提
+            // 该前提由类型自身的 inheritsBase 表示
             if (type.superAddress != 0)
             {
-                const auto base = symbols.types.find(type.superAddress);
-                if (base != symbols.types.end() && base->second.inheritsBase)
-                    addType(type.superAddress);
+                const auto self = symbols.types.find(type.address);
+                if (self != symbols.types.end() && self->second.inheritsBase)
+                    addType(type.superAddress, inheritance);
             }
-            // 字段的类型名由解析器生成，其定义可能位于其他包
+            // 按值内嵌的结构体字段同样要求完整定义；包含关系不构成环
             for (const PropertyIR &property : type.properties)
+            {
+                if (property.type.kind == ir::PropertyKind::Struct)
+                {
+                    addType(property.type.referencedObject, inheritance);
+                    continue;
+                }
                 walk(property.type, walk);
+            }
         }
-        packages.erase(shard.package);
-        return {packages.begin(), packages.end()};
+        inheritance.erase(shard.package);
+        references.erase(shard.package);
+        // 必须完整定义的类型同时满足引用需求，无需重复声明
+        for (const std::string &package : inheritance)
+            references.erase(package);
+        return {std::vector<std::string>(inheritance.begin(), inheritance.end()),
+                std::vector<std::string>(references.begin(), references.end())};
     }
 
     void SdkEmitter::TypesEntry(std::ostream &stream, const std::vector<std::string> &shardNames) const
@@ -685,21 +698,30 @@ namespace nextdumper::generation::detail
     }
 
     void SdkEmitter::TypeShard(std::ostream &stream, const CppSymbols &symbols, const SdkShard &shard,
-                               const std::vector<std::string> &dependencies, GenerationReport &report) const
+                               const ShardDependencies &dependencies, GenerationReport &report) const
     {
         const auto &types = symbols.types;
         auto packageFile = [](const std::string &package)
         { return SanitizeIdentifier(package, "Package"); };
 
         stream << "#pragma once\n#include <cstddef>\n#include <cstdint>\n#include \"../BasicTypes.hpp\"\n#include \"../Enums.hpp\"\n";
-        // 基类必须已完整定义，前置声明不足以支撑继承
-        for (const std::string &dependency : dependencies)
+        for (const std::string &dependency : dependencies.inheritancePackages)
             stream << "#include \"" << packageFile(dependency) << ".hpp\"\n";
         stream << "\n";
         stream << "// Sizes and offsets describe target memory, not native C++ layout.\n";
         stream << "// Structs marked offset-description list reflected offsets without asserting declaration order;\n";
         stream << "// their native data size is the reflected type or parameter size, and unreflected bytes are not padding.\n";
         stream << "namespace NextDumper\n{\n";
+        // 以指针形式引用的类型只需可见，前置声明即满足
+        for (const std::string &dependency : dependencies.referencePackages)
+        {
+            for (const TypeIR &type : reflection_.types)
+            {
+                if (PackageOfType(type) != dependency)
+                    continue;
+                stream << "struct " << types.at(type.address).name << ";\n";
+            }
+        }
         for (size_t index : shard.types)
             stream << "struct " << types.at(reflection_.types[index].address).name << ";\n";
         if (!shard.types.empty())
