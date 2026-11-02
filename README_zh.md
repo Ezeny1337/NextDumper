@@ -10,21 +10,21 @@
 
 [English](README.md)
 
-NextDumper 会附加到正在运行的 Android 游戏进程，定位 Unreal Engine 的对象数组和名称池，识别该构建使用的反射布局，并生成 C++ SDK 与 JSON 元数据，供 IDA、Ghidra 或自研工具分析使用。
+NextDumper 会附加到正在运行的 Android 游戏进程，定位 Unreal Engine 的对象数组和名称池，确定该构建使用的反射布局，并生成 C++ SDK 与 JSON 元数据，供 IDA、Ghidra 或自研工具分析使用。
 
-它不依赖某一套写死的偏移：所有候选根和布局都从目标进程实时读取，通过校验后才会使用。生成的文件描述的是目标内存布局，不能作为运行库链接进游戏。
+它不依赖某一套写死的偏移：所有候选根和布局都从目标进程实时读取，通过引擎不变量校验后才会使用。生成的文件描述的是目标内存布局，不能作为运行库链接进游戏。
 
 > **ABI 必须与目标进程一致。** 64 位游戏使用 `arm64-v8a` 版本，32 位 ARM 游戏使用 `armeabi-v7a` 版本。
 
 ## 主要功能
 
 - **定位引擎全局变量** —— 找到并验证 `GUObjectArray`、`ObjObjects` 和 `FName` 存储。
-- **识别反射布局** —— 解析 UE 4.23–5.6 的 `UObject`、`UStruct`、`FField`/`FProperty`、`UFunction` 和 `UEnum` 偏移。
+- **确定反射布局** —— 从运行时证据推导 UE 4.23–5.6 及改造构建的 `UObject`、`UStruct`、`FField`/`FProperty`、`UFunction` 和 `UEnum` 偏移。
 - **导出完整类型信息** —— 输出类、结构体、属性、函数、枚举、继承关系和字段偏移。
 - **支持符号被剥离的游戏** —— 符号定位不充分时，通过 ARM64 和 ARM32（ARM 模式）反汇编补充根地址候选；暂不支持 Thumb/Thumb-2。
 - **IDA 集成** —— 导入生成的类型，并为已验证的函数入口添加名称和注释。
 - **常用类地址** —— 记录 `World`、`Engine`、`GameInstance`、`PlayerController` 等 `UClass` 对象地址。
-- **输出集中** —— 头文件、反射数据、运行时布局、清单和诊断都在同一目录。
+- **分片输出** —— 反射数据与 SDK 头文件按 UE 包切分。
 - **拒绝无效数据** —— 未通过校验的候选和布局不会写入输出。
 - **控制读取量** —— 对象数组、容器和可选运行时采样都有明确上限。
 
@@ -35,9 +35,11 @@ flowchart TD
     A[目标进程] --> B[内存访问]
     B --> C[模块发现]
     C --> D[游戏 profile 选择]
-    D --> E[根定位：ELF 符号 + ARM 分析]
+    D --> E[从 ELF 符号定位根]
+    E -->|绑定失败| E2[从代码分析定位根]
     E --> F[绑定校验]
-    F --> G[反射布局识别]
+    E2 --> F
+    F --> G[确定反射布局]
     G --> H[常用类收集]
     H --> I[反射采集]
     I --> J[只读运行时采样]
@@ -46,9 +48,9 @@ flowchart TD
 
 1. 附加到目标进程，找到 Unreal 模块（`libUnreal.so` 或 `libUE4.so`）。
 2. 如果包名和模块匹配已编译的 profile，则选用该 profile。
-3. 从 ELF 符号、profile 和代码分析中收集对象数组与名称池的根地址候选。
+3. 从 ELF 符号和 profile 收集对象数组与名称池的根地址候选。符号缺失或校验不通过时，对模块映像做代码分析以恢复根地址。
 4. 按预期布局验证对象数组和名称池。
-5. 检查支持的 UE 反射布局，选择通过校验的一种。
+5. 确定 UE 反射布局，选取运行时证据支持的一种。
 6. 收集常用 `UClass` 对象。
 7. 读取反射出的类型、属性、函数和枚举。
 8. 以只读方式采样少量运行时值。
@@ -162,10 +164,16 @@ NextDumper -o <输出目录> -p <包名> [options]
     ├── SDK.hpp             # 聚合头，只需包含此文件
     ├── BasicTypes.hpp
     ├── EngineLayouts.hpp
-    ├── Types.hpp
     ├── Enums.hpp
-    └── Functions.hpp
+    ├── Types.hpp           # 包含全部 Types/<Package>.hpp
+    ├── Types/              # 每个 UE 包一个分片
+    │   └── <Package>.hpp
+    ├── Functions.hpp       # 包含全部 Functions/<Package>.hpp
+    └── Functions/          # 每个 UE 包一个分片
+        └── <Package>.hpp
 ```
+
+每个分片自成一体：它包含所继承或按值内嵌的类型所在分片，其余引用使用前置声明。分片可以单独包含；`Types.hpp` 与 `Functions.hpp` 用于一次性引入全部内容。
 
 输出目录下还会写入会话日志和诊断报告：
 
@@ -179,9 +187,11 @@ NextDumper -o <输出目录> -p <包名> [options]
 | `sdk/SDK.hpp` | 聚合头文件；包含此文件即可引入其余 SDK 声明。 |
 | `sdk/BasicTypes.hpp` | SDK 基础类型、定长不透明存储包装和容器布局描述。 |
 | `sdk/EngineLayouts.hpp` | 所选 Unreal 反射结构的运行时偏移；`-1` 表示该偏移未解析。 |
-| `sdk/Types.hpp` | 反射出的类和结构体，包含名称、继承关系和字段偏移。 |
+| `sdk/Types.hpp` | 包含全部 `sdk/Types/<Package>.hpp`；用于一次性引入所有反射类与结构体。 |
+| `sdk/Types/<Package>.hpp` | 单个 Unreal 包反射出的类和结构体，包含名称、继承关系和字段偏移。 |
 | `sdk/Enums.hpp` | 反射出的枚举声明和值。 |
-| `sdk/Functions.hpp` | 反射函数的执行入口 RVA 和参数布局。 |
+| `sdk/Functions.hpp` | 包含全部 `sdk/Functions/<Package>.hpp`。 |
+| `sdk/Functions/<Package>.hpp` | 单个 Unreal 包的反射函数执行入口 RVA 和参数布局。 |
 | `reflection.json` | 反射分片的索引：状态、profile、统计、采集证据、生成信息和少量运行时采样；不包含类型、函数或枚举记录。 |
 | `reflection/<Package>.json` | 每个 Unreal 包一个分片，包含该包的类型、函数、枚举及字段存储描述；分片文件名列在 `reflection.json` 的 `shards` 中。 |
 | `manifest.json` | 输出状态、解析统计和构建信息（commit、版本、工作区状态）。 |

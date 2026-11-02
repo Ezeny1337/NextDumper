@@ -10,21 +10,21 @@
 
 [中文文档](README_zh.md)
 
-NextDumper attaches to a running Android game, locates Unreal Engine's object array and name pool, detects the reflection layout used by that build, and writes a C++ SDK with JSON metadata for analysis in IDA, Ghidra, or custom tools.
+NextDumper attaches to a running Android game, locates Unreal Engine's object array and name pool, resolves the reflection layout used by that build, and writes a C++ SDK with JSON metadata for analysis in IDA, Ghidra, or custom tools.
 
-It does not depend on a fixed offset table for one engine build. Candidate roots and layouts are read from the live process and checked against the data before they are used. The generated files describe target memory; they are not a library you link into the game.
+It does not depend on a fixed offset table for one engine build. Candidate roots and layouts are read from the live process and checked against engine invariants before they are used. The generated files describe target memory; they are not a library you link into the game.
 
 > **Match the target ABI.** Use the `arm64-v8a` build for 64-bit games and the `armeabi-v7a` build for 32-bit ARM games.
 
 ## Features
 
 - **Engine globals** — locates and validates `GUObjectArray`, `ObjObjects`, and `FName` storage.
-- **Reflection layout detection** — resolves `UObject`, `UStruct`, `FField`/`FProperty`, `UFunction`, and `UEnum` offsets for UE 4.23–5.6.
+- **Reflection layout resolution** — determines `UObject`, `UStruct`, `FField`/`FProperty`, `UFunction`, and `UEnum` offsets from runtime evidence for UE 4.23–5.6 and modified builds.
 - **Full type dump** — outputs classes, structs, properties, functions, enums, inheritance, and field offsets.
-- **Stripped binaries** — ARM64 and ARM32 (ARM mode) code analysis supplies extra root candidates when symbol lookup is not enough. Thumb/Thumb-2 is not supported yet.
+- **Stripped binaries** — ARM64 and ARM32 (ARM mode) code analysis supplies root candidates when symbol lookup is not enough. Thumb/Thumb-2 is not supported yet.
 - **IDA integration** — imports generated types and labels validated function entries with names and comments.
 - **Common class addresses** — records `UClass` objects such as `World`, `Engine`, `GameInstance`, and `PlayerController`.
-- **One output directory** — SDK headers, reflection data, runtime layout, a manifest, and diagnostics.
+- **Sharded output** — reflection and SDK headers are split per UE package.
 - **Rejects invalid data** — candidates and layouts that fail validation are not written to the output.
 - **Limited reads** — object arrays, containers, and optional runtime samples all have explicit limits.
 
@@ -35,9 +35,11 @@ flowchart TD
     A[Target process] --> B[Memory access]
     B --> C[Module discovery]
     C --> D[Game profile selection]
-    D --> E[Root location: ELF symbols + ARM analysis]
+    D --> E[Root location from ELF symbols]
+    E -->|binding failed| E2[Root location from code analysis]
     E --> F[Binding validation]
-    F --> G[Reflection layout detection]
+    E2 --> F
+    F --> G[Reflection layout resolution]
     G --> H[Common class collection]
     H --> I[Reflection capture]
     I --> J[Read-only runtime sampling]
@@ -46,9 +48,9 @@ flowchart TD
 
 1. Attach to the target process and find the Unreal module (`libUnreal.so` or `libUE4.so`).
 2. Select a compiled game profile if one matches the package and module.
-3. Collect object and name root candidates from ELF symbols, profiles, and code analysis.
+3. Collect object and name root candidates from ELF symbols and profiles. When those are missing or fail validation, code analysis runs over the module image to recover the roots.
 4. Validate the object array and name pool against the expected layout.
-5. Check the supported UE reflection layouts and select one that passes.
+5. Resolve the UE reflection layouts and select the one the runtime evidence supports.
 6. Collect common `UClass` objects.
 7. Read reflected types, properties, functions, and enums.
 8. Sample a limited set of runtime values in read-only mode.
@@ -162,10 +164,16 @@ A successful run creates a directory named after the package and the session tim
     ├── SDK.hpp             # umbrella header, include this one
     ├── BasicTypes.hpp
     ├── EngineLayouts.hpp
-    ├── Types.hpp
     ├── Enums.hpp
-    └── Functions.hpp
+    ├── Types.hpp           # includes every Types/<Package>.hpp
+    ├── Types/              # one shard per UE package
+    │   └── <Package>.hpp
+    ├── Functions.hpp       # includes every Functions/<Package>.hpp
+    └── Functions/          # one shard per UE package
+        └── <Package>.hpp
 ```
+
+Each shard is self-contained: it includes the shards holding the types it inherits from or embeds by value, and forward-declares the rest. A shard can be included on its own; `Types.hpp` and `Functions.hpp` exist for pulling in everything at once.
 
 The output directory also receives the session log and diagnosis report:
 
@@ -179,9 +187,11 @@ The output directory also receives the session log and diagnosis report:
 | `sdk/SDK.hpp` | Umbrella header. Include this file to pull in the rest of the SDK. |
 | `sdk/BasicTypes.hpp` | SDK primitives, fixed-size opaque storage wrappers, and container layout descriptions. |
 | `sdk/EngineLayouts.hpp` | Runtime offsets for selected Unreal reflection structures. `-1` means the offset was not resolved for this target. |
-| `sdk/Types.hpp` | Reflected Unreal classes and structs with names, inheritance, and field offsets. |
+| `sdk/Types.hpp` | Includes every `sdk/Types/<Package>.hpp`. Use it to pull in all reflected classes and structs. |
+| `sdk/Types/<Package>.hpp` | Reflected classes and structs of one Unreal package, with names, inheritance, and field offsets. |
 | `sdk/Enums.hpp` | Reflected enum declarations and values. |
-| `sdk/Functions.hpp` | Reflected execution entry RVAs and parameter layouts. |
+| `sdk/Functions.hpp` | Includes every `sdk/Functions/<Package>.hpp`. |
+| `sdk/Functions/<Package>.hpp` | Reflected execution entry RVAs and parameter layouts of one Unreal package. |
 | `reflection.json` | Index for the reflection shards: status, profile, statistics, capture evidence, generation metadata, and limited runtime samples. It holds no type, function, or enum records. |
 | `reflection/<Package>.json` | One shard per Unreal package, holding that package's types, functions, and enums with field storage descriptions. Shard names are listed in `reflection.json` under `shards`. |
 | `manifest.json` | Output status, parsing statistics, and build information (commit, version, and worktree state). |
