@@ -194,15 +194,24 @@ namespace nextdumper::generation
                 return;
             }
             --remaining;
+            // 顶层引用的类型描述与持有它的属性记录完全同值，由父级提供，此处不重复输出
+            // 嵌套的 inner/key/value 描述的是不同的类型，必须自带这些字段
             stream << "{\"metadata_address\":\"" << Hex(reference.metadataAddress)
                    << "\",\"immediate_owner\":\"" << Hex(reference.immediateOwner)
-                   << "\",\"owner_is_uobject\":" << (reference.ownerIsUObject ? "true" : "false")
-                   << ",\"array_dim\":" << reference.arrayDim
-                   << ",\"kind\":\"" << KindName(reference.kind) << "\",\"class\":\"" << EscapeJson(reference.reflectedClass)
-                   << "\",\"element_size\":" << reference.elementSize << ",\"referenced_object\":\"" << Hex(reference.referencedObject)
-                   << "\",\"secondary_object\":\"" << Hex(reference.secondaryObject) << "\",\"details_resolved\":"
-                   << (reference.detailsResolved ? "true" : "false")
-                   << ",\"node_details_resolved\":" << (reference.nodeDetailsResolved ? "true" : "false");
+                   << "\",\"owner_is_uobject\":" << (reference.ownerIsUObject ? "true" : "false");
+            if (depth != 0)
+            {
+                stream << ",\"array_dim\":" << reference.arrayDim
+                       << ",\"kind\":\"" << KindName(reference.kind)
+                       << "\",\"class\":\"" << EscapeJson(reference.reflectedClass)
+                       << "\",\"element_size\":" << reference.elementSize
+                       << ",\"referenced_object\":\"" << Hex(reference.referencedObject)
+                       << "\",\"secondary_object\":\"" << Hex(reference.secondaryObject) << '"';
+            }
+            if (!reference.detailsResolved)
+                stream << ",\"details_unresolved\":true";
+            if (!reference.nodeDetailsResolved)
+                stream << ",\"node_details_unresolved\":true";
             if (reference.containerStorage)
             {
                 stream << ",\"container_storage\":";
@@ -378,11 +387,16 @@ namespace nextdumper::generation
 
         void LayoutAnalysis(std::ostream &stream, const ir::LayoutAnalysisIR &analysis)
         {
-            stream << "{\"analyzed\":" << (analysis.analyzed ? "true" : "false")
-                   << ",\"representation\":\"" << ir::LayoutRepresentationName(analysis.representation)
-                   << "\",\"type_graph_complete\":" << (analysis.typeGraphComplete ? "true" : "false")
-                   << ",\"base_extent_known\":" << (analysis.baseExtentKnown ? "true" : "false")
-                   << ",\"base_extent\":" << analysis.baseExtent << ",\"issues\":[";
+            // 缺失的标志表示其默认值：未分析、类型图不完整、基类范围未知
+            stream << "{\"representation\":\"" << ir::LayoutRepresentationName(analysis.representation)
+                   << "\",\"base_extent\":" << analysis.baseExtent;
+            if (analysis.analyzed)
+                stream << ",\"analyzed\":true";
+            if (analysis.typeGraphComplete)
+                stream << ",\"type_graph_complete\":true";
+            if (analysis.baseExtentKnown)
+                stream << ",\"base_extent_known\":true";
+            stream << ",\"issues\":[";
             for (size_t index = 0; index < analysis.issues.size(); ++index)
             {
                 if (index != 0)
@@ -422,8 +436,10 @@ namespace nextdumper::generation
             stream << ",\"flags\":\"" << Hex(property.flags) << "\",\"kind\":\"" << KindName(property.type.kind)
                    << "\",\"referenced_object\":\"" << Hex(property.type.referencedObject)
                    << "\",\"secondary_object\":\"" << Hex(property.type.secondaryObject)
-                   << "\",\"status\":\"" << ir::ParseStatusName(property.status) << "\",\"type_details_resolved\":"
-                   << (property.typeDetailsResolved ? "true" : "false") << ",\"type\":";
+                   << "\",\"status\":\"" << ir::ParseStatusName(property.status) << '"';
+            if (!property.typeDetailsResolved)
+                stream << ",\"type_details_unresolved\":true";
+            stream << ",\"type\":";
             size_t remaining = 256;
             TypeReference(stream, property.type, 0, remaining);
             if (fields)
@@ -433,8 +449,10 @@ namespace nextdumper::generation
                 {
                     const auto &field = found->second;
                     stream << ",\"generation\":{\"type_id\":" << field.typeId
-                           << ",\"valid_bounds\":" << (field.validBounds ? "true" : "false")
-                           << ",\"layout\":\"" << ir::LayoutRepresentationName(field.layout) << "\"}";
+                           << ",\"layout\":\"" << ir::LayoutRepresentationName(field.layout) << '"';
+                    if (!field.validBounds)
+                        stream << ",\"invalid_bounds\":true";
+                    stream << '}';
                 }
             }
             if (property.type.kind == ir::PropertyKind::Bool)
@@ -442,8 +460,11 @@ namespace nextdumper::generation
                        << ",\"byte_offset\":" << static_cast<unsigned int>(property.boolean.byteOffset)
                        << ",\"byte_mask\":" << static_cast<unsigned int>(property.boolean.byteMask)
                        << ",\"field_mask\":" << static_cast<unsigned int>(property.boolean.fieldMask) << '}';
-            stream << ",\"diagnostics\":";
-            Strings(stream, property.diagnostics);
+            if (!property.diagnostics.empty())
+            {
+                stream << ",\"diagnostics\":";
+                Strings(stream, property.diagnostics);
+            }
             stream << '}';
         }
 
@@ -457,11 +478,16 @@ namespace nextdumper::generation
                    << "\",\"outer_full_name\":\"" << EscapeJson(function.outerFullName)
                    << "\",\"outer_class\":\"" << EscapeJson(function.outerClass)
                    << "\",\"object_flags\":\"" << Hex(function.objectFlags)
-                   << "\",\"header_readable\":" << (function.headerReadable ? "true" : "false")
-                   << ",\"discovered_from_children\":" << (function.discoveredFromChildren ? "true" : "false")
-                   << ",\"referenced_as_signature\":" << (function.referencedAsSignature ? "true" : "false")
-                   << ",\"native_flag\":" << (function.nativeFlag ? "true" : "false")
-                   << ",\"exec_entry\":\"" << Hex(function.execEntry) << "\",\"exec_entry_rva\":";
+                   << '"';
+            if (!function.headerReadable)
+                stream << ",\"header_unreadable\":true";
+            if (function.discoveredFromChildren)
+                stream << ",\"discovered_from_children\":true";
+            if (function.referencedAsSignature)
+                stream << ",\"referenced_as_signature\":true";
+            if (function.nativeFlag)
+                stream << ",\"native_flag\":true";
+            stream << ",\"exec_entry\":\"" << Hex(function.execEntry) << "\",\"exec_entry_rva\":";
             if (function.execEntryRva)
                 stream << '"' << Hex(*function.execEntryRva) << '"';
             else
@@ -471,18 +497,34 @@ namespace nextdumper::generation
                 stream << '"' << Hex(*function.nativeExecRva) << '"';
             else
                 stream << "null";
+            // 三个观察标志通常为真，仅在异常时输出对应的否定项
             stream << ",\"entry_kind\":\"" << function.EntryKind()
-                   << "\",\"entry_observation\":{\"readable\":" << (function.entryReadable ? "true" : "false")
-                   << ",\"executable\":" << (function.entryExecutable ? "true" : "false")
-                   << ",\"in_module\":" << (function.entryInModule ? "true" : "false") << '}'
+                   << "\",\"entry_observation\":{";
+            const char *separator = "";
+            if (!function.entryReadable)
+            {
+                stream << "\"unreadable\":true";
+                separator = ",";
+            }
+            if (!function.entryExecutable)
+            {
+                stream << separator << "\"not_executable\":true";
+                separator = ",";
+            }
+            if (!function.entryInModule)
+                stream << separator << "\"outside_module\":true";
+            stream << '}'
                    << ",\"flags\":\"" << Hex(function.flags) << "\",\"status\":\"" << ir::ParseStatusName(function.status)
                    << "\",\"num_params\":" << static_cast<unsigned int>(function.numParams) << ",\"param_size\":" << function.paramSize
                    << ",\"return_value_offset\":" << function.returnValueOffset << ",\"header_num_params\":"
                    << static_cast<unsigned int>(function.headerNumParams) << ",\"header_param_size\":" << function.headerParamSize
                    << ",\"derived_num_params\":" << function.derivedNumParams << ",\"derived_param_size\":" << function.derivedParamSize
-                   << ",\"default_initializer_count\":" << function.defaultInitializerCount << ",\"parameter_semantics_valid\":"
-                   << (function.parameterSemanticsValid ? "true" : "false") << ",\"parameter_semantics_consistent\":"
-                   << (function.parameterSemanticsConsistent ? "true" : "false") << ",\"parameters\":[";
+                   << ",\"default_initializer_count\":" << function.defaultInitializerCount;
+            if (!function.parameterSemanticsValid)
+                stream << ",\"parameter_semantics_invalid\":true";
+            if (!function.parameterSemanticsConsistent)
+                stream << ",\"parameter_semantics_inconsistent\":true";
+            stream << ",\"parameters\":[";
             for (size_t parameter = 0; parameter < function.parameters.size(); ++parameter)
             {
                 if (parameter != 0)
@@ -982,7 +1024,7 @@ namespace nextdumper::generation
     void WriteReflectionIndexJson(std::ostream &stream, const ir::ReflectionIR &reflection, const ReflectionIdentity &identity,
                                   const ReflectionPartition &partition, const FieldDescriptions *fields)
     {
-        stream << "{\n\"schema_version\":11,\n\"status\":\"" << ir::ParseStatusName(reflection.status)
+        stream << "{\n\"schema_version\":12,\n\"status\":\"" << ir::ParseStatusName(reflection.status)
                << "\",\n\"engine\":\"" << EscapeJson(identity.engine) << "\",\n\"profile\":{\"id\":\"" << EscapeJson(identity.profileId)
                << "\",\"label\":\"" << EscapeJson(identity.profileLabel) << "\",\"version_range\":\"" << EscapeJson(identity.versionRange)
                << "\"}";
@@ -1062,7 +1104,7 @@ namespace nextdumper::generation
                                   const ReflectionPartition::Shard &shard,
                                   const FieldDescriptions *fields, const CppSymbols *symbols)
     {
-        stream << "{\n\"schema_version\":11,\n\"package\":\"" << EscapeJson(shard.package) << "\",\n\"types\":[\n";
+        stream << "{\n\"schema_version\":12,\n\"package\":\"" << EscapeJson(shard.package) << "\",\n\"types\":[\n";
         for (size_t item = 0; item < shard.types.size(); ++item)
         {
             if (item != 0)

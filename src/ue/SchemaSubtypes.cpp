@@ -494,9 +494,9 @@ namespace nextdumper::ue::schema_probe
                 // RepNotifyFunc 几乎总是空 FName，因此它不能单独确定偏移
                 // 但它仍是必须成立的必要条件，错位的候选会把它落到 subtype 指针等非 FName 数据上
                 //
-                // 必须先判 rep_notify 再统计链接槽：rep_notify 不成立时样本立即出局
-                // 链接槽不再计入 linkPointerHits，这个顺序是判据排他力的一部分
-                // 交换会让错位候选在链接槽上取得虚假命中，且 accepted 表达式本身无法察觉
+                // 先判 rep_notify 再统计链接槽是判据排他力的一部分
+                // 前者不成立时样本立即出局，其链接槽不计入 linkPointerHits
+                // 交换顺序会让错位候选取得虚假命中，而 accepted 表达式本身察觉不到
                 std::array<uint8_t, 12> repNotifyBytes{};
                 bool repNotifyValid = budget.Read(sample.metadata.address, tail.repNotify, repNotifyBytes.data(),
                                                   static_cast<size_t>(schema.fname.size));

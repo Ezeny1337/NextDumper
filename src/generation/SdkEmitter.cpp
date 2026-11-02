@@ -532,24 +532,185 @@ namespace nextdumper::generation::detail
         stream << "}\n";
     }
 
-    void SdkEmitter::Types(std::ostream &stream, const CppSymbols &symbols, GenerationReport &report) const
+    std::vector<std::string> SdkEmitter::FunctionShardDependencies(const SdkShard &shard,
+                                                                   const CppSymbols &symbols) const
+    {
+        const auto byAddress = TypeIndexByAddress();
+        std::set<std::string> packages;
+        const auto addType = [&](uintptr_t typeAddress)
+        {
+            const auto found = byAddress.find(typeAddress);
+            if (found != byAddress.end())
+                packages.insert(PackageOfType(reflection_.types[found->second]));
+        };
+        // 引用可以嵌套在容器内部，逐层展开后收集所有被引用类型
+        const auto walk = [&](const ir::TypeReferenceIR &reference, const auto &self) -> void
+        {
+            addType(reference.referencedObject);
+            addType(reference.secondaryObject);
+            if (reference.inner)
+                self(*reference.inner, self);
+            if (reference.key)
+                self(*reference.key, self);
+            if (reference.value)
+                self(*reference.value, self);
+        };
+        for (const FunctionIR *entry : shard.functions)
+        {
+            for (const PropertyIR &parameter : entry->parameters)
+                walk(parameter.type, walk);
+            for (const PropertyIR &local : entry->locals)
+                walk(local.type, walk);
+        }
+        (void)symbols;
+        packages.erase(shard.package);
+        return {packages.begin(), packages.end()};
+    }
+
+    std::unordered_map<uintptr_t, size_t> SdkEmitter::TypeIndexByAddress() const
+    {
+        std::unordered_map<uintptr_t, size_t> result;
+        result.reserve(reflection_.types.size());
+        for (size_t index = 0; index < reflection_.types.size(); ++index)
+            result.emplace(reflection_.types[index].address, index);
+        return result;
+    }
+
+    std::string SdkEmitter::PackageOfType(const TypeIR &type)
+    {
+        std::string package = ObjectPackageName(type.fullName);
+        return package.empty() ? UnassignedPackageName() : package;
+    }
+
+    std::vector<SdkEmitter::SdkShard> SdkEmitter::TypeShards(const CppSymbols &symbols) const
+    {
+        std::map<std::string, size_t> index;
+        std::vector<SdkShard> shards;
+        for (size_t position = 0; position < reflection_.types.size(); ++position)
+        {
+            std::string package = PackageOfType(reflection_.types[position]);
+            auto found = index.find(package);
+            if (found == index.end())
+            {
+                found = index.emplace(std::move(package), shards.size()).first;
+                shards.push_back({});
+                shards.back().package = found->first;
+            }
+            shards[found->second].types.push_back(position);
+        }
+        (void)symbols;
+        return shards;
+    }
+
+    std::vector<SdkEmitter::SdkShard> SdkEmitter::FunctionShards() const
+    {
+        std::map<std::string, size_t> index;
+        std::vector<SdkShard> shards;
+        for (const auto &[address, function] : reflection_.functions)
+        {
+            (void)address;
+            // 函数自身的全名可能缺失，回退到所属类型的包
+            std::string package = ObjectPackageName(function.fullName);
+            if (package.empty())
+                package = ObjectPackageName(function.outerFullName);
+            if (package.empty())
+                package = UnassignedPackageName();
+            auto found = index.find(package);
+            if (found == index.end())
+            {
+                found = index.emplace(std::move(package), shards.size()).first;
+                shards.push_back({});
+                shards.back().package = found->first;
+            }
+            shards[found->second].functions.push_back(&function);
+        }
+        return shards;
+    }
+
+    std::vector<std::string> SdkEmitter::ShardDependencies(const SdkShard &shard, const CppSymbols &symbols) const
+    {
+        const auto byAddress = TypeIndexByAddress();
+        std::set<std::string> packages;
+        const auto addType = [&](uintptr_t typeAddress)
+        {
+            const auto found = byAddress.find(typeAddress);
+            if (found != byAddress.end())
+                packages.insert(PackageOfType(reflection_.types[found->second]));
+        };
+        const auto walk = [&](const ir::TypeReferenceIR &reference, const auto &self) -> void
+        {
+            addType(reference.referencedObject);
+            addType(reference.secondaryObject);
+            if (reference.inner)
+                self(*reference.inner, self);
+            if (reference.key)
+                self(*reference.key, self);
+            if (reference.value)
+                self(*reference.value, self);
+        };
+        for (size_t index : shard.types)
+        {
+            const TypeIR &type = reflection_.types[index];
+            // 基类必须完整定义，前置声明不足以支撑继承
+            if (type.superAddress != 0)
+            {
+                const auto base = symbols.types.find(type.superAddress);
+                if (base != symbols.types.end() && base->second.inheritsBase)
+                    addType(type.superAddress);
+            }
+            // 字段的类型名由解析器生成，其定义可能位于其他包
+            for (const PropertyIR &property : type.properties)
+                walk(property.type, walk);
+        }
+        packages.erase(shard.package);
+        return {packages.begin(), packages.end()};
+    }
+
+    void SdkEmitter::TypesEntry(std::ostream &stream, const std::vector<std::string> &shardNames) const
+    {
+        stream << "#pragma once\n\n";
+        stream << "// Aggregated view of all type shards. Include this file to see every reflected type.\n";
+        stream << "// Individual shards are self-contained and can be included directly.\n";
+        for (const std::string &name : shardNames)
+            stream << "#include \"Types/" << name << "\"\n";
+    }
+
+    void SdkEmitter::FunctionsEntry(std::ostream &stream, const std::vector<std::string> &shardNames) const
+    {
+        stream << "#pragma once\n\n";
+        stream << "// Aggregated view of all function shards. Include this file to see every reflected function.\n";
+        stream << "// Individual shards are self-contained and can be included directly.\n";
+        for (const std::string &name : shardNames)
+            stream << "#include \"Functions/" << name << "\"\n";
+    }
+
+    void SdkEmitter::TypeShard(std::ostream &stream, const CppSymbols &symbols, const SdkShard &shard,
+                               const std::vector<std::string> &dependencies, GenerationReport &report) const
     {
         const auto &types = symbols.types;
+        auto packageFile = [](const std::string &package)
+        { return SanitizeIdentifier(package, "Package"); };
 
-        stream << "#pragma once\n#include <cstddef>\n#include <cstdint>\n#include \"BasicTypes.hpp\"\n#include \"Enums.hpp\"\n\n";
+        stream << "#pragma once\n#include <cstddef>\n#include <cstdint>\n#include \"../BasicTypes.hpp\"\n#include \"../Enums.hpp\"\n";
+        // 基类必须已完整定义，前置声明不足以支撑继承
+        for (const std::string &dependency : dependencies)
+            stream << "#include \"" << packageFile(dependency) << ".hpp\"\n";
+        stream << "\n";
         stream << "// Sizes and offsets describe target memory, not native C++ layout.\n";
         stream << "// Structs marked offset-description list reflected offsets without asserting declaration order;\n";
         stream << "// their native data size is the reflected type or parameter size, and unreflected bytes are not padding.\n";
         stream << "namespace NextDumper\n{\n";
-        for (const TypeIR &type : reflection_.types)
-            stream << "struct " << types.at(type.address).name << ";\n";
-        if (!reflection_.types.empty())
+        for (size_t index : shard.types)
+            stream << "struct " << types.at(reflection_.types[index].address).name << ";\n";
+        if (!shard.types.empty())
             stream << "\n";
         if (std::any_of(types.begin(), types.end(), [](const auto &entry)
                         { return entry.second.declarationDependencyBlocked; }))
             report.Warn("declaration-dependency", "unorderable declaration dependencies use offset descriptions");
         for (size_t typeIndex : symbols.typeOrder)
         {
+            if (!std::binary_search(shard.types.begin(), shard.types.end(), typeIndex))
+                continue;
             const TypeIR &type = reflection_.types[typeIndex];
             const auto &declaration = types.at(type.address);
             const std::string &typeName = declaration.name;
@@ -586,9 +747,14 @@ namespace nextdumper::generation::detail
         stream << "}\n";
     }
 
-    void SdkEmitter::Functions(std::ostream &stream, const CppSymbols &symbols, GenerationReport &report) const
+    void SdkEmitter::FunctionShard(std::ostream &stream, const CppSymbols &symbols, const SdkShard &shard,
+                                   const std::vector<std::string> &dependencies, GenerationReport &report) const
     {
-        stream << "#pragma once\n#include <cstddef>\n#include <cstdint>\n#include \"Types.hpp\"\n\n";
+        // 只引入参数与局部变量实际引用的类型分片
+        stream << "#pragma once\n#include <cstddef>\n#include <cstdint>\n#include \"../BasicTypes.hpp\"\n#include \"../Enums.hpp\"\n";
+        for (const std::string &dependency : dependencies)
+            stream << "#include \"../Types/" << SanitizeIdentifier(dependency, "Package") << ".hpp\"\n";
+        stream << "\n";
         stream << "namespace NextDumper\n{\n";
         if (reflection_.stats.parsedFunctions == 0)
             stream << "// No UFunction metadata was resolved in this dump.\n";
@@ -597,8 +763,10 @@ namespace nextdumper::generation::detail
         stream << "// their native data size is the reflected type or parameter size, and unreflected bytes are not padding.\n";
         stream << "// A zero-parameter function is emitted as an empty struct only when the header and the property\n";
         stream << "// chain agree that it has no parameters.\n";
-        for (const auto &[address, function] : reflection_.functions)
+        for (const FunctionIR *entry : shard.functions)
         {
+            const auto &function = *entry;
+            const uintptr_t address = function.address;
             if (!function.headerReadable)
             {
                 stream << "// Unavailable function definition: " << EscapeJson(function.fullName)

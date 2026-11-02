@@ -8,8 +8,10 @@
 #include <cstdio>
 #include <fstream>
 #include <map>
+#include <set>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace nextdumper::generation
 {
@@ -149,21 +151,60 @@ namespace nextdumper::generation
             return true;
         };
         const ReflectionPartition partition = PartitionReflection(reflection_);
+        // 头部文件按 UE 包切分：单个分片自成一体，索引文件只负责聚合 include
+        std::vector<detail::SdkEmitter::SdkShard> typeShards = emitter.TypeShards(symbols);
+        std::vector<detail::SdkEmitter::SdkShard> functionShards = emitter.FunctionShards();
+        std::set<std::string> usedTypeNames, usedFunctionNames;
+        const auto assignName = [](std::vector<detail::SdkEmitter::SdkShard> &shards, std::set<std::string> &used)
+        {
+            std::sort(shards.begin(), shards.end(), [](const auto &left, const auto &right)
+                      { return left.package < right.package; });
+            for (auto &shard : shards)
+            {
+                const std::string stem = SanitizeIdentifier(shard.package, "Package");
+                std::string name = stem;
+                size_t suffix = 1;
+                while (!used.insert(name).second)
+                    name = stem + "_" + std::to_string(++suffix);
+                shard.fileName = std::move(name);
+            }
+        };
+        assignName(typeShards, usedTypeNames);
+        assignName(functionShards, usedFunctionNames);
+        std::vector<std::string> typeNames, functionNames;
+        for (const auto &shard : typeShards)
+            typeNames.push_back(shard.fileName + ".hpp");
+        for (const auto &shard : functionShards)
+            functionNames.push_back(shard.fileName + ".hpp");
         if (!writeFile("sdk/SDK.hpp", [&](std::ostream &stream)
                        { emitter.SdkEntry(stream); }) ||
             !writeFile("sdk/BasicTypes.hpp", [&](std::ostream &stream)
                        { emitter.BasicTypes(stream, symbols); }) ||
             !writeFile("sdk/EngineLayouts.hpp", [&](std::ostream &stream)
                        { emitter.EngineLayouts(stream); }) ||
-            !writeFile("sdk/Types.hpp", [&](std::ostream &stream)
-                       { emitter.Types(stream, symbols, report); }) ||
             !writeFile("sdk/Enums.hpp", [&](std::ostream &stream)
                        { emitter.Enums(stream, symbols); }) ||
+            !writeFile("sdk/Types.hpp", [&](std::ostream &stream)
+                       { emitter.TypesEntry(stream, typeNames); }) ||
             !writeFile("sdk/Functions.hpp", [&](std::ostream &stream)
-                       { emitter.Functions(stream, symbols, report); }) ||
+                       { emitter.FunctionsEntry(stream, functionNames); }) ||
             !writeFile("reflection.json", [&](std::ostream &stream)
                        { detail::ReflectionIndexJson(stream, context_, reflection_, partition, report); }))
             return result;
+        for (const auto &shard : typeShards)
+        {
+            const std::vector<std::string> dependencies = emitter.ShardDependencies(shard, symbols);
+            if (!writeFile("sdk/Types/" + shard.fileName + ".hpp", [&](std::ostream &stream)
+                           { emitter.TypeShard(stream, symbols, shard, dependencies, report); }))
+                return result;
+        }
+        for (const auto &shard : functionShards)
+        {
+            const std::vector<std::string> dependencies = emitter.FunctionShardDependencies(shard, symbols);
+            if (!writeFile("sdk/Functions/" + shard.fileName + ".hpp", [&](std::ostream &stream)
+                           { emitter.FunctionShard(stream, symbols, shard, dependencies, report); }))
+                return result;
+        }
         for (const ReflectionPartition::Shard &shard : partition.shards)
             if (!writeFile("reflection/" + shard.fileName, [&](std::ostream &stream)
                            { detail::ReflectionShardJson(stream, reflection_, shard, report, symbols); }))

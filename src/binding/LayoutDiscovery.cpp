@@ -470,8 +470,8 @@ namespace nextdumper::binding
                         if (maxChunks <= 0 || maxChunks > 0x1000 || maxElements % maxChunks != 0)
                             continue;
                         const int32_t elementsPerChunk = maxElements / maxChunks;
-                        // NumChunks 不再是「MaxChunks 的下一个 int32」，而是取窗口内取值等于
-                        // chunk 表实测连续非空前缀数的字段；该关系只依赖 chunk 表本身。
+                        // NumChunks 取窗口内取值等于 chunk 表实测连续非空前缀数的字段
+                        // 该关系只依赖 chunk 表本身，不假设它与 MaxChunks 相邻
                         const ChunkFacts &facts = chunkFactsFor(storage);
                         if (facts.prefix <= 0 || facts.prefix > maxChunks)
                             continue;

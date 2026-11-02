@@ -85,6 +85,10 @@ namespace nextdumper::ue::schema_probe
                                       " class=" + std::to_string(uobjectHint->classPointer) +
                                       " outer=" + std::to_string(uobjectHint->outer));
         }
+        else
+        {
+            report.evidence.push_back("UObject layout hint absent; offsets resolved from object samples");
+        }
 
         schema.fname.comparisonIndex = 0;
         schema.fname.size = schema.features.outlineNumberName
@@ -705,7 +709,8 @@ namespace nextdumper::ue::schema_probe
         }
         else
         {
-            // 不按 FName 尾部推算，因为 Outer 可以位于 Name 之前
+            // 枚举对象头窗口内的全部指针槽位
+            // Outer 可能位于 Name 之前，位置不能由 Name 的宽度推出
             const int32_t nameEnd = schema.uobject.name + schema.fname.size;
             std::vector<int32_t> sourceOuterOffsets;
             for (int32_t offset = pointerSize; offset <= 0x80; offset += pointerSize)

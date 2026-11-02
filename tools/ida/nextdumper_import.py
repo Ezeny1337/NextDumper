@@ -26,7 +26,7 @@ def _read_json(path, expected_version):
     return value
 
 
-REFLECTION_SCHEMA_VERSION = 11
+REFLECTION_SCHEMA_VERSION = 12
 
 
 SHARD_SUBDIR = "reflection"
@@ -384,7 +384,8 @@ def run_import():
     if _count_shards(reflection, "functions") > MAX_FUNCTIONS:
         raise ValueError("Function count is invalid or exceeds the configured limit")
     for function in _iter_shard_section(artifact_dir, reflection, "functions"):
-        if not isinstance(function, dict) or not function.get("header_readable"):
+        # 缺失的标志表示该条件成立，只有显式记录为不可读时才跳过
+        if not isinstance(function, dict) or function.get("header_unreadable"):
             continue
         for field, label in (("exec_entry_rva", "UFunction execution entry"),
                              ("native_exec_rva", "native function candidate")):
@@ -412,7 +413,8 @@ def run_import():
                 continue
             if field == "exec_entry_rva":
                 observation = function.get("entry_observation", {})
-                if not isinstance(observation, dict) or not observation.get("executable") or not observation.get("in_module"):
+                # 三项观察标志通常为真，只有显式记录的否定项才需要跳过
+                if not isinstance(observation, dict) or observation.get("not_executable") or observation.get("outside_module"):
                     continue
             entries.setdefault(ea, []).append((function, label))
 
