@@ -34,15 +34,15 @@ namespace nextdumper::memory
         size_t unfrozenReads = 0;
         std::vector<ReadResult> readFailureSamples;
 
-        // 预算耗尽表示部分读取未被冻结，校验覆盖不完整，但不代表已冻结的字节发生了变化
-        // 它单独由 limitExceeded 与 coverageComplete 表达，不参与稳定性判定
+        // 只回答已冻结字节是否一致，覆盖是否完整由 limitExceeded 单独表达
         [[nodiscard]] bool Stable() const
         {
             return !generationChanged && changedRanges == 0 && unreadableRanges == 0;
         }
     };
 
-    // 单线程采集视图，只冻结已消费的字节，验证稳定不等于获得原子快照
+    // 采集视图：冻结读过的字节，供事后比对目标是否变化
+    // 只冻结实际读到的部分，因此校验稳定不等于原子快照，非线程安全
     class CaptureMemorySource final : public IMemorySource
     {
     public:
@@ -77,30 +77,20 @@ namespace nextdumper::memory
         [[nodiscard]] ReadPerformance *Performance() const override { return source_.Performance(); }
 
     private:
-        // 冻结以连续区域为单位：属性描述符由 UStruct::Link 一次分配且彼此相邻
-        // 同一类的多次读取落在同一段内存里
-        // 记录数因此取决于被访问的对象簇而不是读取次数
+        // 单区域跨度上限。区域数取决于被访问的内存簇而非读取次数
         static constexpr size_t kMaxRegionBytes = 64 * 1024;
-        // 合并间隙上限
-        // 同一次分配内的相邻描述符间距在数百字节以内
-        // 而不同分配之间通常相距更远，跨过更大的空洞只会为间隙分配内存，却得不到任何校验价值
+        // 小于该间隙的相邻读取并入同一区域，更大的空洞只填零却永不比对
         static constexpr uintptr_t kMaxRegionGap = 0x100;
-        // 冻结内存总上限，按各区域实际分配的字节累计
-        // 冻结的字节在校验阶段会被逐个重读比对，上限因此同时约束内存与校验耗时
+        // 校验要逐字节重读，故该上限同时约束内存与耗时
         static constexpr size_t kMaxObservedBytes = 256 * 1024 * 1024;
         // 单次逻辑批次的传输预算，与冻结无关
         static constexpr size_t kMaxBytes = 64 * 1024 * 1024;
-        // 单次冻结的读取上限
-        // 超过它的读取本身仍然有效，只是不进入冻结集合
-        // 该值必须覆盖最宽的单次读取：名称文本按 UTF-16 读取时上界为 1024 字符 × 2 字节
+        // 必须覆盖最宽的一次读取：UTF-16 名称上界为 1024 字符
         static constexpr size_t kMaxNameTextBytes = 1024 * sizeof(uint16_t);
         static constexpr size_t kMaxReadSize = 2048;
-        static_assert(kMaxReadSize >= kMaxNameTextBytes,
-                      "kMaxReadSize 必须覆盖名称文本的 UTF-16 读取上界，"
-                      "否则每次采集都会因名称读取而提前停止冻结");
+        static_assert(kMaxReadSize >= kMaxNameTextBytes, "kMaxReadSize 必须覆盖 UTF-16 名称读取");
 
-        // 一段连续的已读取地址范围，bytes 保存原样内容，covered 逐位标记哪些字节真正被读取过
-        // 间隙字节既不参与比较，也不会被回放
+        // 连续地址范围。covered 逐位标记真正读过的字节，未标记处不参与比对与回放
         struct Region
         {
             uintptr_t base = 0;
@@ -118,23 +108,21 @@ namespace nextdumper::memory
         [[nodiscard]] static bool IsCovered(const Region &region, size_t offset, size_t size);
         [[nodiscard]] Region *FindRegion(uintptr_t address) const;
         [[nodiscard]] bool ServeFromRegion(uintptr_t address, void *buffer, size_t size) const;
-        // 把一次读取写入区域，返回此前未冻结的字节数
         size_t WriteRegion(Region &region, size_t offset, const uint8_t *bytes, size_t size) const;
 
         IMemorySource &source_;
         std::function<void(const std::string &)> diagnostic_;
-        // 键为区域基址，按升序排列，插入与删除不搬移其他区域，迭代器保持有效
+        // 按基址升序且互不重叠。erase/emplace 不使其他区域的迭代器失效
         mutable std::map<uintptr_t, Region> regions_;
+        // 区域容量之和。覆盖字节数见 observedBytes_
         mutable size_t allocatedBytes_ = 0;
         mutable size_t observedBytes_ = 0;
         mutable bool observing_ = false;
-        // 冻结因超出单次读取上限或总量预算而停止过，此时覆盖率不是全量
-        // 区域上限与区域互斥导致的个别遗漏不计入此位，见 unfrozenReads_
+        // 覆盖率不是全量，供上层门禁使用
         mutable bool limitExceeded_ = false;
-        // 总量预算耗尽后不再冻结新字节，与 limitExceeded_ 的区别见 ObserveBytes
+        // 总量触顶后停冻，否则已冻结内容的采集时刻会横跨整个枚举
         mutable bool freezeStopped_ = false;
-        // 因单次上限、区域上限或区域互斥而未冻结的读取次数
-        // 这些字节不在校验范围内，供分析覆盖率缺口，不参与门禁判定
+        // 未进入冻结集合的读取次数。纯统计量：区域重叠是常规情况，不参与门禁
         mutable size_t unfrozenReads_ = 0;
         mutable bool changedDuringRead_ = false;
         mutable std::vector<CaptureValidation::Change> changesDuringRead_;

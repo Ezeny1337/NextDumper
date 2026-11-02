@@ -195,7 +195,7 @@ namespace nextdumper::memory
         return true;
     }
 
-    // 返回包含 address 的区域，区域按基址升序且互不重叠
+    // regions_ 按基址升序互不重叠，检查前驱即可定位唯一候选
     CaptureMemorySource::Region *CaptureMemorySource::FindRegion(uintptr_t address) const
     {
         auto found = regions_.upper_bound(address);
@@ -206,8 +206,7 @@ namespace nextdumper::memory
         return address - region.base < region.bytes.size() ? &region : nullptr;
     }
 
-    // 只有请求范围内每个字节都已冻结时才从区域取值
-    // 部分覆盖必须回落到真实读取，否则会把未观测的字节补成零
+    // 部分覆盖必须回落真实读取，否则会把未观测的字节当成零返回
     bool CaptureMemorySource::ServeFromRegion(uintptr_t address, void *buffer, size_t size) const
     {
         if (!buffer || !size || address + size < address)
@@ -222,8 +221,7 @@ namespace nextdumper::memory
         return true;
     }
 
-    // 把一次读取写入区域，返回此前未冻结的字节数
-    // 已冻结字节若与本次读到的不一致，说明同一批内出现了相互矛盾的内容
+    // 返回此前未被冻结的字节数。同字节两次读数不同则记为采集期变化
     size_t CaptureMemorySource::WriteRegion(Region &region, size_t offset, const uint8_t *bytes, size_t size) const
     {
         size_t fresh = 0;
@@ -260,21 +258,15 @@ namespace nextdumper::memory
     {
         auto *performance = Performance();
         ScopedReadTiming timing(performance ? &performance->captureObserve : nullptr);
-        // 超出单次上限只是这一次不冻结，读取本身已经成功
-        // 它让覆盖不完整，但不构成停止冻结的理由：后续的普通读取仍可安全冻结
-        // 只有总量预算耗尽才需要停冻，见下面的 freezeStopped_
+        // 单次超限只丢这一次，读取本身成功，后续仍可继续冻结
         if (size > kMaxReadSize || address + size < address)
         {
             limitExceeded_ = true;
             return;
         }
-        // 预算一旦耗尽就停止冻结
-        // 继续写入会让冻结内容的采集时刻跨度整个枚举
-        // 校验时与当前内存比较必然出现大量并不存在的差异
         if (freezeStopped_)
             return;
-        // 快路径：读取完全落在已有区域内时原地写入
-        // 属性头部、链接槽与派生成员落在同一段描述符数组内，绝大多数读取走这条路径
+        // 快路径：整段落在已有区域内，原地覆盖，无分配
         if (Region *region = FindRegion(address))
         {
             const size_t offset = static_cast<size_t>(address - region->base);
@@ -286,8 +278,7 @@ namespace nextdumper::memory
                 return;
             }
         }
-        // 向后扩展：读取起点仍在区域内而末端越界时，直接追加到区域末尾
-        // 属性尾部与链接槽紧接头部之后，这条路径承担了区域生长的主要部分
+        // 区域生长：起点在区域内但末端越界，向后延长
         const uintptr_t first = address - address % 64;
         const uintptr_t last = (address + size + 63) / 64 * 64;
         if (Region *region = FindRegion(address))
@@ -295,12 +286,10 @@ namespace nextdumper::memory
             auto found = regions_.find(region->base);
             const auto next = std::next(found);
             const uintptr_t currentEnd = region->base + region->bytes.size();
-            // 仅当后续区域不与新范围相接下才原地追加，否则交给合并路径
-            // 区域达到上限时另起一段继续冻结：单个区域的上限是布局约束，不应升级为整个采集的终止条件
+            // 后方区域太近则交给合并路径
             if (next == regions_.end() || (next->first > last && next->first - last > kMaxRegionGap))
             {
-                // 区域只能向后增长：last 落在已有末端之前时保留原尺寸
-                // 截断会丢弃已冻结的字节并使分配量统计与真实占用失配
+                // 区域只增不减，截断会丢弃已冻结字节并使 allocatedBytes_ 失配
                 const uintptr_t wanted = std::max(last, currentEnd);
                 const size_t grown = static_cast<size_t>(wanted - region->base);
                 if (grown <= kMaxRegionBytes &&
@@ -332,27 +321,20 @@ namespace nextdumper::memory
         auto end = begin;
         while (end != regions_.end())
         {
-            // 与当前合并范围只有小间隙的区域才并入，更大间隙留给独立区域
             const uintptr_t gap = end->first > newEnd ? end->first - newEnd : 0;
             if (gap > kMaxRegionGap)
                 break;
             newEnd = std::max(newEnd, end->second.base + end->second.bytes.size());
             ++end;
         }
-        // 合并会超出单区域上限时只放弃合并，按本次读取单独建区
-        // 合并只是减少记录数的优化，放弃它不应丢弃已读到的字节
+        // 合并超限时退回单独建区，合并只是减少记录数，放弃它不该丢掉已读字节
         if (newEnd - newBase > kMaxRegionBytes)
         {
             begin = end = regions_.upper_bound(first);
             newBase = first;
             newEnd = last;
-            // 新区域必须与已有区域互斥，region 已满且本次读取落在它内部时
-            // 单独建区会与它重叠并破坏有序不变量，此时放弃冻结这一次读取
-            // 放弃同时意味着该读取的字节不在校验范围内，计入覆盖缺口
-            //
-            // 这里只计数不置 limitExceeded_：区域已满后再遇到落在其内部的读取
-            // 是区域布局的常规结果，每次采集都会发生若干次
-            // 用它判定覆盖不完整会让每次运行都降级为 Partial，失去门禁的区分度
+            // 重叠会破坏有序不变量，只能放弃。只计数不置位：这是常规情况，
+            // 拿它判定覆盖不完整会让每次运行都降级为 Partial
             if (begin != regions_.begin())
             {
                 const auto preceding = std::prev(begin);
@@ -368,7 +350,7 @@ namespace nextdumper::memory
                 return;
             }
         }
-        // 预算按合并后的净增量检查：被并入的旧区域会随合并释放
+        // 旧区域随后被 erase，其占用同时释放，净增量才是真正新增的字节
         size_t replaced = 0;
         for (auto item = begin; item != end; ++item)
             replaced += item->second.bytes.size();
@@ -380,7 +362,7 @@ namespace nextdumper::memory
             return;
         }
         const bool inserted = begin == end;
-        // 新范围只承载已被真实读取的字节，间隙保持未覆盖，不参与比较或回放
+        // 间隙保持未覆盖，既不比对也不回放
         Region merged;
         merged.base = newBase;
         merged.bytes.assign(grown, 0);
@@ -395,7 +377,6 @@ namespace nextdumper::memory
             allocatedBytes_ -= item->second.bytes.size();
         }
         regions_.erase(begin, end);
-        // 键由本轮区间决定，与已擦除范围不重叠，插入必然成功
         const auto [position, emplaced] = regions_.emplace(newBase, std::move(merged));
         if (!emplaced)
             throw std::logic_error("capture region overlap");
@@ -477,8 +458,7 @@ namespace nextdumper::memory
                 result.changes.push_back(std::move(change));
             }
         };
-        // 只比较已冻结的字节
-        // 覆盖区可能被未读字节分隔成多段，必须逐段比较
+        // 覆盖区被未读字节分隔成多段，必须逐段比较
         const auto compareRegion = [&](const Region &region, const uint8_t *data, const ReadResult &read)
         {
             size_t index = 0;
