@@ -302,16 +302,19 @@ namespace nextdumper::ue::schema_probe
         {
             if (hasUObjectHint && overlapsKnownField(schema.uobject.name, candidate.size))
                 continue;
-            const int32_t nameEnd = schema.uobject.name + candidate.size;
-            const std::array<int32_t, 2> outerOffsets = {
-                (nameEnd + pointerSize - 1) / pointerSize * pointerSize,
-                (nameEnd + static_cast<int32_t>(sizeof(int32_t)) + pointerSize - 1) / pointerSize * pointerSize};
-            for (size_t outerIndex = 0; outerIndex < outerOffsets.size(); ++outerIndex)
+            // 在对象头有界窗口内枚举所有指针对齐槽位，只排除 Name 与 Class 占据的区间
+            std::vector<int32_t> outerOffsets;
+            for (int32_t offset = pointerSize; offset <= 0x80; offset += pointerSize)
             {
-                const int32_t outerOffset = outerOffsets[outerIndex];
-                if (outerIndex != 0 && outerOffset == outerOffsets[0])
+                if (offset == schema.uobject.classPointer)
                     continue;
-
+                if (offset < schema.uobject.name + static_cast<int32_t>(sizeof(int32_t)) &&
+                    schema.uobject.name < offset + pointerSize)
+                    continue;
+                outerOffsets.push_back(offset);
+            }
+            for (const int32_t outerOffset : outerOffsets)
+            {
                 int32_t validObjects = 0;
                 int32_t sampleHits = 0;
                 int32_t nullHits = 0;
@@ -330,7 +333,10 @@ namespace nextdumper::ue::schema_probe
                         ++nullHits;
                         continue;
                     }
-                    if (value != object && IsReadablePointer(memory_, value))
+                    // 指针可读只是必要条件，Outer 指向的必须是一个能解出名称的对象
+                    // 否则落在指针数据或高半字上的候选也能满足可读性
+                    if (value != object && IsReadablePointer(memory_, value) &&
+                        ReadObjectName(memory_, binding_, schema, bootstrapNames, value))
                     {
                         ++validObjects;
                         if (sampleObjects.contains(value))
@@ -427,18 +433,16 @@ namespace nextdumper::ue::schema_probe
                 continue;
             if (candidate.numberIndexHits * 2 > static_cast<int32_t>(samples.size()))
                 continue;
-            if (hasUObjectHint)
-            {
-                if (candidate.comparisonHits < 8)
-                    continue;
-            }
-            else if (candidate.validObjects < 3)
+            if (candidate.comparisonHits < 8 || candidate.uniqueNames < 8)
                 continue;
             fnameCandidates.push_back(candidate);
         }
         if (fnameCandidates.empty())
         {
-            report.failures.push_back("FName layout candidate did not produce a valid UObject::Outer relation");
+            report.failures.push_back("FName layout candidates did not decode through the name store; seeds=" +
+                                      std::to_string(layoutSeeds.size()) +
+                                      " name_offset=" + std::to_string(schema.uobject.name) +
+                                      " uobject_hint=" + std::to_string(hasUObjectHint));
             return false;
         }
         std::vector<FNameLayoutCandidate> uniqueFNameCandidates;
@@ -701,11 +705,17 @@ namespace nextdumper::ue::schema_probe
         }
         else
         {
-            // 同时核对标准尾部与可选的四字节对象列表索引布局
+            // 不按 FName 尾部推算，因为 Outer 可以位于 Name 之前
             const int32_t nameEnd = schema.uobject.name + schema.fname.size;
-            const int32_t firstOuterOffset = ((nameEnd + pointerSize - 1) / pointerSize) * pointerSize;
-            const int32_t indexedOuterOffset =
-                ((nameEnd + static_cast<int32_t>(sizeof(int32_t)) + pointerSize - 1) / pointerSize) * pointerSize;
+            std::vector<int32_t> sourceOuterOffsets;
+            for (int32_t offset = pointerSize; offset <= 0x80; offset += pointerSize)
+            {
+                if (offset == schema.uobject.classPointer)
+                    continue;
+                if (offset < nameEnd && schema.uobject.name < offset + pointerSize)
+                    continue;
+                sourceOuterOffsets.push_back(offset);
+            }
             const auto readObjectName = [&](uintptr_t object)
             { return ReadObjectName(memory_, binding_, schema, names, object); };
             struct OuterCandidateEvidence
@@ -743,15 +753,8 @@ namespace nextdumper::ue::schema_probe
                 }
                 return candidate;
             };
-            const std::array<int32_t, 2> sourceOuterOffsets = {firstOuterOffset, indexedOuterOffset};
             for (const int32_t offset : sourceOuterOffsets)
-            {
-                if (offset == schema.uobject.classPointer ||
-                    std::any_of(outerCandidates.begin(), outerCandidates.end(), [offset](const auto &candidate)
-                                { return candidate.offset == offset; }))
-                    continue;
                 outerCandidates.push_back(inspectOuterCandidate(offset));
-            }
             const auto betterOuterEvidence = [](const OuterCandidateEvidence &left, const OuterCandidateEvidence &right)
             {
                 if (left.validObjects != right.validObjects)
@@ -769,9 +772,8 @@ namespace nextdumper::ue::schema_probe
             }
             if (outerCandidates.empty() || outerCandidates.front().validObjects < 3)
             {
-                report.failures.push_back("UObject::Outer source-layout candidates were rejected; standard_offset=" +
-                                          std::to_string(firstOuterOffset) +
-                                          " indexed_offset=" + std::to_string(indexedOuterOffset) +
+                report.failures.push_back("UObject::Outer was not found in the object header window; offset_range=8..0x80 scanned=" +
+                                          std::to_string(sourceOuterOffsets.size()) +
                                           " best_valid_objects=" +
                                           std::to_string(outerCandidates.empty() ? 0 : outerCandidates.front().validObjects));
                 return false;
@@ -792,9 +794,7 @@ namespace nextdumper::ue::schema_probe
             schema.uobject.outer = selectedOuter.offset;
             report.evidence.push_back("resolved UObject::Outer from validated source-layout candidate offset=" +
                                       std::to_string(selectedOuter.offset) +
-                                      " object_list_index_candidate=" +
-                                      std::to_string(selectedOuter.offset == indexedOuterOffset &&
-                                                     indexedOuterOffset != firstOuterOffset));
+                                      " before_name=" + std::to_string(selectedOuter.offset < schema.uobject.name));
         }
 
         int32_t bestFlagsOffset = -1;
