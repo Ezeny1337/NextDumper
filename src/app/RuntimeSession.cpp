@@ -108,20 +108,6 @@ namespace nextdumper::app
             return "failed";
         }
 
-        const char *AnalysisModeName(AnalysisMode mode)
-        {
-            switch (mode)
-            {
-            case AnalysisMode::Off:
-                return "off";
-            case AnalysisMode::Auto:
-                return "auto";
-            case AnalysisMode::Force:
-                return "force";
-            }
-            return "unknown";
-        }
-
         class AnalysisMemoryView final : public ::nextdumper::analysis::MemoryView
         {
         public:
@@ -814,8 +800,7 @@ namespace nextdumper::app
         std::optional<::nextdumper::analysis::AnalysisResult> analysisResult;
         const auto runAnalysisProbe = [&]()
         {
-            Note(RuntimeLogLevel::Info, "analysis_probe status=start mode=" +
-                                            std::string(AnalysisModeName(config_.analysis)));
+            Note(RuntimeLogLevel::Info, "analysis_probe status=start");
             BeginMemoryStage("analysis-probe");
             AnalysisMemoryView analysisMemory(*memory_);
             ::nextdumper::analysis::AnalysisSessionOptions analysisOptions;
@@ -830,8 +815,7 @@ namespace nextdumper::app
                                                  { return validation.IsValidated(); });
 
             Note(RuntimeLogLevel::Info,
-                 "analysis_probe mode=" + std::string(AnalysisModeName(config_.analysis)) +
-                     " status=" + ::nextdumper::analysis::AnalysisStatusName(result.Status) +
+                 std::string("analysis_probe status=") + ::nextdumper::analysis::AnalysisStatusName(result.Status) +
                      " reason=" + result.Reason +
                      " contracts=" + std::to_string(result.NamePools.size() + result.ObjectArrays.size() + result.UObjectLayouts.size()) +
                      " validated=" + std::to_string(validated) +
@@ -859,14 +843,11 @@ namespace nextdumper::app
                                 " code=" + diagnostic.Code + " message=" + diagnostic.Message);
             }
         };
-        if (config_.analysis == AnalysisMode::Force ||
-            (config_.analysis == AnalysisMode::Auto && !binding))
-            runAnalysisProbe();
-
         if (!binding)
         {
-            // 符号定位不足时，根候选由分析契约提供
+            // 符号定位不足时改由分析契约提供根候选
             Note("locator_path source=analysis reason=symbol-binding-incomplete");
+            runAnalysisProbe();
             profileExecutionState->stage = "binding";
 
             std::optional<NameBindingProposal> nameProposal;

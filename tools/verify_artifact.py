@@ -108,6 +108,137 @@ def shard_paths(artifact_dir, index):
     return paths
 
 
+INCLUDE_PREFIX = '#include "'
+SDK_SECTIONS = ("Types", "Functions")
+
+
+def sdk_includes(path):
+    """Return the shard references a generated file includes.
+
+    Plain names refer to a sibling shard; a "<Section>/<Name>.hpp" path refers to a
+    shard in that section and is how the entry headers list their shards.
+    """
+    includes = []
+    with open(path, "r", encoding="utf-8") as source:
+        for line in source:
+            if not line.startswith(INCLUDE_PREFIX):
+                continue
+            target = line[len(INCLUDE_PREFIX):].split('"', 1)[0]
+            if not target.endswith(".hpp"):
+                continue
+            target = target[: -len(".hpp")]
+            for prefix in ("../", ""):
+                for section in SDK_SECTIONS:
+                    marker = "{0}{1}/".format(prefix, section)
+                    if target.startswith(marker):
+                        includes.append((section, target[len(marker):]))
+                        break
+                else:
+                    continue
+                break
+            else:
+                if "/" not in target:
+                    includes.append(target)
+    return includes
+
+
+def check_sdk(artifact_dir, sizes):
+    """Validate that generated SDK shards form a closed, acyclic include graph.
+
+    Each shard must reference headers that exist, the entry header must list every
+    shard, and no shard may reach itself through includes: a cycle makes the
+    struct definitions order-dependent and the header set uncompilable.
+    """
+    failures = []
+    sdk_dir = os.path.join(artifact_dir, "sdk")
+    if not os.path.isdir(sdk_dir):
+        return failures
+
+    local_graph = {}
+    external_edges = {}
+    for section in SDK_SECTIONS:
+        directory = os.path.join(sdk_dir, section)
+        if not os.path.isdir(directory):
+            continue
+        files = sorted(name for name in os.listdir(directory) if name.endswith(".hpp"))
+        if not files:
+            continue
+        for name in files:
+            path = os.path.join(directory, name)
+            sizes["sdk/" + section + "/" + name] = os.path.getsize(path)
+            stem = name[: -len(".hpp")]
+            local, external = [], []
+            for target in sdk_includes(path):
+                if isinstance(target, tuple):
+                    if target[0] != section:
+                        external.append(target)
+                else:
+                    local.append(target)
+            local_graph[(section, stem)] = local
+            external_edges[(section, stem)] = external
+
+        entry = os.path.join(sdk_dir, section + ".hpp")
+        if not os.path.isfile(entry):
+            failures.append("missing SDK entry header: sdk/{0}.hpp".format(section))
+            continue
+        listed = set()
+        for target in sdk_includes(entry):
+            if isinstance(target, tuple) and target[0] == section:
+                listed.add(target[1])
+            elif isinstance(target, str):
+                listed.add(target)
+        missing = sorted(set(n[: -len(".hpp")] for n in files) - listed)
+        if missing:
+            failures.append(
+                "sdk/{0}.hpp omits {1} shard(s), first: {2}".format(section, len(missing), missing[0])
+            )
+
+    for (section, stem), targets in local_graph.items():
+        for target in targets:
+            if (section, target) not in local_graph:
+                failures.append(
+                    "sdk/{0}/{1}.hpp includes a missing shard: {2}.hpp".format(section, stem, target)
+                )
+    for (section, stem), targets in external_edges.items():
+        for target_section, target in targets:
+            if (target_section, target) not in local_graph:
+                failures.append(
+                    "sdk/{0}/{1}.hpp includes a missing shard: {2}/{3}.hpp".format(
+                        section, stem, target_section, target
+                    )
+                )
+
+    # 环检测：深度优先遍历，回边指向当前路径上的节点即构成环
+    def has_cycle(section, start):
+        stack = [(start, iter(local_graph[(section, start)]))]
+        on_path = {start}
+        while stack:
+            node, children = stack[-1]
+            child = next(children, None)
+            if child is None:
+                on_path.discard(node)
+                stack.pop()
+                continue
+            if (section, child) not in local_graph or child in on_path:
+                if child in on_path:
+                    return True
+                continue
+            on_path.add(child)
+            stack.append((child, iter(local_graph[(section, child)])))
+        return False
+
+    for section in SDK_SECTIONS:
+        nodes = [stem for (node_section, stem) in local_graph if node_section == section]
+        cyclic = [stem for stem in nodes if has_cycle(section, stem)]
+        if cyclic:
+            failures.append(
+                "sdk/{0}/ include cycle reaches {1} shard(s), first: {2}.hpp".format(
+                    section, len(cyclic), cyclic[0]
+                )
+            )
+    return failures
+
+
 def check(artifact_dir, verbose):
     failures = []
     notes = []
@@ -232,6 +363,7 @@ def check(artifact_dir, verbose):
             path = os.path.join(sdk_dir, name)
             if os.path.isfile(path):
                 sizes["sdk/" + name] = os.path.getsize(path)
+        failures.extend(check_sdk(artifact_dir, sizes))
     runtime_path = os.path.join(artifact_dir, "runtime.json")
     if os.path.isfile(runtime_path):
         runtime = load_json(runtime_path)
