@@ -88,9 +88,8 @@ flowchart TD
 
 | 模式 | 配置 | 用途 |
 | --- | --- | --- |
-| `verify`（默认） | Release、ThinLTO、不优化体积、关闭断言 | 快速检查编译 |
+| `verify`（默认） | Release、ThinLTO、不优化体积、启用断言 | 快速检查编译 |
 | `release` | Release、`-Oz`、ThinLTO、启用断言、构建后 strip | 体积较小的发布版本 |
-| `debug` | 调试符号、ThinLTO、关闭断言 | 便于调试 |
 
 运行前将 `ANDROID_NDK_HOME`（或 `ANDROID_NDK_ROOT`）指向 NDK r26 或更高版本。如果只设置了 `ANDROID_SDK_ROOT`，脚本会自动选择已安装的最新 NDK。
 
@@ -103,8 +102,8 @@ chmod +x build.sh
 # 体积优化的 release 版本
 ./build.sh --mode release --abi arm64-v8a
 
-# armeabi-v7a 调试版本
-./build.sh --mode debug --abi armeabi-v7a --jobs 4
+# armeabi-v7a 体积优化的 release 版本
+./build.sh --mode release --abi armeabi-v7a --jobs 4
 ```
 
 可执行文件默认位于 `build/android-<abi>-<mode>/NextDumper`。使用 `--build-dir` 修改构建目录，或使用 `--no-strip` 保留 release 版本的符号。

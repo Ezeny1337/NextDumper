@@ -98,7 +98,7 @@ jobs:
           cmake --build "$BUILD_DIR" --parallel "$(nproc)"
 
   release-build:
-    name: Build release variants ${{ matrix.abi }}
+    name: Build release ${{ matrix.abi }}
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -111,7 +111,6 @@ jobs:
     env:
       ANDROID_ABI: ${{ matrix.abi }}
       RELEASE_BUILD_DIR: build/android-${{ matrix.abi }}-release-artifact
-      DEBUG_BUILD_DIR: build/android-${{ matrix.abi }}-debug-artifact
 
     steps:
       - name: Check out source
@@ -144,7 +143,7 @@ jobs:
           echo "$cmake_bin" >> "$GITHUB_PATH"
           echo "$ndk_home/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_PATH"
 
-      - name: Configure release variant without NDEBUG
+      - name: Configure release without NDEBUG
         shell: bash
         run: |
           set -euo pipefail
@@ -154,70 +153,44 @@ jobs:
             -DANDROID_PLATFORM="$ANDROID_PLATFORM" \
             -DCMAKE_BUILD_TYPE=Release \
             -DNEXTDUMPER_ENABLE_THINLTO=ON \
-            -DNEXTDUMPER_OPTIMIZE_FOR_SIZE=ON \
-            -DNEXTDUMPER_DISABLE_NDEBUG=ON
+            -DNEXTDUMPER_OPTIMIZE_FOR_SIZE=ON
 
-      - name: Configure debug variant with NDEBUG
-        shell: bash
-        run: |
-          set -euo pipefail
-          cmake -S . -B "$DEBUG_BUILD_DIR" -G Ninja \
-            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
-            -DANDROID_ABI="$ANDROID_ABI" \
-            -DANDROID_PLATFORM="$ANDROID_PLATFORM" \
-            -DCMAKE_BUILD_TYPE=Debug \
-            -DNEXTDUMPER_ENABLE_THINLTO=ON \
-            -DNEXTDUMPER_FORCE_NDEBUG=ON
-
-      - name: Build release variants
+      - name: Build release
         shell: bash
         run: |
           set -euo pipefail
           cmake --build "$RELEASE_BUILD_DIR" --parallel "$(nproc)"
-          cmake --build "$DEBUG_BUILD_DIR" --parallel "$(nproc)"
 
-      - name: Package release variants
+      - name: Package release
         shell: bash
         run: |
           set -euo pipefail
           test -x "$RELEASE_BUILD_DIR/NextDumper"
-          test -x "$DEBUG_BUILD_DIR/NextDumper"
           version="$GITHUB_REF_NAME"
           strip_tool="$(command -v llvm-strip)"
 
-          for variant in release debug; do
-            if [[ "$variant" == release ]]; then
-              build_dir="$RELEASE_BUILD_DIR"
-              package_suffix="release"
-            else
-              build_dir="$DEBUG_BUILD_DIR"
-              package_suffix="debug"
-            fi
-            package_name="NextDumper-android-${ANDROID_ABI}-${package_suffix}-${version}"
-            archive_name="${package_name}.tar.gz"
-            mkdir -p "dist/$package_name"
-            install -m 0755 "$build_dir/NextDumper" "dist/$package_name/NextDumper"
-            if [[ "$variant" == release ]]; then
-              "$strip_tool" --strip-unneeded "dist/$package_name/NextDumper"
-            fi
-            printf '%s\n' \
-              'Project: NextDumper' \
-              "Commit: $GITHUB_SHA" \
-              "Ref: $GITHUB_REF" \
-              "Target: Android $ANDROID_PLATFORM / $ANDROID_ABI" \
-              "Variant: $variant" \
-              "NDEBUG: $([[ "$variant" == release ]] && echo disabled || echo enabled)" \
-              "NDK: $NDK_VERSION" \
-              "CMake: $CMAKE_VERSION" \
-              > "dist/$package_name/BUILD-METADATA.txt"
-            (
-              cd dist
-              tar -czf "$archive_name" "$package_name"
-              sha256sum "$archive_name" > "${archive_name}.sha256"
-            )
-          done
+          package_name="NextDumper-android-${ANDROID_ABI}-release-${version}"
+          archive_name="${package_name}.tar.gz"
+          mkdir -p "dist/$package_name"
+          install -m 0755 "$RELEASE_BUILD_DIR/NextDumper" "dist/$package_name/NextDumper"
+          "$strip_tool" --strip-unneeded "dist/$package_name/NextDumper"
+          printf '%s\n' \
+            'Project: NextDumper' \
+            "Commit: $GITHUB_SHA" \
+            "Ref: $GITHUB_REF" \
+            "Target: Android $ANDROID_PLATFORM / $ANDROID_ABI" \
+            'Variant: release' \
+            'NDEBUG: disabled' \
+            "NDK: $NDK_VERSION" \
+            "CMake: $CMAKE_VERSION" \
+            > "dist/$package_name/BUILD-METADATA.txt"
+          (
+            cd dist
+            tar -czf "$archive_name" "$package_name"
+            sha256sum "$archive_name" > "${archive_name}.sha256"
+          )
 
-      - name: Upload release variants
+      - name: Upload release
         uses: actions/upload-artifact@v4
         with:
           name: android-release-${{ matrix.abi }}-${{ github.sha }}

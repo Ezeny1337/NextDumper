@@ -92,12 +92,6 @@ configure_file(cmake/RemoteSdkTemplates.hpp.in
 
 option(NEXTDUMPER_ENABLE_THINLTO "Enable ThinLTO for native targets" ON)
 option(NEXTDUMPER_OPTIMIZE_FOR_SIZE "Use Clang size optimization for native targets" OFF)
-option(NEXTDUMPER_FORCE_NDEBUG "Define NDEBUG for all native targets" OFF)
-option(NEXTDUMPER_DISABLE_NDEBUG "Undefine NDEBUG for all native targets" OFF)
-
-if(NEXTDUMPER_FORCE_NDEBUG AND NEXTDUMPER_DISABLE_NDEBUG)
-    message(FATAL_ERROR "NEXTDUMPER_FORCE_NDEBUG and NEXTDUMPER_DISABLE_NDEBUG are mutually exclusive")
-endif()
 
 file(GLOB UE_ANALYSIS_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/analysis/*.cpp"
@@ -189,17 +183,13 @@ foreach(target IN LISTS NEXTDUMPER_NATIVE_TARGETS)
     target_compile_options(${target} PRIVATE
         -ffunction-sections
         -fdata-sections
+        -UNDEBUG
     )
     if(NEXTDUMPER_ENABLE_THINLTO)
         target_compile_options(${target} PRIVATE -flto=thin)
     endif()
     if(NEXTDUMPER_OPTIMIZE_FOR_SIZE)
         target_compile_options(${target} PRIVATE -Oz)
-    endif()
-    if(NEXTDUMPER_FORCE_NDEBUG)
-        target_compile_options(${target} PRIVATE -DNDEBUG)
-    elseif(NEXTDUMPER_DISABLE_NDEBUG)
-        target_compile_options(${target} PRIVATE -UNDEBUG)
     endif()
 endforeach()
 

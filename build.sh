@@ -17,10 +17,9 @@ Usage: ./build.sh [options]
 Build modes:
   verify       Fast compile verification build (default, Release + O3)
   release      Size-optimized release build without NDEBUG, stripped
-  debug        Debug-symbol build with NDEBUG enabled
 
 Options:
-  --mode MODE          verify, release, or debug
+  --mode MODE          verify or release
   --abi ABI            arm64-v8a or armeabi-v7a (default: arm64-v8a)
   --build-dir DIR      Override the CMake build directory
   --jobs N             Parallel build jobs (default: nproc or 1)
@@ -35,7 +34,7 @@ Environment:
 Examples:
   ./build.sh
   ./build.sh --mode release --abi arm64-v8a
-  ./build.sh --mode debug --abi armeabi-v7a --jobs 4
+  ./build.sh --mode release --abi armeabi-v7a --jobs 4
 EOF
 }
 
@@ -81,8 +80,8 @@ while (($# > 0)); do
 done
 
 case "$MODE" in
-    verify|release|debug) ;;
-    *) die "unsupported mode '$MODE'; use verify, release, or debug" ;;
+    verify|release) ;;
+    *) die "unsupported mode '$MODE'; use verify or release" ;;
 esac
 
 case "$ABI" in
@@ -139,13 +138,6 @@ case "$MODE" in
         CONFIGURE_ARGS+=(
             -DCMAKE_BUILD_TYPE=Release
             -DNEXTDUMPER_OPTIMIZE_FOR_SIZE=ON
-            -DNEXTDUMPER_DISABLE_NDEBUG=ON
-        )
-        ;;
-    debug)
-        CONFIGURE_ARGS+=(
-            -DCMAKE_BUILD_TYPE=Debug
-            -DNEXTDUMPER_FORCE_NDEBUG=ON
         )
         ;;
 esac

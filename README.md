@@ -88,9 +88,8 @@ The reflection layout is detected at runtime, not selected by version number. Th
 
 | Mode | Configuration | Use |
 | --- | --- | --- |
-| `verify` (default) | Release, ThinLTO, no size optimization, assertions disabled | Quick compile check |
+| `verify` (default) | Release, ThinLTO, no size optimization, assertions enabled | Quick compile check |
 | `release` | Release, `-Oz`, ThinLTO, assertions enabled, stripped | Small distributable binary |
-| `debug` | Debug symbols, ThinLTO, assertions disabled | Debuggable binary |
 
 Set `ANDROID_NDK_HOME` (or `ANDROID_NDK_ROOT`) to NDK r26 or newer. If only `ANDROID_SDK_ROOT` is set, the script selects the newest installed NDK.
 
@@ -103,8 +102,8 @@ chmod +x build.sh
 # Size-optimized release build.
 ./build.sh --mode release --abi arm64-v8a
 
-# Debug build for armeabi-v7a.
-./build.sh --mode debug --abi armeabi-v7a --jobs 4
+# Size-optimized release build for armeabi-v7a.
+./build.sh --mode release --abi armeabi-v7a --jobs 4
 ```
 
 The binary is written to `build/android-<abi>-<mode>/NextDumper`. Use `--build-dir` to change the build directory, or `--no-strip` to keep symbols in the release build.
