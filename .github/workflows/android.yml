@@ -5,7 +5,7 @@ on:
     branches:
       - "**"
     tags:
-      - "v*"
+      - "**"
   pull_request:
   workflow_dispatch:
 
@@ -96,6 +96,14 @@ jobs:
         run: |
           set -euo pipefail
           cmake --build "$BUILD_DIR" --parallel "$(nproc)"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-build-${{ matrix.abi }}-${{ github.sha }}
+          path: ${{ env.BUILD_DIR }}/NextDumper
+          if-no-files-found: error
+          retention-days: 14
 
   release-build:
     name: Build release ${{ matrix.abi }}
