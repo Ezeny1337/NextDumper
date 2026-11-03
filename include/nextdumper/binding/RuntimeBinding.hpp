@@ -186,6 +186,7 @@ namespace nextdumper::binding
 
         static DecodePlan Identity();
         [[nodiscard]] bool IsValid() const;
+        [[nodiscard]] bool IsIdentity() const;
     };
 
     struct CommonObjectInfo
@@ -212,6 +213,7 @@ namespace nextdumper::binding
         ObjectContainerLayout objects;
         NameContainerLayout names;
         DecodePlan decode = DecodePlan::Identity();
+        bool identityDecoding = true;
         std::optional<UObjectLayoutHint> uobject;
         std::shared_ptr<const ue::EngineSchema> objectSchema;
         BindingReport report;

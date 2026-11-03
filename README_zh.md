@@ -1,6 +1,6 @@
 # NextDumper
 
-**面向 Android 的 Unreal Engine 运行时 SDK 生成工具。**
+**面向 Android 的 Unreal Engine 运行时 SDK 生成器与外部内存访问库。**
 
 [![Language](https://img.shields.io/badge/language-C%2B%2B20-00599C?logo=cplusplus&logoColor=white)](https://isocpp.org/)
 [![Build system](https://img.shields.io/badge/build-CMake%20%7C%20Ninja-064F8C?logo=cmake&logoColor=white)](https://cmake.org/)
@@ -10,9 +10,9 @@
 
 [English](README.md)
 
-NextDumper 会附加到正在运行的 Android 游戏进程，定位 Unreal Engine 的对象数组和名称池，确定该构建使用的反射布局，并生成 C++ SDK 与 JSON 元数据，供 IDA、Ghidra 或自研工具分析使用。
+NextDumper 会附加到正在运行的 Android 游戏进程，定位 Unreal Engine 的对象数组和名称池，确定该构建使用的反射布局，并生成只读外部内存访问层、用于 IDA/Ghidra/自研工具分析的 C++ SDK 与 JSON 元数据。
 
-它不依赖某一套写死的偏移：所有候选根和布局都从目标进程实时读取，通过引擎不变量校验后才会使用。生成的文件描述的是目标内存布局，不能作为运行库链接进游戏。
+它不依赖某一套写死的偏移：所有候选根和布局都从目标进程实时读取，通过引擎不变量校验后才会使用。生成的声明描述目标内存；读取器仅在外部消费者进程中运行。
 
 > **ABI 必须与目标进程一致。** 64 位游戏使用 `arm64-v8a` 版本，32 位 ARM 游戏使用 `armeabi-v7a` 版本。
 
@@ -160,12 +160,15 @@ NextDumper -o <输出目录> -p <包名> [options]
 ├── reflection/             # 每个 UE 包一个分片
 │   ├── Engine.json
 │   └── <Package>.json
-└── sdk/                    # C++ 声明
+└── sdk/                    # C++ 声明和外部读取器
     ├── SDK.hpp             # 聚合头，只需包含此文件
     ├── BasicTypes.hpp
     ├── EngineLayouts.hpp
+    ├── Remote.hpp
+    ├── Binding.hpp
     ├── Enums.hpp
     ├── Types.hpp           # 包含全部 Types/<Package>.hpp
+    ├── Metadata.hpp
     ├── Types/              # 每个 UE 包一个分片
     │   └── <Package>.hpp
     ├── Functions.hpp       # 包含全部 Functions/<Package>.hpp
@@ -184,9 +187,12 @@ NextDumper -o <输出目录> -p <包名> [options]
 
 | 文件 | 内容 |
 | --- | --- |
-| `sdk/SDK.hpp` | 聚合头文件；包含此文件即可引入其余 SDK 声明。 |
+| `sdk/SDK.hpp` | 聚合头文件；包含布局声明和外部内存读取器。 |
 | `sdk/BasicTypes.hpp` | SDK 基础类型、定长不透明存储包装和容器布局描述。 |
 | `sdk/EngineLayouts.hpp` | 所选 Unreal 反射结构的运行时偏移；`-1` 表示该偏移未解析。 |
+| `sdk/Remote.hpp` | 读取回调契约、远程对象和值视图，以及有界字段和容器读取器。 |
+| `sdk/Binding.hpp` | 已验证的目标布局和可重定位模块根信息。 |
+| `sdk/Metadata.hpp` | 运行时读取器使用的类型与枚举描述。 |
 | `sdk/Types.hpp` | 包含全部 `sdk/Types/<Package>.hpp`；用于一次性引入所有反射类与结构体。 |
 | `sdk/Types/<Package>.hpp` | 单个 Unreal 包反射出的类和结构体，包含名称、继承关系和字段偏移。 |
 | `sdk/Enums.hpp` | 反射出的枚举声明和值。 |
@@ -198,7 +204,7 @@ NextDumper -o <输出目录> -p <包名> [options]
 | `diagnostics.json` | 反射与生成诊断、计数，以及对共用采样数据的引用。 |
 | `runtime.json` | 模块信息、绑定布局、反射偏移和常用类地址。 |
 
-头文件使用 `NextDumper` 命名空间，描述的是目标内存。反射得到的大小、偏移、掩码和引用关系是判断依据；C++ 声明只是该布局的描述，不等同于 native ABI 定义。
+头文件使用 `NextDumper` 命名空间。读取器通过调用方提供的回调读取目标进程地址；生成的 C++ 声明仍然只是布局描述，不是 native ABI 对象。回调契约、支持的数据类型和会话生命周期见[外部 SDK 使用文档](docs/external-sdk.md)。
 
 时间戳在会话启动时按本地时间生成。反射或 SDK 生成不完整时，目录名会带 `.partial`，例如 `com_example_game.partial_20261021163000/`。
 
@@ -319,12 +325,12 @@ JSON 文件保留完整字段元数据。日志保留诊断摘要、有限的样
 
 ## 已知限制
 
-- SDK 不是可调用的运行库，不保证 native C++ ABI 兼容；请使用反射元数据，而不是 `sizeof` 和 `offsetof`。
+- 生成的读取器在外部消费者进程中只读目标地址，不会调用游戏函数。不保证 native C++ ABI 兼容；请使用反射偏移，而不是 `sizeof` 和 `offsetof`。
 - 执行入口 RVA 不一定对应原始 C++ 业务逻辑。
 - 运行时读取不是原子快照。`scan_complete` 只表示对象槽位枚举完成，不代表所有字段和值都已采集。
 - 可选的运行时采样有数量限制，并会独立校验。读不到值不会降低 SDK 完整性，也不代表具备 native ABI 兼容性。
 - FText 采样描述的是外层存储，不是任意显示字符串。
-- `SparseDelegates` 检查需要已定位的存储根和兼容的布局候选；部分容器元素布局和远程对象解析可能仍未验证。
+- `SparseDelegates` 检查需要已定位的存储根和兼容的布局候选；部分容器元素布局和远程对象解析可能仍未验证。平台专用布局尚未验证的冻结 MemoryImage 元素暂不支持读取。
 - 引擎覆盖范围不保证适配所有分支或自定义构建，请用诊断报告定位失败阶段。
 - 输出中没有二进制哈希；用于 IDA 分析的文件必须与采集时的镜像一致。
 

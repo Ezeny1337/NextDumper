@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "nextdumper/binding/RuntimeBinding.hpp"
 #include "nextdumper/module/ModuleImage.hpp"
 #include "nextdumper/ue/EngineSchema.hpp"
 #include "GenerationReport.hpp"
@@ -31,12 +32,16 @@ namespace nextdumper::generation::detail
             std::vector<const FunctionIR *> functions;
         };
 
-        SdkEmitter(const module::ModuleImage &module, const ue::EngineSchema &schema, const ReflectionIR &reflection)
-            : module_(module), schema_(schema), reflection_(reflection) {}
+        SdkEmitter(const module::ModuleImage &module, const ue::EngineSchema &schema,
+                   const ::nextdumper::binding::RuntimeBinding &binding, const ReflectionIR &reflection)
+            : module_(module), schema_(schema), binding_(binding), reflection_(reflection) {}
 
         void SdkEntry(std::ostream &stream) const;
         void BasicTypes(std::ostream &stream, const CppSymbols &symbols) const;
         void EngineLayouts(std::ostream &stream) const;
+        void Remote(std::ostream &stream) const;
+        void Binding(std::ostream &stream) const;
+        void Metadata(std::ostream &stream, const CppSymbols &symbols) const;
         // 头文件索引：只列出各分片的 include，供整体引用
         void TypesEntry(std::ostream &stream, const std::vector<std::string> &shardNames) const;
         void FunctionsEntry(std::ostream &stream, const std::vector<std::string> &shardNames) const;
@@ -84,6 +89,7 @@ namespace nextdumper::generation::detail
 
         const module::ModuleImage &module_;
         const ue::EngineSchema &schema_;
+        const ::nextdumper::binding::RuntimeBinding &binding_;
         const ReflectionIR &reflection_;
     };
 } // namespace nextdumper::generation::detail

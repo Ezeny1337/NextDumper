@@ -723,7 +723,8 @@ namespace nextdumper::app
                 }
                 else
                 {
-                    GuardProfileDecoders(decode, profileExecutionState);
+                    if (!decode.IsIdentity())
+                        GuardProfileDecoders(decode, profileExecutionState);
                     diagnosis_.profileStatus = "active";
                     diagnosis_.stage = "profile-root-location";
                     BeginMemoryStage("profile-root-location");

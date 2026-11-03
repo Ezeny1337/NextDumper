@@ -202,6 +202,14 @@ namespace nextdumper::ir
         int32_t elementStride = -1;
     };
 
+    struct BoolLayoutIR
+    {
+        uint8_t fieldSize = 0;
+        uint8_t byteOffset = 0;
+        uint8_t byteMask = 0;
+        uint8_t fieldMask = 0;
+    };
+
     struct StorageLayoutIR
     {
         std::string id;
@@ -226,6 +234,7 @@ namespace nextdumper::ir
         bool detailsResolved = false;
         // 即使子项的语义尚未解析，其外围的元数据/标识依然可以是有效的
         bool nodeDetailsResolved = false;
+        BoolLayoutIR boolean;
         std::shared_ptr<const ContainerStorageIR> containerStorage;
         // 共识字段描述不代表指针目标或外部绑定已经解析。
         std::shared_ptr<const StorageLayoutIR> valueStorage;
@@ -233,14 +242,6 @@ namespace nextdumper::ir
         std::shared_ptr<TypeReferenceIR> inner;
         std::shared_ptr<TypeReferenceIR> key;
         std::shared_ptr<TypeReferenceIR> value;
-    };
-
-    struct BoolLayoutIR
-    {
-        uint8_t fieldSize = 0;
-        uint8_t byteOffset = 0;
-        uint8_t byteMask = 0;
-        uint8_t fieldMask = 0;
     };
 
     struct PropertyDetailDiagnostic

@@ -87,7 +87,7 @@ namespace nextdumper::generation
         }
         const std::string packageStem = SanitizeIdentifier(packageName_, "Package");
         detail::GenerationReport report;
-        const detail::SdkEmitter emitter(context_.Module(), context_.Schema(), reflection_);
+        const detail::SdkEmitter emitter(context_.Module(), context_.Schema(), context_.Binding(), reflection_);
         report.diagnostic = diagnostic_;
         const CppSymbols symbols = BuildCppSymbols(reflection_);
         TemporaryDirectory transaction;
@@ -182,10 +182,16 @@ namespace nextdumper::generation
                        { emitter.BasicTypes(stream, symbols); }) ||
             !writeFile("sdk/EngineLayouts.hpp", [&](std::ostream &stream)
                        { emitter.EngineLayouts(stream); }) ||
+            !writeFile("sdk/Remote.hpp", [&](std::ostream &stream)
+                       { emitter.Remote(stream); }) ||
+            !writeFile("sdk/Binding.hpp", [&](std::ostream &stream)
+                       { emitter.Binding(stream); }) ||
             !writeFile("sdk/Enums.hpp", [&](std::ostream &stream)
                        { emitter.Enums(stream, symbols); }) ||
             !writeFile("sdk/Types.hpp", [&](std::ostream &stream)
                        { emitter.TypesEntry(stream, typeNames); }) ||
+            !writeFile("sdk/Metadata.hpp", [&](std::ostream &stream)
+                       { emitter.Metadata(stream, symbols); }) ||
             !writeFile("sdk/Functions.hpp", [&](std::ostream &stream)
                        { emitter.FunctionsEntry(stream, functionNames); }) ||
             !writeFile("reflection.json", [&](std::ostream &stream)

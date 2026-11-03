@@ -1,6 +1,7 @@
 #include "SdkEmitter.hpp"
 
 #include <algorithm>
+#include <functional>
 #include <initializer_list>
 #include <ostream>
 #include <string_view>
@@ -11,6 +12,7 @@
 #include "nextdumper/generation/JsonExport.hpp"
 #include "nextdumper/ir/ReflectionLayout.hpp"
 #include "nextdumper/ue/ContainerLayout.hpp"
+#include "nextdumper/RemoteSdkTemplate.hpp"
 
 namespace nextdumper::generation::detail
 {
@@ -20,22 +22,238 @@ namespace nextdumper::generation::detail
     using ir::PropertyKind;
     using ::nextdumper::common::Hex;
 
+    namespace
+    {
+        std::string CppString(std::string_view value)
+        {
+            std::string result = "\"";
+            for (const unsigned char byte : value)
+            {
+                switch (byte)
+                {
+                case '\\':
+                    result += "\\\\";
+                    break;
+                case '"':
+                    result += "\\\"";
+                    break;
+                case '\n':
+                    result += "\\n";
+                    break;
+                case '\r':
+                    result += "\\r";
+                    break;
+                case '\t':
+                    result += "\\t";
+                    break;
+                default:
+                    if (byte < 0x20 || byte >= 0x7f)
+                    {
+                        result += "\\";
+                        result += static_cast<char>('0' + ((byte >> 6) & 7));
+                        result += static_cast<char>('0' + ((byte >> 3) & 7));
+                        result += static_cast<char>('0' + (byte & 7));
+                    }
+                    else
+                        result += static_cast<char>(byte);
+                }
+            }
+            result += '"';
+            return result;
+        }
+
+        const char *PropertyKindCppName(PropertyKind kind)
+        {
+            switch (kind)
+            {
+            case PropertyKind::Unknown:
+                return "Unknown";
+            case PropertyKind::Bool:
+                return "Bool";
+            case PropertyKind::Byte:
+                return "Byte";
+            case PropertyKind::Int8:
+                return "Int8";
+            case PropertyKind::Int16:
+                return "Int16";
+            case PropertyKind::Int32:
+                return "Int32";
+            case PropertyKind::Int64:
+                return "Int64";
+            case PropertyKind::UInt16:
+                return "UInt16";
+            case PropertyKind::UInt32:
+                return "UInt32";
+            case PropertyKind::UInt64:
+                return "UInt64";
+            case PropertyKind::Float:
+                return "Float";
+            case PropertyKind::Double:
+                return "Double";
+            case PropertyKind::Name:
+                return "Name";
+            case PropertyKind::String:
+                return "String";
+            case PropertyKind::Text:
+                return "Text";
+            case PropertyKind::Object:
+                return "Object";
+            case PropertyKind::SoftObject:
+                return "SoftObject";
+            case PropertyKind::WeakObject:
+                return "WeakObject";
+            case PropertyKind::LazyObject:
+                return "LazyObject";
+            case PropertyKind::Class:
+                return "Class";
+            case PropertyKind::SoftClass:
+                return "SoftClass";
+            case PropertyKind::Struct:
+                return "Struct";
+            case PropertyKind::Enum:
+                return "Enum";
+            case PropertyKind::Array:
+                return "Array";
+            case PropertyKind::Set:
+                return "Set";
+            case PropertyKind::Map:
+                return "Map";
+            case PropertyKind::Interface:
+                return "Interface";
+            case PropertyKind::Delegate:
+                return "Delegate";
+            case PropertyKind::MulticastDelegate:
+                return "MulticastDelegate";
+            case PropertyKind::FieldPath:
+                return "FieldPath";
+            case PropertyKind::Optional:
+                return "Optional";
+            }
+            return "Unknown";
+        }
+
+        const char *DelegateStorageCppName(ir::DelegateStorageKind kind)
+        {
+            switch (kind)
+            {
+            case ir::DelegateStorageKind::Unicast:
+                return "Unicast";
+            case ir::DelegateStorageKind::InlineMulticast:
+                return "InlineMulticast";
+            case ir::DelegateStorageKind::SparseMulticast:
+                return "SparseMulticast";
+            case ir::DelegateStorageKind::UnknownMulticast:
+                return "UnknownMulticast";
+            case ir::DelegateStorageKind::None:
+                return "None";
+            }
+            return "None";
+        }
+
+        const char *ContainerAllocatorCppName(ir::ContainerAllocatorKind kind)
+        {
+            switch (kind)
+            {
+            case ir::ContainerAllocatorKind::Heap:
+                return "Heap";
+            case ir::ContainerAllocatorKind::MemoryImage:
+                return "MemoryImage";
+            case ir::ContainerAllocatorKind::Unknown:
+                return "Unknown";
+            }
+            return "Unknown";
+        }
+
+        bool ValidBoolLayout(const ir::BoolLayoutIR &layout, int32_t elementSize)
+        {
+            return layout.fieldSize == elementSize &&
+                   (layout.fieldSize == 1 || layout.fieldSize == 2 ||
+                    layout.fieldSize == 4 || layout.fieldSize == 8) &&
+                   layout.byteOffset < layout.fieldSize && layout.byteMask != 0 &&
+                   (layout.byteMask & (layout.byteMask - 1)) == 0 &&
+                   (layout.fieldMask == layout.byteMask ||
+                    (layout.fieldMask == 0xFF && layout.byteMask == 1 && layout.byteOffset == 0));
+        }
+    } // namespace
+
     void SdkEmitter::SdkEntry(std::ostream &stream) const
     {
         stream << "#pragma once\n\n";
-        stream << "// Umbrella header for the generated SDK. Include this file only.\n";
-        stream << "// These are target-memory descriptions, not native ABI declarations.\n";
         stream << "#include \"BasicTypes.hpp\"\n";
         stream << "#include \"EngineLayouts.hpp\"\n";
+        stream << "#include \"Remote.hpp\"\n";
+        stream << "#include \"Binding.hpp\"\n";
         stream << "#include \"Enums.hpp\"\n";
         stream << "#include \"Types.hpp\"\n";
+        stream << "#include \"Metadata.hpp\"\n";
         stream << "#include \"Functions.hpp\"\n";
+    }
+
+    void SdkEmitter::Remote(std::ostream &stream) const
+    {
+        stream.write(kRemoteSdkTemplate, static_cast<std::streamsize>(sizeof(kRemoteSdkTemplate) - 1));
+    }
+
+    void SdkEmitter::Binding(std::ostream &stream) const
+    {
+        const auto &object = binding_.objects;
+        const auto &name = binding_.names;
+        const bool hasObjectRva = module_.Contains(binding_.objectRoot.address);
+        const bool hasNameRva = module_.Contains(binding_.nameRoot.address);
+        const uintptr_t objectRva = hasObjectRva ? binding_.objectRoot.address - module_.base : 0;
+        const uintptr_t nameRva = hasNameRva ? binding_.nameRoot.address - module_.base : 0;
+        const auto maybeOffset = [](const std::optional<int32_t> &value)
+        { return value.value_or(-1); };
+
+        stream << "#pragma once\n#include \"Remote.hpp\"\n\nnamespace NextDumper\n{\n";
+        stream << "inline constexpr RuntimeBindingDescriptor TargetBinding{\n";
+        stream << "    " << CppString(module_.name) << ",\n";
+        stream << "    " << static_cast<unsigned int>(module_.pointerWidth) << ",\n";
+        stream << "    " << (hasObjectRva ? "true" : "false") << ",\n";
+        stream << "    " << (hasNameRva ? "true" : "false") << ",\n";
+        stream << "    " << (!binding_.identityDecoding ? "true" : "false") << ",\n";
+        stream << "    static_cast<TargetAddress>(" << Hex(objectRva) << "),\n";
+        stream << "    static_cast<TargetAddress>(" << Hex(nameRva) << "),\n";
+        stream << "    ObjectArrayDescriptor{\n";
+        stream << "        ObjectArrayKind::" << (object.kind == ::nextdumper::binding::ObjectContainerKind::Chunked ? "Chunked" : "Fixed") << ", "
+               << object.objectsOffset << ", " << object.numElementsOffset << ", " << object.maxElementsOffset << ", "
+               << object.numChunksOffset << ", " << object.maxChunksOffset << ", " << object.elementsPerChunk << ", "
+               << object.itemObjectOffset << ", " << object.itemStride << ", " << object.itemIndexOffset << ", "
+               << (object.packedPointers ? "true" : "false") << "},\n";
+        stream << "    NameStoreDescriptor{\n";
+        stream << "        NameStoreKind::" << (name.kind == ::nextdumper::binding::NameContainerKind::Pool ? "Pool" : "Array") << ", ";
+        if (name.kind == ::nextdumper::binding::NameContainerKind::Array)
+        {
+            stream << name.array.chunksOffset << ", " << name.array.numElementsOffset << ", "
+                   << name.array.elementsPerChunk << ", "
+                   << name.array.entryIndexOffset << ", " << name.array.entryStringOffset
+                   << ", -1, -1, -1, -1, -1, -1, -1, -1, 0, false},\n";
+        }
+        else
+        {
+            stream << "-1, -1, -1, -1, -1, "
+                   << name.pool.blocksOffset << ", "
+                   << maybeOffset(name.pool.currentBlockFromBlocks) << ", "
+                   << maybeOffset(name.pool.byteCursorFromBlocks) << ", "
+                   << name.pool.blocksBit << ", " << name.pool.entryStride << ", "
+                   << name.pool.entryHeaderOffset << ", " << name.pool.entryStringOffset << ", "
+                   << name.pool.entryLengthShift << ", " << name.pool.entryWideMask << ", "
+                   << (name.pool.HasPublicationBoundary() ? "true" : "false") << "},\n";
+        }
+        stream << "    FNameDescriptor{" << schema_.fname.size << ", " << schema_.fname.comparisonIndex << ", "
+               << schema_.fname.number << ", " << schema_.fname.displayIndex << ", "
+               << (schema_.fname.numberLayout == ::nextdumper::ue::FNameNumberLayout::Inline ? "true" : "false")
+               << "},\n";
+        stream << "    ObjectDescriptor{" << schema_.uobject.classPointer << ", " << schema_.uobject.flags << ", "
+               << schema_.uobject.internalIndex << ", " << schema_.uobject.name << ", " << schema_.uobject.outer << "},\n";
+        stream << "    " << (schema_.features.casePreservingName ? "true" : "false") << "};\n";
+        stream << "}\n";
     }
 
     void SdkEmitter::BasicTypes(std::ostream &stream, const CppSymbols &symbols) const
     {
         const auto &identity = schema_.identity;
-        stream << "#pragma once\n#include <cstddef>\n#include <cstdint>\n#include <optional>\n#include <type_traits>\n#include <utility>\n\n";
+        stream << "#pragma once\n#include <cstddef>\n#include <cstdint>\n#include <limits>\n#include <optional>\n#include <type_traits>\n#include <utility>\n\n";
         stream << "// For inspection and analysis; reflected offsets and sizes are authoritative.\n";
         stream << "// Declarations are not target-ABI-verified native objects. Do not use sizeof/offsetof as reflection data.\n";
         stream << "// Canonical profile: " << identity.canonicalProfileId << " (" << identity.canonicalVersionRange << ").\n";
@@ -59,7 +277,7 @@ namespace nextdumper::generation::detail
         stream << "using TargetAddress = " << targetPointer << ";\n";
         stream << "// Pointer-width words preserve semantic pointees; encoded object handles are not decoded.\n";
         stream << "template <typename SemanticType> struct TTargetPointer { using Pointee = SemanticType; TargetAddress Bits; };\n";
-        stream << "// String families share this header shape; their character encoding is distinct and not decoded here.\n";
+        stream << "// The remote reader decodes string data using the reflected string family.\n";
         stream << "struct FString { TargetAddress Data; std::int32_t Num; std::int32_t Max; };\n";
         stream << "struct FUtf8String { TargetAddress Data; std::int32_t Num; std::int32_t Max; };\n";
         stream << "struct FAnsiString { TargetAddress Data; std::int32_t Num; std::int32_t Max; };\n";
@@ -118,17 +336,33 @@ namespace nextdumper::generation::detail
         stream << "// Opaque container storage; StorageSize comes from the reflected field.\n";
         stream << "template <typename ElementType, std::size_t StorageSize, typename Layout = FUnknownContainerLayout> struct TSet : TOpaqueStorage<StorageSize> { using Element = ElementType; using StorageLayout = Layout; };\n";
         stream << "template <typename KeyType, typename ValueType, std::size_t StorageSize, typename Layout = FUnknownContainerLayout> struct TMap : TOpaqueStorage<StorageSize> { using Key = KeyType; using Value = ValueType; using StorageLayout = Layout; };\n";
+        stream << "template <typename To, typename From> constexpr bool InRange(From value)\n{\n";
+        stream << "    static_assert(std::is_integral_v<To> && std::is_integral_v<From>);\n";
+        stream << "    if constexpr (std::is_same_v<To, bool>) return value == 0 || value == 1;\n";
+        stream << "    else if constexpr (std::is_same_v<From, bool>) return true;\n";
+        stream << "    else if constexpr (std::is_signed_v<To> == std::is_signed_v<From>)\n";
+        stream << "    {\n        if constexpr (sizeof(To) >= sizeof(From)) return true;\n";
+        stream << "        return value >= static_cast<From>(std::numeric_limits<To>::min()) && value <= static_cast<From>(std::numeric_limits<To>::max());\n    }\n";
+        stream << "    else if constexpr (std::is_signed_v<From>)\n";
+        stream << "    {\n        if (value < 0) return false;\n";
+        stream << "        using UnsignedFrom = std::make_unsigned_t<From>;\n";
+        stream << "        if constexpr (sizeof(To) >= sizeof(UnsignedFrom)) return true;\n";
+        stream << "        return static_cast<UnsignedFrom>(value) <= std::numeric_limits<To>::max();\n    }\n";
+        stream << "    else\n";
+        stream << "    {\n        using UnsignedTo = std::make_unsigned_t<To>;\n";
+        stream << "        if constexpr (sizeof(To) > sizeof(From)) return true;\n";
+        stream << "        return value <= static_cast<From>(static_cast<UnsignedTo>(std::numeric_limits<To>::max()));\n    }\n}\n";
         stream << "// Field storage and the enum definition may have different widths. Conversions check representability.\n";
         stream << "template <typename EnumType, typename StorageType> struct TEnumStorage\n{\n";
         stream << "    static_assert(std::is_enum_v<EnumType> && std::is_integral_v<StorageType>);\n";
         stream << "    StorageType Value;\n";
         stream << "    std::optional<EnumType> TryGet() const\n    {\n";
         stream << "        using Underlying = std::underlying_type_t<EnumType>;\n";
-        stream << "        if (!std::in_range<Underlying>(Value)) return std::nullopt;\n";
+        stream << "        if (!InRange<Underlying>(Value)) return std::nullopt;\n";
         stream << "        return static_cast<EnumType>(static_cast<Underlying>(Value));\n    }\n";
         stream << "    bool TrySet(EnumType value)\n    {\n";
         stream << "        const auto raw = static_cast<std::underlying_type_t<EnumType>>(value);\n";
-        stream << "        if (!std::in_range<StorageType>(raw)) return false;\n";
+        stream << "        if (!InRange<StorageType>(raw)) return false;\n";
         stream << "        Value = static_cast<StorageType>(raw);\n        return true;\n    }\n};\n";
         stream << "}\n";
     }
@@ -704,7 +938,7 @@ namespace nextdumper::generation::detail
         auto packageFile = [](const std::string &package)
         { return SanitizeIdentifier(package, "Package"); };
 
-        stream << "#pragma once\n#include <cstddef>\n#include <cstdint>\n#include \"../BasicTypes.hpp\"\n#include \"../Enums.hpp\"\n";
+        stream << "#pragma once\n#include <cstddef>\n#include <cstdint>\n#include \"../BasicTypes.hpp\"\n#include \"../Remote.hpp\"\n#include \"../Enums.hpp\"\n";
         for (const std::string &dependency : dependencies.inheritancePackages)
             stream << "#include \"" << packageFile(dependency) << ".hpp\"\n";
         stream << "\n";
@@ -765,6 +999,129 @@ namespace nextdumper::generation::detail
             stream << "    static constexpr std::size_t ReflectedSize = " << type.size << ";\n";
             FieldGenerationPlan plan = BuildFieldGenerationPlan(type, nullptr, type.properties, type.size, symbols);
             WriteFields(stream, type, nullptr, plan, symbols, report);
+        }
+        const auto fullNameForAddress = [&](uintptr_t address) -> std::string_view
+        {
+            for (const auto &type : reflection_.types)
+                if (type.address == address)
+                    return type.fullName;
+            for (const auto &enumeration : reflection_.enums)
+                if (enumeration.address == address)
+                    return enumeration.fullName;
+            return {};
+        };
+        const auto emitBool = [&](const ir::BoolLayoutIR &layout, int32_t elementSize)
+        {
+            stream << "BoolLayoutDescriptor{" << static_cast<unsigned int>(layout.fieldSize) << ", "
+                   << static_cast<unsigned int>(layout.byteOffset) << ", "
+                   << static_cast<unsigned int>(layout.byteMask) << ", "
+                   << static_cast<unsigned int>(layout.fieldMask) << ", "
+                   << (ValidBoolLayout(layout, elementSize) ? "true" : "false") << "}";
+        };
+        for (const size_t typeIndex : shard.types)
+        {
+            const TypeIR &type = reflection_.types[typeIndex];
+            const std::string &typeName = symbols.types.at(type.address).name;
+            std::vector<std::string> fieldTypeNames;
+            fieldTypeNames.reserve(type.properties.size());
+            std::function<std::string(const ir::TypeReferenceIR &, const std::string &)> emitValue;
+            emitValue = [&](const ir::TypeReferenceIR &reference, const std::string &identifier)
+            {
+                std::string inner, key, value;
+                if (reference.inner)
+                    inner = emitValue(*reference.inner, identifier + "_Inner");
+                if (reference.key)
+                    key = emitValue(*reference.key, identifier + "_Key");
+                if (reference.value)
+                    value = emitValue(*reference.value, identifier + "_Value");
+                std::string storageMembers = "nullptr";
+                size_t storageMemberCount = 0;
+                if (reference.valueStorage && !reference.valueStorage->offsets.empty())
+                {
+                    storageMembers = identifier + "_StorageMembers";
+                    storageMemberCount = reference.valueStorage->offsets.size();
+                    stream << "inline constexpr StorageMemberDescriptor " << storageMembers << "[] = {\n";
+                    for (const auto &[member, offset] : reference.valueStorage->offsets)
+                        stream << "    {" << CppString(member) << ", " << offset << "},\n";
+                    stream << "};\n";
+                }
+                const auto &container = reference.containerStorage;
+                stream << "inline constexpr ValueDescriptor " << identifier << "{\n";
+                stream << "    PropertyKind::" << PropertyKindCppName(reference.kind) << ", "
+                       << CppString(reference.reflectedClass) << ", "
+                       << CppString(fullNameForAddress(reference.referencedObject)) << ", "
+                       << CppString(fullNameForAddress(reference.secondaryObject)) << ", "
+                       << reference.elementSize << ", " << reference.arrayDim << ", "
+                       << (reference.detailsResolved ? "true" : "false") << ", "
+                       << (reference.nodeDetailsResolved ? "true" : "false") << ", "
+                       << "DelegateStorageKind::" << DelegateStorageCppName(reference.delegateStorage) << ", ";
+                emitBool(reference.boolean, reference.elementSize);
+                stream << ",\n    ";
+                if (container)
+                {
+                    stream << "ContainerDescriptor{ContainerAllocatorKind::"
+                           << ContainerAllocatorCppName(container->allocator) << ", "
+                           << CppString(container->allocatorStatus) << ", "
+                           << CppString(container->layoutStatus) << ", "
+                           << CppString(container->headerStatus) << ", "
+                           << CppString(container->layoutId) << ", "
+                           << container->valueOffset << ", " << container->hashNextOffset << ", "
+                           << container->hashIndexOffset << ", " << container->setElementSize << ", "
+                           << container->elementAlignment << ", " << container->elementStride << "}";
+                }
+                else
+                    stream << "ContainerDescriptor{}";
+                stream << ",\n    ";
+                if (reference.valueStorage)
+                {
+                    stream << "ValueStorageDescriptor{"
+                           << CppString(reference.valueStorage->id) << ", "
+                           << CppString(reference.valueStorage->sourceRange) << ", "
+                           << reference.valueStorage->size << ", " << reference.valueStorage->alignment << ", "
+                           << storageMembers << ", " << storageMemberCount << "}";
+                }
+                else
+                    stream << "ValueStorageDescriptor{}";
+                stream << ",\n    " << (inner.empty() ? "nullptr" : "&" + inner) << ", "
+                       << (key.empty() ? "nullptr" : "&" + key) << ", "
+                       << (value.empty() ? "nullptr" : "&" + value) << "};\n";
+                return identifier;
+            };
+
+            for (size_t fieldIndex = 0; fieldIndex < type.properties.size(); ++fieldIndex)
+            {
+                const std::string identifier = typeName + "_Field_" + std::to_string(fieldIndex) + "_Value";
+                fieldTypeNames.push_back(emitValue(type.properties[fieldIndex].type, identifier));
+            }
+            if (!type.properties.empty())
+            {
+                stream << "inline constexpr FieldDescriptor " << typeName << "_RemoteFields[] = {\n";
+                for (size_t fieldIndex = 0; fieldIndex < type.properties.size(); ++fieldIndex)
+                {
+                    const auto &property = type.properties[fieldIndex];
+                    int64_t end = 0;
+                    const bool validBounds = ir::IsValidPropertyBounds(property, type.size, end);
+                    stream << "    {" << CppString(property.name) << ", " << property.offset << ", "
+                           << property.elementSize << ", " << property.arrayDim << ", " << Hex(property.flags) << ", "
+                           << (validBounds ? "true" : "false") << ", "
+                           << (ir::IsVirtualProperty(property) ? "true" : "false") << ", "
+                           << CppString(ParseStatusName(property.status)) << ", ";
+                    emitBool(property.boolean, property.elementSize);
+                    stream << ", &" << fieldTypeNames[fieldIndex] << "},\n";
+                }
+                stream << "};\n";
+            }
+            const auto super = std::find_if(reflection_.types.begin(), reflection_.types.end(),
+                                            [&](const TypeIR &candidate)
+                                            { return candidate.address == type.superAddress; });
+            const std::string_view superName = super == reflection_.types.end() ? std::string_view{} : super->fullName;
+            stream << "inline constexpr TypeDescriptor " << typeName << "_RemoteType{"
+                   << CppString(type.fullName) << ", " << CppString(type.name) << ", "
+                   << CppString(superName) << ", TypeKind::"
+                   << (type.kind == ir::TypeKind::Class ? "Class" : "Struct") << ", "
+                   << type.size << ", " << CppString(ParseStatusName(type.status)) << ", "
+                   << (type.properties.empty() ? "nullptr" : typeName + "_RemoteFields") << ", "
+                   << type.properties.size() << "};\n\n";
         }
         stream << "}\n";
     }
@@ -835,7 +1192,7 @@ namespace nextdumper::generation::detail
 
     void SdkEmitter::Enums(std::ostream &stream, const CppSymbols &symbols) const
     {
-        stream << "#pragma once\n#include <cstdint>\n\nnamespace NextDumper\n{\n";
+        stream << "#pragma once\n#include <cstdint>\n#include \"Remote.hpp\"\n\nnamespace NextDumper\n{\n";
         if (reflection_.enums.empty())
             stream << "// No UEnum metadata was resolved in this dump.\n";
         for (const EnumIR &enumeration : reflection_.enums)
@@ -856,8 +1213,71 @@ namespace nextdumper::generation::detail
                     stream << enumeration.values[index].value;
                 stream << ",\n";
             }
-            stream << "};\n\n";
+            stream << "};\n";
+            if (info.values.empty())
+            {
+                stream << "inline constexpr EnumValueDescriptor " << info.name << "_RemoteValues[1]{};\n";
+            }
+            else
+            {
+                stream << "inline constexpr EnumValueDescriptor " << info.name << "_RemoteValues[] = {\n";
+                for (size_t index = 0; index < info.values.size(); ++index)
+                {
+                    stream << "    {" << CppString(info.values[index]) << ", ";
+                    if (enumeration.values[index].value == INT64_MIN)
+                        stream << "(-9223372036854775807LL - 1)";
+                    else
+                        stream << enumeration.values[index].value << "LL";
+                    stream << "},\n";
+                }
+                stream << "};\n";
+            }
+            const bool storageUnsigned = info.underlyingType == EnumUnderlyingType::UInt8 ||
+                                         info.underlyingType == EnumUnderlyingType::UInt16 ||
+                                         info.underlyingType == EnumUnderlyingType::UInt32 ||
+                                         info.underlyingType == EnumUnderlyingType::UInt64;
+            stream << "inline constexpr EnumDescriptor " << info.name << "_RemoteType{"
+                   << CppString(enumeration.fullName) << ", " << CppString(enumeration.name) << ", "
+                   << info.size << ", " << (storageUnsigned ? "true" : "false") << ", "
+                   << info.name << "_RemoteValues, " << info.values.size() << "};\n\n";
         }
+        stream << "}\n";
+    }
+
+    void SdkEmitter::Metadata(std::ostream &stream, const CppSymbols &symbols) const
+    {
+        stream << "#pragma once\n#include \"Binding.hpp\"\n#include \"Enums.hpp\"\n#include \"Types.hpp\"\n\n";
+        stream << "namespace NextDumper\n{\n";
+        if (reflection_.types.empty())
+        {
+            stream << "inline constexpr TypeDescriptor AllTypes[1]{};\n";
+            stream << "inline constexpr std::size_t AllTypeCount = 0;\n";
+        }
+        else
+        {
+            stream << "inline constexpr TypeDescriptor AllTypes[] = {\n";
+            for (const auto &type : reflection_.types)
+                stream << "    " << symbols.types.at(type.address).name << "_RemoteType,\n";
+            stream << "};\n";
+            stream << "inline constexpr std::size_t AllTypeCount = sizeof(AllTypes) / sizeof(AllTypes[0]);\n";
+        }
+        if (reflection_.enums.empty())
+        {
+            stream << "inline constexpr EnumDescriptor AllEnums[1]{};\n";
+            stream << "inline constexpr std::size_t AllEnumCount = 0;\n";
+        }
+        else
+        {
+            stream << "inline constexpr EnumDescriptor AllEnums[] = {\n";
+            for (const auto &enumeration : reflection_.enums)
+                stream << "    " << symbols.enums.at(enumeration.address).name << "_RemoteType,\n";
+            stream << "};\n";
+            stream << "inline constexpr std::size_t AllEnumCount = sizeof(AllEnums) / sizeof(AllEnums[0]);\n";
+        }
+        stream << "inline RemoteRuntime CreateRuntime(MemoryReader memory, TargetAddress moduleBase,\n";
+        stream << "                                  RuntimeOptions options = {})\n{\n";
+        stream << "    return RemoteRuntime(memory, moduleBase, TargetBinding, AllTypes, AllTypeCount,\n";
+        stream << "                         AllEnums, AllEnumCount, options);\n}\n";
         stream << "}\n";
     }
 

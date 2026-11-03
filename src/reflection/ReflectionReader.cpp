@@ -299,6 +299,8 @@ namespace nextdumper::reflection
         result.elementSize = metadata.elementSize;
         result.referencedObject = metadata.referencedAddress;
         result.secondaryObject = metadata.secondaryAddress;
+        result.boolean = {metadata.boolLayout[0], metadata.boolLayout[1],
+                          metadata.boolLayout[2], metadata.boolLayout[3]};
         const auto containerStorage = [&]
         {
             if (result.kind != PropertyKind::Array && result.kind != PropertyKind::Map && result.kind != PropertyKind::Set)

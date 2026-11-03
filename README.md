@@ -1,6 +1,6 @@
 # NextDumper
 
-**Runtime Unreal Engine SDK generation for Android.**
+**Runtime Unreal Engine SDK generation and external-memory access for Android.**
 
 [![Language](https://img.shields.io/badge/language-C%2B%2B20-00599C?logo=cplusplus&logoColor=white)](https://isocpp.org/)
 [![Build system](https://img.shields.io/badge/build-CMake%20%7C%20Ninja-064F8C?logo=cmake&logoColor=white)](https://cmake.org/)
@@ -10,9 +10,9 @@
 
 [中文文档](README_zh.md)
 
-NextDumper attaches to a running Android game, locates Unreal Engine's object array and name pool, resolves the reflection layout used by that build, and writes a C++ SDK with JSON metadata for analysis in IDA, Ghidra, or custom tools.
+NextDumper attaches to a running Android game, locates Unreal Engine's object array and name pool, resolves the reflection layout used by that build, and writes a C++ SDK with a read-only external-memory access layer and JSON metadata for analysis in IDA, Ghidra, or custom tools.
 
-It does not depend on a fixed offset table for one engine build. Candidate roots and layouts are read from the live process and checked against engine invariants before they are used. The generated files describe target memory; they are not a library you link into the game.
+It does not depend on a fixed offset table for one engine build. Candidate roots and layouts are read from the live process and checked against engine invariants before they are used. The generated declarations describe target memory; the reader runs only in the external consumer.
 
 > **Match the target ABI.** Use the `arm64-v8a` build for 64-bit games and the `armeabi-v7a` build for 32-bit ARM games.
 
@@ -160,12 +160,15 @@ A successful run creates a directory named after the package and the session tim
 ├── reflection/             # one shard per UE package
 │   ├── Engine.json
 │   └── <Package>.json
-└── sdk/                    # C++ declarations
+└── sdk/                    # C++ declarations and external reader
     ├── SDK.hpp             # umbrella header, include this one
     ├── BasicTypes.hpp
     ├── EngineLayouts.hpp
+    ├── Remote.hpp
+    ├── Binding.hpp
     ├── Enums.hpp
     ├── Types.hpp           # includes every Types/<Package>.hpp
+    ├── Metadata.hpp
     ├── Types/              # one shard per UE package
     │   └── <Package>.hpp
     ├── Functions.hpp       # includes every Functions/<Package>.hpp
@@ -184,9 +187,12 @@ The output directory also receives the session log and diagnosis report:
 
 | File | Contents |
 | --- | --- |
-| `sdk/SDK.hpp` | Umbrella header. Include this file to pull in the rest of the SDK. |
+| `sdk/SDK.hpp` | Umbrella header for layout declarations and the external-memory reader. |
 | `sdk/BasicTypes.hpp` | SDK primitives, fixed-size opaque storage wrappers, and container layout descriptions. |
 | `sdk/EngineLayouts.hpp` | Runtime offsets for selected Unreal reflection structures. `-1` means the offset was not resolved for this target. |
+| `sdk/Remote.hpp` | Read callback contract, remote object and value views, and bounded field/container readers. |
+| `sdk/Binding.hpp` | Validated target layout and relocatable module-root metadata. |
+| `sdk/Metadata.hpp` | Type and enum descriptors used by the runtime reader. |
 | `sdk/Types.hpp` | Includes every `sdk/Types/<Package>.hpp`. Use it to pull in all reflected classes and structs. |
 | `sdk/Types/<Package>.hpp` | Reflected classes and structs of one Unreal package, with names, inheritance, and field offsets. |
 | `sdk/Enums.hpp` | Reflected enum declarations and values. |
@@ -198,7 +204,7 @@ The output directory also receives the session log and diagnosis report:
 | `diagnostics.json` | Reflection and generation diagnostics, counters, and references to shared sample data. |
 | `runtime.json` | Module information, binding layout, reflection offsets, and common class addresses. |
 
-The headers use the `NextDumper` namespace and describe target memory. Reflected sizes, offsets, masks, and references are authoritative; the C++ declarations are descriptions of that layout, not native ABI-compatible definitions.
+The headers use the `NextDumper` namespace. The reader consumes target addresses through a caller-supplied read callback; generated C++ declarations remain layout descriptions and are not native ABI-compatible objects. See [the external SDK guide](docs/external-sdk.md) for the callback contract, supported value families, and session lifecycle.
 
 The timestamp is taken from local time when the session starts. If reflection or SDK generation is partial, the directory name contains `.partial`, for example `com_example_game.partial_20261021163000/`.
 
@@ -319,12 +325,12 @@ JSON files keep complete field metadata. Logs keep diagnostic summaries, limited
 
 ## Limitations
 
-- The SDK is not a callable runtime library. Native C++ ABI compatibility is not guaranteed; use the reflected metadata instead of `sizeof` and `offsetof`.
+- The generated reader is read-only and operates from the external consumer process. It does not call game functions. Native C++ ABI compatibility is not guaranteed; use reflected offsets instead of `sizeof` and `offsetof`.
 - Execution entry RVAs do not necessarily point to the original C++ business logic.
 - Runtime reads are not an atomic snapshot. `scan_complete` only covers object-slot enumeration, not every field or value.
 - Optional runtime samples are limited and independently checked. Missing values do not reduce SDK completeness and do not imply native ABI compatibility.
 - FText samples describe the outer storage, not arbitrary display strings.
-- Sparse delegate inspection needs a located storage root and compatible layout candidates; some container element layouts and remote object resolution may remain unverified.
+- Sparse delegate inspection needs a located storage root and compatible layout candidates; some container element layouts and remote object resolution may remain unverified. Frozen MemoryImage elements remain unsupported when their platform-specific layout has not been validated.
 - Engine coverage does not guarantee compatibility with every fork or custom build. Use the diagnosis report to identify the failing stage.
 - The output does not include a binary hash. Verify that the file used for IDA analysis matches the captured image.
 

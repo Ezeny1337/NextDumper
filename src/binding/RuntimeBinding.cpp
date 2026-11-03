@@ -2,6 +2,15 @@
 
 namespace nextdumper::binding
 {
+    namespace
+    {
+        uintptr_t IdentityPointer(uintptr_t value, uintptr_t) { return value; }
+        int32_t IdentityInt32(int32_t value, uintptr_t) { return value; }
+        uint32_t IdentityUInt32(uint32_t value, uintptr_t) { return value; }
+        uint16_t IdentityUInt16(uint16_t value, uintptr_t) { return value; }
+        bool IdentityNameText(std::span<uint8_t>, uintptr_t, bool) { return true; }
+    }
+
     bool ObjectContainerLayout::IsValid() const
     {
         if (packedPointers && sizeof(uintptr_t) != 8)
@@ -60,39 +69,57 @@ namespace nextdumper::binding
     DecodePlan DecodePlan::Identity()
     {
         DecodePlan result;
-        result.objectStorage = [](uintptr_t value, uintptr_t)
-        { return value; };
-        result.objectChunk = [](uintptr_t value, uintptr_t)
-        { return value; };
-        result.objectPointer = [](uintptr_t value, uintptr_t)
-        { return value; };
-        result.objectClass = [](uintptr_t value, uintptr_t)
-        { return value; };
-        result.objectOuter = [](uintptr_t value, uintptr_t)
-        { return value; };
-        result.nameBlocks = [](uintptr_t value, uintptr_t)
-        { return value; };
-        result.nameChunks = [](uintptr_t value, uintptr_t)
-        { return value; };
-        result.nameEntry = [](uintptr_t value, uintptr_t)
-        { return value; };
-        result.objectCount = [](int32_t value, uintptr_t)
-        { return value; };
-        result.objectFlags = [](int32_t value, uintptr_t)
-        { return value; };
-        result.objectIndex = [](int32_t value, uintptr_t)
-        { return value; };
-        result.nameIndex = [](int32_t value, uintptr_t)
-        { return value; };
-        result.nameNumber = [](uint32_t value, uintptr_t)
-        { return value; };
-        result.nameEntryIndex = [](uint32_t value, uintptr_t)
-        { return value; };
-        result.nameHeader = [](uint16_t value, uintptr_t)
-        { return value; };
-        result.nameText = [](std::span<uint8_t>, uintptr_t, bool)
-        { return true; };
+        result.objectStorage = IdentityPointer;
+        result.objectChunk = IdentityPointer;
+        result.objectPointer = IdentityPointer;
+        result.objectClass = IdentityPointer;
+        result.objectOuter = IdentityPointer;
+        result.nameBlocks = IdentityPointer;
+        result.nameChunks = IdentityPointer;
+        result.nameEntry = IdentityPointer;
+        result.objectCount = IdentityInt32;
+        result.objectFlags = IdentityInt32;
+        result.objectIndex = IdentityInt32;
+        result.nameIndex = IdentityInt32;
+        result.nameNumber = IdentityUInt32;
+        result.nameEntryIndex = IdentityUInt32;
+        result.nameHeader = IdentityUInt16;
+        result.nameText = IdentityNameText;
         return result;
+    }
+
+    bool DecodePlan::IsIdentity() const
+    {
+        const auto pointerIsIdentity = [](const PointerDecoder &decoder)
+        {
+            const auto function = decoder.target<uintptr_t (*)(uintptr_t, uintptr_t)>();
+            return function && *function == IdentityPointer;
+        };
+        const auto int32IsIdentity = [](const Int32Decoder &decoder)
+        {
+            const auto function = decoder.target<int32_t (*)(int32_t, uintptr_t)>();
+            return function && *function == IdentityInt32;
+        };
+        const auto uint32IsIdentity = [](const UInt32Decoder &decoder)
+        {
+            const auto function = decoder.target<uint32_t (*)(uint32_t, uintptr_t)>();
+            return function && *function == IdentityUInt32;
+        };
+        const auto uint16IsIdentity = [](const UInt16Decoder &decoder)
+        {
+            const auto function = decoder.target<uint16_t (*)(uint16_t, uintptr_t)>();
+            return function && *function == IdentityUInt16;
+        };
+        const auto nameTextFunction = nameText.target<bool (*)(std::span<uint8_t>, uintptr_t, bool)>();
+        return pointerIsIdentity(objectStorage) && pointerIsIdentity(objectChunk) &&
+               pointerIsIdentity(objectPointer) && pointerIsIdentity(objectClass) &&
+               pointerIsIdentity(objectOuter) && pointerIsIdentity(nameBlocks) &&
+               pointerIsIdentity(nameChunks) && pointerIsIdentity(nameEntry) &&
+               int32IsIdentity(objectCount) && int32IsIdentity(objectFlags) &&
+               int32IsIdentity(objectIndex) && int32IsIdentity(nameIndex) &&
+               uint32IsIdentity(nameNumber) && uint32IsIdentity(nameEntryIndex) &&
+               uint16IsIdentity(nameHeader) && nameTextFunction &&
+               *nameTextFunction == IdentityNameText;
     }
 
     bool DecodePlan::IsValid() const

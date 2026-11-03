@@ -47,6 +47,13 @@ else()
 endif()
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated/nextdumper")
 configure_file(cmake/BuildInfo.hpp.in generated/nextdumper/BuildInfo.hpp @ONLY)
+set(NEXTDUMPER_REMOTE_SDK_TEMPLATE_PATH
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/generation/templates/Remote.hpp")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${NEXTDUMPER_REMOTE_SDK_TEMPLATE_PATH}")
+file(READ "${NEXTDUMPER_REMOTE_SDK_TEMPLATE_PATH}" NEXTDUMPER_REMOTE_SDK_TEMPLATE)
+configure_file(cmake/RemoteSdkTemplate.hpp.in
+    generated/nextdumper/RemoteSdkTemplate.hpp @ONLY)
 
 option(NEXTDUMPER_ENABLE_THINLTO "Enable ThinLTO for native targets" ON)
 option(NEXTDUMPER_OPTIMIZE_FOR_SIZE "Use Clang size optimization for native targets" OFF)

@@ -347,6 +347,7 @@ namespace nextdumper::binding
                         binding.objects = objectLayout;
                         binding.names = nameLayout;
                         binding.decode = decode;
+                        binding.identityDecoding = decode.IsIdentity();
                         binding.uobject = hints.uobject && appliesTo(hints.uobjectRoot, objectRoot.address)
                                               ? hints.uobject
                                               : std::nullopt;
