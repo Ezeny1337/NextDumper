@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <iosfwd>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -40,6 +41,8 @@ namespace nextdumper::generation::detail
         void BasicTypes(std::ostream &stream, const CppSymbols &symbols) const;
         void EngineLayouts(std::ostream &stream) const;
         void Remote(std::ostream &stream) const;
+        [[nodiscard]] static const std::vector<std::string_view> &RemoteFiles();
+        void RemoteFile(std::string_view path, std::ostream &stream) const;
         void Binding(std::ostream &stream) const;
         void Metadata(std::ostream &stream, const CppSymbols &symbols) const;
         // 头文件索引：只列出各分片的 include，供整体引用

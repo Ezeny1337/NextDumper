@@ -165,6 +165,12 @@ A successful run creates a directory named after the package and the session tim
     ├── BasicTypes.hpp
     ├── EngineLayouts.hpp
     ├── Remote.hpp
+    ├── Remote/
+    │   ├── Memory.hpp
+    │   ├── Metadata.hpp
+    │   ├── Views.hpp
+    │   ├── Runtime.hpp
+    │   └── detail/          # inline runtime implementation headers
     ├── Binding.hpp
     ├── Enums.hpp
     ├── Types.hpp           # includes every Types/<Package>.hpp
@@ -190,7 +196,8 @@ The output directory also receives the session log and diagnosis report:
 | `sdk/SDK.hpp` | Umbrella header for layout declarations and the external-memory reader. |
 | `sdk/BasicTypes.hpp` | SDK primitives, fixed-size opaque storage wrappers, and container layout descriptions. |
 | `sdk/EngineLayouts.hpp` | Runtime offsets for selected Unreal reflection structures. `-1` means the offset was not resolved for this target. |
-| `sdk/Remote.hpp` | Read callback contract, remote object and value views, and bounded field/container readers. |
+| `sdk/Remote.hpp` | Stable umbrella header for the external-memory reader. |
+| `sdk/Remote/` | C++ headers grouped by read transport, reflection metadata, remote views, and runtime behavior. |
 | `sdk/Binding.hpp` | Validated target layout and relocatable module-root metadata. |
 | `sdk/Metadata.hpp` | Type and enum descriptors used by the runtime reader. |
 | `sdk/Types.hpp` | Includes every `sdk/Types/<Package>.hpp`. Use it to pull in all reflected classes and structs. |

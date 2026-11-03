@@ -1,8 +1,0 @@
-#pragma once
-
-namespace nextdumper::generation::detail
-{
-    inline constexpr char kRemoteSdkTemplate[] = R"NDSDK(
-@NEXTDUMPER_REMOTE_SDK_TEMPLATE@
-)NDSDK";
-}

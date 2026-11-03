@@ -1,0 +1,41 @@
+#pragma once
+
+namespace nextdumper::generation::detail
+{
+    inline constexpr char kRemoteSdkTemplate[] = R"NDSDK(
+@NEXTDUMPER_REMOTE_SDK_TEMPLATE@
+)NDSDK";
+    inline constexpr char kRemoteMemoryTemplate[] = R"NDSDK(
+@NEXTDUMPER_REMOTE_MEMORY_TEMPLATE@
+)NDSDK";
+    inline constexpr char kRemoteMetadataTemplate[] = R"NDSDK(
+@NEXTDUMPER_REMOTE_METADATA_TEMPLATE@
+)NDSDK";
+    inline constexpr char kRemoteViewsTemplate[] = R"NDSDK(
+@NEXTDUMPER_REMOTE_VIEWS_TEMPLATE@
+)NDSDK";
+    inline constexpr char kRemoteRuntimeTemplate[] = R"NDSDK(
+@NEXTDUMPER_REMOTE_RUNTIME_TEMPLATE@
+)NDSDK";
+    inline constexpr char kRemoteRuntimeCoreTemplate[] = R"NDSDK(
+@NEXTDUMPER_REMOTE_RUNTIME_CORE_TEMPLATE@
+)NDSDK";
+    inline constexpr char kRemoteRuntimeObjectsTemplate[] = R"NDSDK(
+@NEXTDUMPER_REMOTE_RUNTIME_OBJECTS_TEMPLATE@
+)NDSDK";
+    inline constexpr char kRemoteRuntimeNamesTemplate[] = R"NDSDK(
+@NEXTDUMPER_REMOTE_RUNTIME_NAMES_TEMPLATE@
+)NDSDK";
+    inline constexpr char kRemoteRuntimeFieldsTemplate[] = R"NDSDK(
+@NEXTDUMPER_REMOTE_RUNTIME_FIELDS_TEMPLATE@
+)NDSDK";
+    inline constexpr char kRemoteRuntimeScalarsTemplate[] = R"NDSDK(
+@NEXTDUMPER_REMOTE_RUNTIME_SCALARS_TEMPLATE@
+)NDSDK";
+    inline constexpr char kRemoteRuntimeReferencesTemplate[] = R"NDSDK(
+@NEXTDUMPER_REMOTE_RUNTIME_REFERENCES_TEMPLATE@
+)NDSDK";
+    inline constexpr char kRemoteRuntimeContainersTemplate[] = R"NDSDK(
+@NEXTDUMPER_REMOTE_RUNTIME_CONTAINERS_TEMPLATE@
+)NDSDK";
+}

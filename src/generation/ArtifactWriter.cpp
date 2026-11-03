@@ -197,6 +197,13 @@ namespace nextdumper::generation
             !writeFile("reflection.json", [&](std::ostream &stream)
                        { detail::ReflectionIndexJson(stream, context_, reflection_, partition, report); }))
             return result;
+        for (const std::string_view path : detail::SdkEmitter::RemoteFiles())
+        {
+            const std::string relativeName = "sdk/" + std::string(path);
+            if (!writeFile(relativeName, [&](std::ostream &stream)
+                           { emitter.RemoteFile(path, stream); }))
+                return result;
+        }
         for (const auto &shard : typeShards)
         {
             const auto dependencies = emitter.DependenciesOf(shard, symbols);

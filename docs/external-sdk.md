@@ -8,10 +8,14 @@
 
 `sdk/SDK.hpp` 是聚合入口，包含以下运行时文件：
 
-- `Remote.hpp` 定义读取回调、运行时状态、对象查询、字段值和容器视图。
+- `Remote.hpp` 是外部读取器的聚合头文件。
+- `Remote/Memory.hpp` 定义读取回调和读取状态；`Remote/Metadata.hpp` 定义绑定与反射描述；`Remote/Views.hpp` 定义对象和值视图；`Remote/Runtime.hpp` 声明读取运行时。
+- `Remote/detail/` 按核心、对象、名称、字段、标量、引用和容器职责保存运行时的 inline 实现。
 - `Binding.hpp` 保存已验证的 UE 根地址 RVA、对象/名称容器布局和 UObject/FName 布局。
 - `Metadata.hpp` 汇总生成的类型与枚举描述。
 - `Types/*.hpp` 提供类型字段描述及原有布局声明。
+
+使用 `SDK.hpp` 或 `Remote.hpp` 时无需直接包含 `Remote/` 下的文件。发布 SDK 时需保留整个生成目录，使相对包含路径保持有效。
 
 读取回调返回实际传输字节数；失败返回负值。`MemoryReader` 按 `maxTransferBytes` 拆分较大请求，并且只有完整读取才会交付成功结果。传输长度、地址溢出和容器计数均在 SDK 内检查。
 

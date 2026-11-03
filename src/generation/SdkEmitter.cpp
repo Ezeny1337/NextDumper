@@ -12,7 +12,7 @@
 #include "nextdumper/generation/JsonExport.hpp"
 #include "nextdumper/ir/ReflectionLayout.hpp"
 #include "nextdumper/ue/ContainerLayout.hpp"
-#include "nextdumper/RemoteSdkTemplate.hpp"
+#include "nextdumper/RemoteSdkTemplates.hpp"
 
 namespace nextdumper::generation::detail
 {
@@ -192,6 +192,87 @@ namespace nextdumper::generation::detail
     void SdkEmitter::Remote(std::ostream &stream) const
     {
         stream.write(kRemoteSdkTemplate, static_cast<std::streamsize>(sizeof(kRemoteSdkTemplate) - 1));
+    }
+
+    const std::vector<std::string_view> &SdkEmitter::RemoteFiles()
+    {
+        static const std::vector<std::string_view> files{
+            "Remote/Memory.hpp",
+            "Remote/Metadata.hpp",
+            "Remote/Views.hpp",
+            "Remote/Runtime.hpp",
+            "Remote/detail/RuntimeCore.hpp",
+            "Remote/detail/RuntimeObjects.hpp",
+            "Remote/detail/RuntimeNames.hpp",
+            "Remote/detail/RuntimeFields.hpp",
+            "Remote/detail/RuntimeScalars.hpp",
+            "Remote/detail/RuntimeReferences.hpp",
+            "Remote/detail/RuntimeContainers.hpp",
+        };
+        return files;
+    }
+
+    void SdkEmitter::RemoteFile(std::string_view path, std::ostream &stream) const
+    {
+        const char *source = nullptr;
+        size_t size = 0;
+        if (path == "Remote/Memory.hpp")
+        {
+            source = kRemoteMemoryTemplate;
+            size = sizeof(kRemoteMemoryTemplate) - 1;
+        }
+        else if (path == "Remote/Metadata.hpp")
+        {
+            source = kRemoteMetadataTemplate;
+            size = sizeof(kRemoteMetadataTemplate) - 1;
+        }
+        else if (path == "Remote/Views.hpp")
+        {
+            source = kRemoteViewsTemplate;
+            size = sizeof(kRemoteViewsTemplate) - 1;
+        }
+        else if (path == "Remote/Runtime.hpp")
+        {
+            source = kRemoteRuntimeTemplate;
+            size = sizeof(kRemoteRuntimeTemplate) - 1;
+        }
+        else if (path == "Remote/detail/RuntimeCore.hpp")
+        {
+            source = kRemoteRuntimeCoreTemplate;
+            size = sizeof(kRemoteRuntimeCoreTemplate) - 1;
+        }
+        else if (path == "Remote/detail/RuntimeObjects.hpp")
+        {
+            source = kRemoteRuntimeObjectsTemplate;
+            size = sizeof(kRemoteRuntimeObjectsTemplate) - 1;
+        }
+        else if (path == "Remote/detail/RuntimeNames.hpp")
+        {
+            source = kRemoteRuntimeNamesTemplate;
+            size = sizeof(kRemoteRuntimeNamesTemplate) - 1;
+        }
+        else if (path == "Remote/detail/RuntimeFields.hpp")
+        {
+            source = kRemoteRuntimeFieldsTemplate;
+            size = sizeof(kRemoteRuntimeFieldsTemplate) - 1;
+        }
+        else if (path == "Remote/detail/RuntimeScalars.hpp")
+        {
+            source = kRemoteRuntimeScalarsTemplate;
+            size = sizeof(kRemoteRuntimeScalarsTemplate) - 1;
+        }
+        else if (path == "Remote/detail/RuntimeReferences.hpp")
+        {
+            source = kRemoteRuntimeReferencesTemplate;
+            size = sizeof(kRemoteRuntimeReferencesTemplate) - 1;
+        }
+        else if (path == "Remote/detail/RuntimeContainers.hpp")
+        {
+            source = kRemoteRuntimeContainersTemplate;
+            size = sizeof(kRemoteRuntimeContainersTemplate) - 1;
+        }
+        if (source)
+            stream.write(source, static_cast<std::streamsize>(size));
     }
 
     void SdkEmitter::Binding(std::ostream &stream) const

@@ -165,6 +165,12 @@ NextDumper -o <输出目录> -p <包名> [options]
     ├── BasicTypes.hpp
     ├── EngineLayouts.hpp
     ├── Remote.hpp
+    ├── Remote/
+    │   ├── Memory.hpp
+    │   ├── Metadata.hpp
+    │   ├── Views.hpp
+    │   ├── Runtime.hpp
+    │   └── detail/          # 运行时 inline 实现头文件
     ├── Binding.hpp
     ├── Enums.hpp
     ├── Types.hpp           # 包含全部 Types/<Package>.hpp
@@ -190,7 +196,8 @@ NextDumper -o <输出目录> -p <包名> [options]
 | `sdk/SDK.hpp` | 聚合头文件；包含布局声明和外部内存读取器。 |
 | `sdk/BasicTypes.hpp` | SDK 基础类型、定长不透明存储包装和容器布局描述。 |
 | `sdk/EngineLayouts.hpp` | 所选 Unreal 反射结构的运行时偏移；`-1` 表示该偏移未解析。 |
-| `sdk/Remote.hpp` | 读取回调契约、远程对象和值视图，以及有界字段和容器读取器。 |
+| `sdk/Remote.hpp` | 外部内存读取器的稳定聚合头文件。 |
+| `sdk/Remote/` | 按读取接口、反射元数据、远程视图和运行时行为组织的 C++ 头文件。 |
 | `sdk/Binding.hpp` | 已验证的目标布局和可重定位模块根信息。 |
 | `sdk/Metadata.hpp` | 运行时读取器使用的类型与枚举描述。 |
 | `sdk/Types.hpp` | 包含全部 `sdk/Types/<Package>.hpp`；用于一次性引入所有反射类与结构体。 |
