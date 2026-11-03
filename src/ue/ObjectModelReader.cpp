@@ -481,14 +481,6 @@ namespace nextdumper::ue
             if (result.objectPropertyClassNull && result.detailReadCount != 0)
                 result.objectPropertyClassPointerAddress = result.detailReads[result.detailReadCount - 1].address;
         }
-        else if (InheritsObjectPropertyBase(base.classAddress).value_or(false))
-        {
-            result.inferredObjectPropertyBase = true;
-            result.objectClassMetadataAddress = readOptionalPointer("object_class", schema_.propertySubtypes.objectClass, true);
-            result.objectPropertyClassNull = result.objectClassMetadataAddress == 0;
-            if (result.objectPropertyClassNull && result.detailReadCount != 0)
-                result.objectPropertyClassPointerAddress = result.detailReads[result.detailReadCount - 1].address;
-        }
         else if (propertyClassName == "InterfaceProperty")
             result.referencedAddress = readOptionalPointer("interface_class", schema_.propertySubtypes.interfaceClass);
         else if (propertyClassName == "ClassProperty" || propertyClassName == "ClassPtrProperty" || propertyClassName == "SoftClassProperty")
@@ -547,6 +539,14 @@ namespace nextdumper::ue
             result.referencedAddress = readOptionalPointer("delegate_signature", schema_.propertySubtypes.delegateSignature);
         else if (propertyClassName == "FieldPathProperty")
             result.referencedAddress = readOptionalPointer("field_path_class", schema_.propertySubtypes.fieldPathClass);
+        else if (InheritsObjectPropertyBase(base.classAddress).value_or(false))
+        {
+            result.inferredObjectPropertyBase = true;
+            result.objectClassMetadataAddress = readOptionalPointer("object_class", schema_.propertySubtypes.objectClass, true);
+            result.objectPropertyClassNull = result.objectClassMetadataAddress == 0;
+            if (result.objectPropertyClassNull && result.detailReadCount != 0)
+                result.objectPropertyClassPointerAddress = result.detailReads[result.detailReadCount - 1].address;
+        }
 
         return result;
     }
