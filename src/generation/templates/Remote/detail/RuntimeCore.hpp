@@ -265,18 +265,41 @@ namespace NextDumper
 
     [[nodiscard]] inline bool RemoteRuntime::IsTypeA(const TypeDescriptor *type, std::string_view baseName) const
     {
+        bool chainComplete = false;
+        return IsTypeA(type, baseName, chainComplete);
+    }
+
+    [[nodiscard]] inline bool RemoteRuntime::IsTypeA(const TypeDescriptor *type, std::string_view baseName,
+                                                     bool &chainComplete) const
+    {
         std::array<std::string_view, 64> visited{};
         std::size_t count = 0;
+        chainComplete = type != nullptr;
         for (; type && count < visited.size(); ++count)
         {
             if (type->fullName == baseName)
                 return true;
             if (std::find(visited.begin(), visited.begin() + static_cast<std::ptrdiff_t>(count),
                           std::string_view(type->fullName)) != visited.begin() + static_cast<std::ptrdiff_t>(count))
+            {
+                chainComplete = false;
                 return false;
+            }
             visited[count] = type->fullName;
+            if (!type->superFullName || type->superFullName[0] == '\0')
+            {
+                chainComplete = type->superTypeResolved;
+                return false;
+            }
             type = FindType(type->superFullName);
+            if (!type)
+            {
+                chainComplete = false;
+                return false;
+            }
         }
+        if (count == visited.size())
+            chainComplete = false;
         return false;
     }
 

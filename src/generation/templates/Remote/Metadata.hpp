@@ -147,6 +147,7 @@ namespace NextDumper
         const char *status = "";
         const FieldDescriptor *fields = nullptr;
         std::size_t fieldCount = 0;
+        bool superTypeResolved = false;
     };
 
     struct EnumValueDescriptor

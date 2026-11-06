@@ -42,6 +42,19 @@ namespace NextDumper
         return ReadValueAt(address, *array.element);
     }
 
+    template <typename T>
+    [[nodiscard]] inline ReadStatus RemoteRuntime::ReadElement(const RemoteStaticArrayView &array, std::int32_t index,
+                                                               T &out)
+    {
+        return ConvertResult(ReadElement(array, index), out);
+    }
+
+    template <typename T>
+    [[nodiscard]] inline ReadStatus RemoteRuntime::ReadElement(const RemoteArrayView &array, std::int32_t index, T &out)
+    {
+        return ConvertResult(ReadElement(array, index), out);
+    }
+
     [[nodiscard]] inline ValueReadResult RemoteRuntime::ReadSparseSlot(const RemoteSparseContainerView &container,
                                                                        std::int32_t slot)
     {
@@ -86,6 +99,25 @@ namespace NextDumper
         if (entry.runtime != this || !entry.value || !entry.valueAddress)
             return {ReadStatus::InvalidArgument, {}};
         return ReadValueAt(entry.valueAddress, *entry.value);
+    }
+
+    template <typename T>
+    [[nodiscard]] inline ReadStatus RemoteRuntime::ReadSparseSlot(const RemoteSparseContainerView &container,
+                                                                  std::int32_t slot, T &out)
+    {
+        return ConvertResult(ReadSparseSlot(container, slot), out);
+    }
+
+    template <typename T>
+    [[nodiscard]] inline ReadStatus RemoteRuntime::ReadMapKey(const RemoteMapEntryView &entry, T &out)
+    {
+        return ConvertResult(ReadMapKey(entry), out);
+    }
+
+    template <typename T>
+    [[nodiscard]] inline ReadStatus RemoteRuntime::ReadMapValue(const RemoteMapEntryView &entry, T &out)
+    {
+        return ConvertResult(ReadMapValue(entry), out);
     }
 
     [[nodiscard]] inline ValueReadResult RemoteRuntime::OpenArray(TargetAddress address, const ValueDescriptor &type)

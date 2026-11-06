@@ -7,6 +7,7 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 #include <variant>
 
 namespace NextDumper
@@ -43,20 +44,14 @@ namespace NextDumper
     [[nodiscard]] inline ReadStatus RemoteRuntime::ReadField(const RemoteObjectView &object, std::string_view name,
                                                              T &out)
     {
-        const auto result = ReadField(object, name);
-        if (!result.Ok())
-            return result.status;
-        return Convert(result.value, out) ? ReadStatus::Ok : ReadStatus::Unsupported;
+        return ConvertResult(ReadField(object, name), out);
     }
 
     template <typename T>
     [[nodiscard]] inline ReadStatus RemoteRuntime::ReadField(const RemoteStructView &structure, std::string_view name,
                                                              T &out)
     {
-        const auto result = ReadField(structure, name);
-        if (!result.Ok())
-            return result.status;
-        return Convert(result.value, out) ? ReadStatus::Ok : ReadStatus::Unsupported;
+        return ConvertResult(ReadField(structure, name), out);
     }
 
     [[nodiscard]] inline ValueReadResult RemoteRuntime::ReadFieldAt(TargetAddress owner, const FieldDescriptor &field)
@@ -180,14 +175,71 @@ namespace NextDumper
     }
 
     template <typename T>
-    [[nodiscard]] inline bool RemoteRuntime::Convert(const RemoteValue &value, T &out)
+    [[nodiscard]] inline ReadStatus RemoteRuntime::ConvertResult(ValueReadResult result, T &out)
+    {
+        if constexpr (std::is_same_v<T, RemoteObjectView>)
+            out = {};
+        if (!result.Ok())
+            return result.status;
+        if constexpr (std::is_same_v<T, RemoteObjectView>)
+        {
+            if (auto *object = std::get_if<RemoteObjectView>(&result.value))
+            {
+                out = std::move(*object);
+                return ReadStatus::Ok;
+            }
+            return ConvertObjectReference(result.value, out);
+        }
+        else
+            return Convert(result.value, out) ? ReadStatus::Ok : ReadStatus::Unsupported;
+    }
+
+    [[nodiscard]] inline ReadStatus RemoteRuntime::ConvertObjectReference(const RemoteValue &value,
+                                                                          RemoteObjectView &out)
+    {
+        out = {};
+        const auto *reference = std::get_if<ObjectReference>(&value);
+        if (reference)
+        {
+            if (!reference->address)
+                return ReadStatus::Empty;
+            if (!reference->object)
+                return ReadStatus::InvalidReference;
+            out = *reference->object;
+            return ReadStatus::Ok;
+        }
+        const auto *weakReference = std::get_if<WeakObjectReference>(&value);
+        if (weakReference)
+        {
+            if ((weakReference->index == 0 || weakReference->index == -1) && weakReference->serial == 0)
+                return ReadStatus::Empty;
+            if (!weakReference->object)
+                return ReadStatus::InvalidReference;
+            out = *weakReference->object;
+            return ReadStatus::Ok;
+        }
+        const auto *interfaceReference = std::get_if<InterfaceReference>(&value);
+        if (interfaceReference)
+        {
+            if (!interfaceReference->object)
+                return ReadStatus::Empty;
+            if (!interfaceReference->resolvedObject)
+                return ReadStatus::InvalidReference;
+            out = *interfaceReference->resolvedObject;
+            return ReadStatus::Ok;
+        }
+        return ReadStatus::Unsupported;
+    }
+
+    template <typename T>
+    [[nodiscard]] inline bool RemoteRuntime::Convert(RemoteValue &value, T &out)
     {
         if constexpr (std::is_same_v<T, std::string>)
         {
-            const auto text = std::get_if<std::string>(&value);
+            auto *text = std::get_if<std::string>(&value);
             if (!text)
                 return false;
-            out = *text;
+            out = std::move(*text);
             return true;
         }
         else if constexpr (std::is_same_v<T, bool>)
@@ -243,13 +295,21 @@ namespace NextDumper
         }
         else if constexpr (std::is_floating_point_v<T>)
         {
-            const auto number = std::get_if<double>(&value);
+            const auto *number = std::get_if<double>(&value);
             if (!number)
                 return false;
             if constexpr (sizeof(T) < sizeof(double))
                 if (*number < -std::numeric_limits<T>::max() || *number > std::numeric_limits<T>::max())
                     return false;
             out = static_cast<T>(*number);
+            return true;
+        }
+        else if constexpr (detail::IsVariantAlternative<T, RemoteValue>::value)
+        {
+            auto *alternative = std::get_if<T>(&value);
+            if (!alternative)
+                return false;
+            out = std::move(*alternative);
             return true;
         }
         else

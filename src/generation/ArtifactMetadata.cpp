@@ -403,7 +403,7 @@ namespace nextdumper::generation::detail
     {
         const RuntimeBinding &binding = context.Binding();
         const EngineSchema &schema = context.Schema();
-        stream << "{\n  \"schema_version\": 5,\n";
+        stream << "{\n  \"schema_version\": 6,\n";
         stream << "  \"engine\": \"" << EscapeJson(schema.identity.canonicalVersionRange.empty() ? schema.validation.familyEvidence : schema.identity.canonicalVersionRange) << "\",\n";
         stream << "  \"profile\": {\"id\":\"" << EscapeJson(schema.validation.profileId)
                << "\",\"label\":\"" << EscapeJson(schema.validation.profileLabel)
@@ -585,22 +585,6 @@ namespace nextdumper::generation::detail
                << ",\"cpp_form_is_byte\":" << (schema.features.enumCppFormIsByte ? "true" : "false")
                << ",\"flags_is_byte\":" << (schema.features.enumFlagsIsByte ? "true" : "false") << "}\n";
         stream << "  }";
-
-        if (!binding.commonObjects.empty())
-        {
-            stream << ",\n  \"common_objects\": [\n";
-            for (size_t i = 0; i < binding.commonObjects.size(); ++i)
-            {
-                const auto &obj = binding.commonObjects[i];
-                stream << "    {\"name\":\"" << EscapeJson(obj.name)
-                       << "\",\"address\":\"" << Hex(obj.address)
-                       << "\",\"index\":" << obj.index << "}";
-                if (i + 1 != binding.commonObjects.size())
-                    stream << ",";
-                stream << "\n";
-            }
-            stream << "  ]";
-        }
 
         stream << "\n}\n";
     }

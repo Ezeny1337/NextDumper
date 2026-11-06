@@ -108,7 +108,6 @@ add_library(nextdumper_core STATIC
     src/app/MemoryPerformanceLog.cpp
     src/app/RuntimeSession.cpp
     src/binding/BindingBuilder.cpp
-    src/binding/CommonObjectCollector.cpp
     src/binding/GlobalLocator.cpp
     src/binding/LayoutDiscovery.cpp
     src/binding/LayoutProbes.cpp

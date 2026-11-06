@@ -1192,17 +1192,18 @@ namespace nextdumper::generation::detail
                 }
                 stream << "};\n";
             }
-            const auto super = std::find_if(reflection_.types.begin(), reflection_.types.end(),
-                                            [&](const TypeIR &candidate)
-                                            { return candidate.address == type.superAddress; });
+            const auto super =
+                std::find_if(reflection_.types.begin(), reflection_.types.end(),
+                             [&](const TypeIR &candidate)
+                             { return candidate.address == type.superAddress; });
             const std::string_view superName = super == reflection_.types.end() ? std::string_view{} : super->fullName;
-            stream << "inline constexpr TypeDescriptor " << typeName << "_RemoteType{"
-                   << CppString(type.fullName) << ", " << CppString(type.name) << ", "
-                   << CppString(superName) << ", TypeKind::"
-                   << (type.kind == ir::TypeKind::Class ? "Class" : "Struct") << ", "
-                   << type.size << ", " << CppString(ParseStatusName(type.status)) << ", "
+            const bool superResolved = type.superAddress == 0 || super != reflection_.types.end();
+            stream << "inline constexpr TypeDescriptor " << typeName << "_RemoteType{" << CppString(type.fullName)
+                   << ", " << CppString(type.name) << ", " << CppString(superName)
+                   << ", TypeKind::" << (type.kind == ir::TypeKind::Class ? "Class" : "Struct") << ", " << type.size
+                   << ", " << CppString(ParseStatusName(type.status)) << ", "
                    << (type.properties.empty() ? "nullptr" : typeName + "_RemoteFields") << ", "
-                   << type.properties.size() << "};\n\n";
+                   << type.properties.size() << ", " << (superResolved ? "true" : "false") << "};\n\n";
         }
         stream << "}\n";
     }

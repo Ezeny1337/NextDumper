@@ -27,6 +27,7 @@ def _read_json(path, expected_version):
 
 
 REFLECTION_SCHEMA_VERSION = 12
+RUNTIME_SCHEMA_VERSION = 6
 
 
 SHARD_SUBDIR = "reflection"
@@ -315,7 +316,7 @@ def run_import():
     reflection_path = os.path.join(artifact_dir, "reflection.json")
     runtime_path = os.path.join(artifact_dir, "runtime.json")
     reflection = _read_json(reflection_path, REFLECTION_SCHEMA_VERSION)
-    runtime = _read_json(runtime_path, 5)
+    runtime = _read_json(runtime_path, RUNTIME_SCHEMA_VERSION)
 
     module = runtime.get("module")
     if not isinstance(module, dict):

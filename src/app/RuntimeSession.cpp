@@ -18,7 +18,6 @@
 #include "nextdumper/analysis/AnalysisSession.hpp"
 #include "nextdumper/analysis/MemoryView.hpp"
 #include "nextdumper/app/AnalysisProposal.hpp"
-#include "nextdumper/binding/CommonObjectCollector.hpp"
 #include "nextdumper/binding/BindingBuilder.hpp"
 #include "nextdumper/binding/GlobalLocator.hpp"
 #include "nextdumper/common/Hex.hpp"
@@ -39,7 +38,6 @@ namespace nextdumper::app
     using ::nextdumper::binding::BindingCandidates;
     using ::nextdumper::binding::GlobalLocator;
     using ::nextdumper::binding::LocatedAddress;
-    using ::nextdumper::binding::RuntimeBinding;
     using ::nextdumper::generation::ArtifactWriter;
     using ::nextdumper::ir::ParseStatus;
     using ::nextdumper::memory::ReadStats;
@@ -1246,35 +1244,6 @@ namespace nextdumper::app
                             "Check target process stability and memory-map refresh before changing a game profile.");
             return RuntimeSessionStatus::SchemaReady;
         }
-        diagnosis_.stage = "common-objects";
-        BeginMemoryStage("common-objects");
-        Note(RuntimeLogLevel::Info, "Collecting common object classes...");
-        profileExecutionState->stage = "common-objects";
-        binding::CommonObjectCollector collector(*memory_, context_.Binding(), context_.Schema());
-        std::vector<binding::CommonObjectInfo> commonObjects = collector.Collect();
-        if (profileHooksValid && profileExecutionState->failed)
-        {
-            failures_.push_back("profile decoder failed during common object collection");
-            diagnosis_.status = CompatibilityStatus::ProfileValidationFailed;
-            diagnosis_.profileStatus = "decoder-failed";
-            RecordDiagnosis(DiagnosisDomain::Profile, "PROFILE_DECODER_EXCEPTION", "common-objects",
-                            "observed", std::string("A profile decoder threw an exception: ") + profileExecutionState->error,
-                            "Fix the profile decoder; common-object output from this run is not published.");
-            return RuntimeSessionStatus::SchemaReady;
-        }
-        Note(RuntimeLogLevel::Info, "Found " + std::to_string(commonObjects.size()) + " common object classes");
-        for (const auto &obj : commonObjects)
-        {
-            Note(RuntimeLogLevel::Debug, "common_object: " + obj.name +
-                                             " address=" + Hex(obj.address) +
-                                             " index=" + std::to_string(obj.index));
-        }
-
-        RuntimeBinding updatedBinding = context_.Binding();
-        updatedBinding.commonObjects = std::move(commonObjects);
-        context_.CommitBinding(std::move(updatedBinding));
-        finishStage("common-objects");
-
         diagnosis_.stage = "reflection";
         BeginMemoryStage("reflection");
         const ReadStats beforeReflection = memory_->Stats();

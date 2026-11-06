@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <variant>
 #include <vector>
 
@@ -161,6 +162,18 @@ namespace NextDumper
                      WeakObjectReference, SoftObjectReference, LazyObjectReference, InterfaceReference,
                      DelegateReference, TextReference, RemoteObjectView, RemoteStructView, RemoteStaticArrayView,
                      RemoteArrayView, RemoteSparseContainerView, RemoteMapEntryView, OpaqueValue>;
+
+    namespace detail
+    {
+        template <typename T, typename Variant>
+        struct IsVariantAlternative;
+
+        template <typename T, typename... Alternatives>
+        struct IsVariantAlternative<T, std::variant<Alternatives...>>
+            : std::bool_constant<(std::is_same_v<T, Alternatives> || ...)>
+        {
+        };
+    } // namespace detail
 
     struct ValueReadResult
     {

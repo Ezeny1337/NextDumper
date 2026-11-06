@@ -189,13 +189,6 @@ namespace nextdumper::binding
         [[nodiscard]] bool IsIdentity() const;
     };
 
-    struct CommonObjectInfo
-    {
-        std::string name;
-        uintptr_t address = 0;
-        int32_t index = -1;
-    };
-
     struct BindingReport
     {
         bool staticCandidatesFound = false;
@@ -217,7 +210,6 @@ namespace nextdumper::binding
         std::optional<UObjectLayoutHint> uobject;
         std::shared_ptr<const ue::EngineSchema> objectSchema;
         BindingReport report;
-        std::vector<CommonObjectInfo> commonObjects;
 
         [[nodiscard]] bool IsValid() const;
     };

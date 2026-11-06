@@ -23,7 +23,6 @@ It does not depend on a fixed offset table for one engine build. Candidate roots
 - **Full type dump** — outputs classes, structs, properties, functions, enums, inheritance, and field offsets.
 - **Stripped binaries** — ARM64 and ARM32 (ARM mode) code analysis supplies root candidates when symbol lookup is not enough. Thumb/Thumb-2 is not supported yet.
 - **IDA integration** — imports generated types and labels validated function entries with names and comments.
-- **Common class addresses** — records `UClass` objects such as `World`, `Engine`, `GameInstance`, and `PlayerController`.
 - **Sharded output** — reflection and SDK headers are split per UE package.
 - **Rejects invalid data** — candidates and layouts that fail validation are not written to the output.
 - **Limited reads** — object arrays, containers, and optional runtime samples all have explicit limits.
@@ -208,7 +207,7 @@ The output directory also receives the session log and diagnosis report:
 | `reflection/<Package>.json` | One shard per Unreal package, holding that package's types, functions, and enums with field storage descriptions. Shard names are listed in `reflection.json` under `shards`. |
 | `manifest.json` | Output status, parsing statistics, and build information (commit, version, and worktree state). |
 | `diagnostics.json` | Reflection and generation diagnostics, counters, and references to shared sample data. |
-| `runtime.json` | Module information, binding layout, reflection offsets, and common class addresses. |
+| `runtime.json` | Runtime module, binding, and reflection-layout snapshot used for inspection and diagnosis. Absolute addresses are specific to the captured process session. |
 
 The headers use the `NextDumper` namespace. The reader consumes target addresses through a caller-supplied read callback; generated C++ declarations remain layout descriptions and are not native ABI-compatible objects. See [the external SDK guide](docs/external-sdk.md) for the callback contract, supported value families, and session lifecycle.
 
@@ -292,23 +291,6 @@ Run `tools/ida/nextdumper_import.py` from IDA and select a NextDumper output dir
 It does not apply runtime heap addresses to the static image and does not create functions automatically. Enum values outside the 32-bit C enum range stay in the reflection shard and are omitted from the generated IDA header. The importer also checks that the output's architecture and bitness match the IDA database.
 
 The output contains no hash of the target binary. Confirm that the file open in IDA is the same image that was captured before relying on RVA annotations.
-
-## Common class addresses
-
-`runtime.json` can contain the following `UClass` objects:
-
-```text
-Engine
-World
-GameInstance
-LocalPlayer
-PlayerController
-GameViewportClient
-Console
-CheatManager
-```
-
-These are class object addresses found in `GUObjectArray`. They are not the addresses of live instances such as the current `GWorld`, `GEngine`, or a player controller instance.
 
 ## Output status and exit codes
 

@@ -23,7 +23,6 @@ NextDumper 会附加到正在运行的 Android 游戏进程，定位 Unreal Engi
 - **导出完整类型信息** —— 输出类、结构体、属性、函数、枚举、继承关系和字段偏移。
 - **支持符号被剥离的游戏** —— 符号定位不充分时，通过 ARM64 和 ARM32（ARM 模式）反汇编补充根地址候选；暂不支持 Thumb/Thumb-2。
 - **IDA 集成** —— 导入生成的类型，并为已验证的函数入口添加名称和注释。
-- **常用类地址** —— 记录 `World`、`Engine`、`GameInstance`、`PlayerController` 等 `UClass` 对象地址。
 - **分片输出** —— 反射数据与 SDK 头文件按 UE 包切分。
 - **拒绝无效数据** —— 未通过校验的候选和布局不会写入输出。
 - **控制读取量** —— 对象数组、容器和可选运行时采样都有明确上限。
@@ -208,7 +207,7 @@ NextDumper -o <输出目录> -p <包名> [options]
 | `reflection/<Package>.json` | 每个 Unreal 包一个分片，包含该包的类型、函数、枚举及字段存储描述；分片文件名列在 `reflection.json` 的 `shards` 中。 |
 | `manifest.json` | 输出状态、解析统计和构建信息（commit、版本、工作区状态）。 |
 | `diagnostics.json` | 反射与生成诊断、计数，以及对共用采样数据的引用。 |
-| `runtime.json` | 模块信息、绑定布局、反射偏移和常用类地址。 |
+| `runtime.json` | 用于检查和诊断的运行时模块、绑定及反射布局快照；其中绝对地址仅对采集时的进程会话有效。 |
 
 头文件使用 `NextDumper` 命名空间。读取器通过调用方提供的回调读取目标进程地址；生成的 C++ 声明仍然只是布局描述，不是 native ABI 对象。回调契约、支持的数据类型和会话生命周期见[外部 SDK 使用文档](docs/external-sdk.md)。
 
@@ -292,23 +291,6 @@ public:
 它不会把运行时堆地址写入静态镜像，也不会自动创建函数。超出 32 位 C 枚举范围的枚举值会保留在反射分片中，不写入生成的 IDA 头文件。导入器还会检查输出文件的架构和位数是否与当前 IDA 数据库一致。
 
 输出中不包含目标二进制的内容哈希。使用 RVA 标注前，请确认 IDA 打开的文件与本次采集的镜像一致。
-
-## 常用类地址
-
-`runtime.json` 中可能包含以下 `UClass` 对象：
-
-```text
-Engine
-World
-GameInstance
-LocalPlayer
-PlayerController
-GameViewportClient
-Console
-CheatManager
-```
-
-这些是从 `GUObjectArray` 中找到的类对象地址，不是当前运行实例的地址，例如当前的 `GWorld`、`GEngine` 或玩家控制器实例。
 
 ## 输出状态与退出码
 
