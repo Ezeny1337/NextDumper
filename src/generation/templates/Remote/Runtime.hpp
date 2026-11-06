@@ -139,7 +139,8 @@ namespace NextDumper
     [[nodiscard]] bool ValidateHandle(const ObjectHandle &handle);
 
     [[nodiscard]] ObjectQueryResult FindObjectsImpl(const ObjectQuery &query, std::size_t maxResults,
-                                                    std::string_view requiredTypeFullName, bool includeDerived,
+                                                    std::string_view requiredTypeFullName,
+                                                    const TypeDescriptor *requiredType, bool includeDerived,
                                                     ObjectFlagsFilter flags);
 
     [[nodiscard]] bool IsTypeA(const TypeDescriptor *type, std::string_view baseFullName,

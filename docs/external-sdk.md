@@ -71,11 +71,19 @@ if (initialized != NextDumper::ReadStatus::Ok)
 
 示例中的后端名称仅用于说明。应按消费者自己的 API 映射回调参数和返回值；SDK 不要求特定的句柄类型、进程标识、权限级别或传输方式。
 
-`FindFirstUClassObject("World")` 按名称查找第一个 `UClass` 元对象，包括反射出的蓝图生成类等 UClass 派生元类；该操作要求生成 SDK 包含 `Class /Script/CoreUObject.Class` 的类型描述。它查找类的反射对象，不查找该类的实例。
+## 对象查询
 
-对象查询扫描原始 UObject 数组，不会默认排除 Class Default Object、archetype 或其他对象模板，也不保证对象当前可用于游戏逻辑。`FindFirstObjectOfType(classFullName)` 返回扫描顺序中的第一个类型匹配项；`FindObjectsOfType(classFullName, maxResults, includeDerived)` 返回多个匹配项。类名使用 `TypeDescriptor::fullName` 格式，可先用 `FindType` 查看生成元数据中的完整类名；启用派生类匹配时，该基类必须有类型描述。匹配过程沿生成的父类描述检查，遇到缺失的父类描述会在结果状态中报告 `Incomplete`。`FindFirstObject` 适用于组合对象名、类名或完整名条件的通用查询。
+`FindFirstUClassObject("World")` 查找名为 `World` 的 UClass 元对象，包括蓝图生成类等 UClass 派生元类。生成 SDK 需要包含 `Class /Script/CoreUObject.Class` 的类型描述。此接口查找类的反射对象，不查找该类的实例。
 
-所有对象查找接口都可接收 `ObjectFlagsFilter`。`requireAll` 中的位必须全部存在，`excludeAny` 中任一位存在都会排除对象；默认空过滤器不读取 flags。需要排除模板对象时，可按目标 UE 版本设置相应的对象标志：
+对象查询扫描原始 UObject 数组，不会默认排除 Class Default Object（CDO）、archetype 或其他对象模板，也不保证对象当前可用于游戏逻辑。
+
+- `FindFirstObjectOfType(classFullName)` 返回扫描顺序中的第一个类型匹配项。
+- `FindObjectsOfType(classFullName, maxResults, includeDerived)` 返回多个匹配项。
+- `FindFirstObject(query)` 和 `FindObjects(query, maxResults)` 支持组合对象名、类名和完整名条件。
+- 类型名使用 `TypeDescriptor::fullName` 格式，可先用 `FindType` 查询。启用派生类匹配时，基类必须有类型描述；缺少父类描述会使结果状态变为 `Incomplete`。
+- `maxResults` 限制返回对象数；实际扫描数量由 `RuntimeOptions::maxObjectsPerSearch` 限制。若匹配项不足，查询仍可能扫描整个允许范围。
+
+所有对象查找接口都可接收 `ObjectFlagsFilter`。`requireAll` 中的位必须全部存在，`excludeAny` 中任一位存在都会排除对象；空过滤器不读取 flags。指定过滤条件但绑定中没有 flags 偏移时，查询返回 `Unsupported`；扫描期间 flags 读取失败时，查询标记为 `Incomplete` 并跳过该对象。
 
 ```cpp
 NextDumper::ObjectFlagsFilter excludeTemplates;
@@ -85,11 +93,19 @@ const auto worldResult = runtime.FindFirstObjectOfType(
     "Class /Script/Engine.World", true, excludeTemplates);
 ```
 
-指定过滤条件但绑定中没有 flags 偏移时，查询返回 `Unsupported`；扫描期间 flags 读取失败时，查询标记为 `Incomplete` 并跳过该对象。过滤 CDO 或 archetype 仍不能保证结果是当前活动 World。`FindFirst...` 接口按对象数组顺序返回第一个匹配项，不保证名称唯一，也不代表当前活动的 World 或其他全局实例。短类名可能重复；需要消歧时，用完整对象名和通用 `FindFirstObject` 查询。
+过滤 CDO 或 archetype 仍不能保证结果是当前活动 World。`FindFirst...` 按对象数组顺序返回第一个匹配项，不保证名称唯一，也不代表当前活动的 World 或其他全局实例；需要消歧时使用完整对象名。
 
-`FindType` 返回生成 SDK 中的类/结构描述，包含大小、父类完整名、父类类型描述是否已生成，以及该类型直接声明的字段。`FindField` 返回 `FieldLookupResult`：`Ok` 表示找到字段，`NotFound` 表示遍历到完整的类型描述和继承链后仍未发现该字段，`Incomplete` 表示字段描述或父类描述不完整、继承链循环或达到深度上限。`FieldDescriptor` 提供字段偏移、元素大小、静态数组长度和 `ValueDescriptor`，后者包含属性种类、引用类型和容器元素类型。消费者可据此发现诸如 `Health` 的候选字段及其类型，不需要解析 `runtime.json` 或反射 JSON 才能取得结构信息。
+## 反射字段
 
-要浏览某个类型直接声明的字段，可遍历描述数组；继承字段可由 `FindField` 查找，也可沿已解析的 `superFullName` 继续检查：
+`FindType` 返回生成 SDK 中的类或结构描述，包含大小、父类完整名、父类描述是否已生成，以及直接声明的字段。`FindField` 会沿可用的父类描述查找字段，并返回 `FieldLookupResult`：
+
+- `Ok`：找到字段。
+- `NotFound`：完整描述的继承链中没有该字段。
+- `Incomplete`：字段或父类描述不完整、继承链循环或达到深度上限。
+
+`FieldDescriptor` 提供字段偏移、元素大小、静态数组长度和 `ValueDescriptor`。后者描述属性种类、引用类型和容器元素类型。可用这些信息检查 `Health` 等候选字段及其存储形式；不需要解析 `runtime.json` 或反射 JSON。
+
+遍历某个类型直接声明的字段：
 
 ```cpp
 const auto *playerStateType = runtime.FindType("Class /Script/Engine.PlayerState");
@@ -100,7 +116,9 @@ for (std::size_t index = 0; playerStateType && index < playerStateType->fieldCou
 }
 ```
 
-下面示例展示完整的通用调用链：通过反射描述检查 `Health` 字段及类型，再沿目标对象的字段和数组读取实例。示例中的类名、字段名和关系仅作说明，必须根据具体游戏产出的元数据确定实际路径。标量字段可直接读入 C++ 类型；对象、结构体、数组、静态数组、数组元素和 map 键/值也可用相应输出类型直接读取，避免手动检查 `RemoteValue` 的 variant。
+## 读取字段与容器
+
+下面示例展示通用读取流程：检查 `Health` 的反射描述，再沿对象字段和数组读取实例。类名、字段名及对象关系仅为示例，实际路径应以目标游戏的反射产物为准。
 
 ```cpp
 NextDumper::ObjectFlagsFilter excludeTemplates;
@@ -136,22 +154,47 @@ if (worldResult.object && healthLookup.Ok() && healthField->validBounds && healt
 }
 ```
 
-SDK 提供结构描述和通用读取操作，不判断哪个对象是本地玩家，也不推断 `Health`、坐标或玩家列表的游戏语义。需要完整遍历时应检查查询状态；`LimitExceeded` 表示结果达到上限，`Incomplete` 表示部分对象或继承信息不可读。
+标量可直接读入 C++ 类型；对象、结构体、数组、静态数组元素及 map 键/值也支持类型化读取。复杂结果仍可通过 `ValueReadResult` 访问完整 variant 和状态。
 
-对象、弱对象和接口字段读入 `RemoteObjectView` 时，会使用已验证的对象视图；空引用返回 `ReadStatus::Empty`，非空但无法解析/验证的引用返回 `InvalidReference`。需要保留弱对象索引和 serial，或普通对象指针的原始地址时，可分别读入 `WeakObjectReference` 或 `ObjectReference`。复杂字段也可继续通过 `ValueReadResult` 获取完整的 variant 和状态。
+SDK 只提供结构描述和通用读取，不判断本地玩家，也不解释 `Health`、坐标或玩家列表等游戏语义。完整遍历时检查查询状态：`LimitExceeded` 表示达到结果或扫描上限，`Incomplete` 表示部分对象或元数据不可读。
 
-对已验证布局的 `TSet` 和 `TMap`，使用 `RemoteSparseContainerView` 遍历已分配 slot；map slot 返回 `RemoteMapEntryView`，其 key/value 可以直接按类型读入，也可使用 `ReadMapKey` 和 `ReadMapValue` 获取 `ValueReadResult`。SDK 不会一次性复制整个远程容器。
+对象引用行为：
 
-读取后端可以提供单地址读取，也可以在自己的适配层聚合读取请求。只有能为每个请求准确报告完整传输状态的后端，才适合作为精确读取实现；仅有整个批次成功标记的批量接口不能证明其中每个字段都完整。
+- `RemoteObjectView` 使用已验证的对象句柄。
+- 空引用返回 `ReadStatus::Empty`；非空但无法解析或验证的引用返回 `InvalidReference`。
+- 需要保留弱引用索引和 serial，或普通对象指针原始地址时，分别读取为 `WeakObjectReference` 或 `ObjectReference`。
+
+容器行为：
+
+- 已验证布局的 `TArray`、`TSet` 和 `TMap` 可按视图逐项读取，SDK 不会复制整个远程容器。
+- `TSet` 使用 `RemoteSparseContainerView` 遍历已分配 slot。
+- `TMap` 的 slot 返回 `RemoteMapEntryView`，再读取 key/value。
+- 读取后端可按地址读取，也可在适配层批量取数；批量接口必须能报告每个请求的完整传输状态。
 
 ## 支持边界
 
-有充分反射与布局依据时，SDK 可读取布尔值、整数、浮点数、枚举、`FName`、`FString`/UTF-8/ANSI 字符串、普通对象和类指针、serial 校验后的弱引用、软对象路径、接口、单播委托、内嵌结构体、静态数组、动态数组以及布局已验证的 set/map。`ObjectPtrProperty` 等编码对象句柄不会当作普通指针解析。
+有充分反射与布局依据时，SDK 支持读取：
 
-对 `FText`，SDK 返回已识别的外层数据指针和 flags；文本历史和显示字符串仍保持未解析。惰性对象会返回对象索引、serial、tag、remote id 和 GUID，不会据此断言对象仍存活。多播委托、FieldPath、Optional、厂商自定义属性或布局证据不足的容器以受限 opaque 字节及状态返回。尚未验证平台元素布局的冻结 MemoryImage 容器不提供元素读取。`ReadStatus::Unsupported`、`InvalidHeader`、`InvalidReference`、`LimitExceeded` 和 `StaleObject` 不应被当作成功读取。
+- 布尔值、整数、浮点数、枚举、`FName`、`FString` 及 UTF-8/ANSI 字符串。
+- 普通对象和类指针、serial 校验后的弱引用、软对象路径、接口及单播委托。
+- 内嵌结构体、静态/动态数组，以及布局已验证的 set/map。
 
-如果根对象位于模块映像中，`Binding.hpp` 保存其 RVA，并在初始化时根据模块基址重定位。根地址不在模块映像内时，SDK 不会保存本次进程的绝对地址；只有在消费者已从授权来源获得根地址时，才可通过 `RuntimeRoots` 显式提供。若生成绑定包含尚未导出的自定义解码器，`Initialize` 返回 `Unsupported`，避免把编码值误读为普通指针。若直接使用 `RemoteRuntime` 构造函数，类型/枚举描述及其嵌套数组必须至少与 runtime 同寿命；手工构造类型描述时，只有确认父类类型信息完整才将 `superTypeResolved` 设为 `true`。`CreateRuntime` 使用生成 SDK 中的静态描述。
+以下数据保持受限或未解析：
 
-RVA 适用于生成该 SDK 的同一目标模块构建。模块名检查和运行时根/名称校验不能证明二进制完全相同；消费者应为目标版本选择对应产物。读取过程不是原子快照，游戏对象和容器可能在读取期间变化。
+- `ObjectPtrProperty` 等编码对象句柄不会按普通指针解析。
+- `FText` 仅返回已识别的外层数据指针和 flags，不解析文本历史或显示字符串。
+- 惰性对象返回对象索引、serial、tag、remote id 和 GUID，但这些信息不代表对象仍存活。
+- 多播委托、FieldPath、Optional、自定义属性或证据不足的容器返回受限 opaque 数据。
+- 未验证平台元素布局的冻结 MemoryImage 容器不提供元素读取。
 
-`RemoteRuntime` 不可复制或移动，且不提供并发访问保证。读取器上下文及其返回的对象、字段和容器视图只在创建它们的 runtime 与目标会话存活期间有效。消费者检测到进程身份、模块基址或目标地址空间发生变化时，应重建 runtime；不要跨会话保存视图或目标地址。
+`Unsupported`、`InvalidHeader`、`InvalidReference`、`LimitExceeded` 和 `StaleObject` 都表示读取未成功。
+
+## 根地址与生命周期
+
+- 根地址位于模块映像时，`Binding.hpp` 保存 RVA，并在初始化时按模块基址重定位。
+- 根地址位于模块映像外时，SDK 不保存采集时的绝对地址；消费者可在已从授权来源取得根地址后，通过 `RuntimeRoots` 显式提供。
+- 若绑定需要尚未导出的自定义解码器，`Initialize` 返回 `Unsupported`，不会把编码值当作普通指针。
+- 直接构造 `RemoteRuntime` 时，类型/枚举描述及其嵌套数组必须至少与 runtime 同寿命。手工构造描述时，只有确认父类信息完整才将 `superTypeResolved` 设为 `true`。`CreateRuntime` 使用生成 SDK 中的静态描述。
+- RVA 只适用于生成该 SDK 的同一目标模块构建。模块名和根/名称校验不能证明二进制完全相同，应为目标版本选择对应产物。
+- 读取不是原子快照；游戏对象和容器可能在读取期间变化。
+- `RemoteRuntime` 不可复制或移动，也不保证并发访问。读取器上下文及对象、字段、容器视图只在创建它们的 runtime 和目标会话存活期间有效。进程身份、模块基址或地址空间变化后应重建 runtime；不要跨会话保存视图或目标地址。

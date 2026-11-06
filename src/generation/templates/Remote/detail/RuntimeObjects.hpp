@@ -124,7 +124,7 @@ namespace NextDumper
     [[nodiscard]] inline ObjectQueryResult RemoteRuntime::FindObjects(const ObjectQuery &query, std::size_t maxResults,
                                                                       ObjectFlagsFilter flags)
     {
-        return FindObjectsImpl(query, maxResults, {}, false, flags);
+        return FindObjectsImpl(query, maxResults, {}, nullptr, false, flags);
     }
 
     [[nodiscard]] inline ObjectLookupResult RemoteRuntime::FindFirstUClassObject(std::string_view name,
@@ -140,7 +140,7 @@ namespace NextDumper
             return {ReadStatus::Unsupported, std::nullopt, 0};
         ObjectQuery query;
         query.name = name;
-        ObjectQueryResult matches = FindObjectsImpl(query, 1, uclassFullName, true, flags);
+        ObjectQueryResult matches = FindObjectsImpl(query, 1, uclassFullName, uclassType, true, flags);
         if (!matches.objects.empty())
             return {matches.status == ReadStatus::Incomplete ? ReadStatus::Incomplete : ReadStatus::Ok,
                     matches.objects.front(), matches.slotsVisited};
@@ -173,12 +173,13 @@ namespace NextDumper
         const TypeDescriptor *requestedType = FindType(classFullName);
         if ((includeDerived && !requestedType) || (requestedType && requestedType->kind != TypeKind::Class))
             return {ReadStatus::Unsupported, 0, false, {}};
-        return FindObjectsImpl({}, maxResults, classFullName, includeDerived, flags);
+        return FindObjectsImpl({}, maxResults, classFullName, requestedType, includeDerived, flags);
     }
 
     [[nodiscard]] inline ObjectQueryResult RemoteRuntime::FindObjectsImpl(const ObjectQuery &query,
                                                                           std::size_t maxResults,
                                                                           std::string_view requiredTypeFullName,
+                                                                          const TypeDescriptor *requiredType,
                                                                           bool includeDerived,
                                                                           ObjectFlagsFilter flags)
     {
@@ -251,15 +252,23 @@ namespace NextDumper
                 }
                 matches = query.name.empty() || objectName == query.name;
             }
-            if (matches && (!query.className.empty() || !query.classFullName.empty() || !query.fullName.empty() ||
+            if (matches && (!query.className.empty() || !query.classFullName.empty() ||
                             !requiredTypeFullName.empty()))
             {
-                if (!ReadObjectClass(object.handle.address, classAddress) || !ReadObjectName(classAddress, className))
+                if (!ReadObjectClass(object.handle.address, classAddress))
                 {
                     result.status = ReadStatus::Incomplete;
                     continue;
                 }
-                matches = query.className.empty() || className == query.className;
+                if (!query.className.empty())
+                {
+                    if (!ReadObjectName(classAddress, className))
+                    {
+                        result.status = ReadStatus::Incomplete;
+                        continue;
+                    }
+                    matches = className == query.className;
+                }
             }
             if (matches && (!query.classFullName.empty() || !requiredTypeFullName.empty()))
             {
@@ -268,22 +277,25 @@ namespace NextDumper
                     result.status = ReadStatus::Incomplete;
                     continue;
                 }
-                object.type = FindType(classFullName);
                 if (!query.classFullName.empty())
                     matches = classFullName == query.classFullName;
                 if (matches && !requiredTypeFullName.empty())
                 {
                     if (classFullName == requiredTypeFullName)
+                    {
+                        object.type = requiredType;
                         matches = true;
+                    }
                     else if (!includeDerived)
                         matches = false;
-                    else if (!object.type)
-                    {
-                        result.status = ReadStatus::Incomplete;
-                        continue;
-                    }
                     else
                     {
+                        object.type = FindType(classFullName);
+                        if (!object.type)
+                        {
+                            result.status = ReadStatus::Incomplete;
+                            continue;
+                        }
                         bool chainComplete = false;
                         matches = IsTypeA(object.type, requiredTypeFullName, chainComplete);
                         if (!chainComplete)
