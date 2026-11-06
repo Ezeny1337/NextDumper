@@ -73,11 +73,21 @@ if (initialized != NextDumper::ReadStatus::Ok)
 
 `FindFirstUClassObject("World")` 按名称查找第一个 `UClass` 元对象，包括反射出的蓝图生成类等 UClass 派生元类；该操作要求生成 SDK 包含 `Class /Script/CoreUObject.Class` 的类型描述。它查找类的反射对象，不查找该类的实例。
 
-`FindFirstObjectOfType(classFullName)` 查找第一个类实例；`FindObjectsOfType(classFullName, maxResults, includeDerived)` 查找多个实例。类名使用 `TypeDescriptor::fullName` 格式，可先用 `FindType` 查看生成元数据中的完整类名；启用派生类匹配时，该基类必须有类型描述。匹配过程沿生成的父类描述检查，遇到缺失的父类描述会在结果状态中报告 `Incomplete`。`FindFirstObject` 适用于组合对象名、类名或完整名条件的通用查询。
+对象查询扫描原始 UObject 数组，不会默认排除 Class Default Object、archetype 或其他对象模板，也不保证对象当前可用于游戏逻辑。`FindFirstObjectOfType(classFullName)` 返回扫描顺序中的第一个类型匹配项；`FindObjectsOfType(classFullName, maxResults, includeDerived)` 返回多个匹配项。类名使用 `TypeDescriptor::fullName` 格式，可先用 `FindType` 查看生成元数据中的完整类名；启用派生类匹配时，该基类必须有类型描述。匹配过程沿生成的父类描述检查，遇到缺失的父类描述会在结果状态中报告 `Incomplete`。`FindFirstObject` 适用于组合对象名、类名或完整名条件的通用查询。
 
-两个 `FindFirst...` 接口都按对象数组顺序返回第一个匹配项，不保证名称唯一，也不代表当前活动的 World 或其他全局实例。短类名可能重复；需要消歧时，用完整对象名和通用 `FindFirstObject` 查询。
+所有对象查找接口都可接收 `ObjectFlagsFilter`。`requireAll` 中的位必须全部存在，`excludeAny` 中任一位存在都会排除对象；默认空过滤器不读取 flags。需要排除模板对象时，可按目标 UE 版本设置相应的对象标志：
 
-`FindType` 返回生成 SDK 中的类/结构描述，包含大小、父类完整名、父类类型描述是否已生成，以及该类型直接声明的字段；`FindField` 会继续沿已解析的父类查找字段。`FieldDescriptor` 提供字段偏移、元素大小、静态数组长度和 `ValueDescriptor`，后者包含属性种类、引用类型和容器元素类型。消费者可据此发现诸如 `Health` 的候选字段及其类型，不需要解析 `runtime.json` 或反射 JSON 才能取得结构信息。
+```cpp
+NextDumper::ObjectFlagsFilter excludeTemplates;
+excludeTemplates.excludeAny = NextDumper::ObjectFlag::ClassDefaultObject |
+                              NextDumper::ObjectFlag::ArchetypeObject;
+const auto worldResult = runtime.FindFirstObjectOfType(
+    "Class /Script/Engine.World", true, excludeTemplates);
+```
+
+指定过滤条件但绑定中没有 flags 偏移时，查询返回 `Unsupported`；扫描期间 flags 读取失败时，查询标记为 `Incomplete` 并跳过该对象。过滤 CDO 或 archetype 仍不能保证结果是当前活动 World。`FindFirst...` 接口按对象数组顺序返回第一个匹配项，不保证名称唯一，也不代表当前活动的 World 或其他全局实例。短类名可能重复；需要消歧时，用完整对象名和通用 `FindFirstObject` 查询。
+
+`FindType` 返回生成 SDK 中的类/结构描述，包含大小、父类完整名、父类类型描述是否已生成，以及该类型直接声明的字段。`FindField` 返回 `FieldLookupResult`：`Ok` 表示找到字段，`NotFound` 表示遍历到完整的类型描述和继承链后仍未发现该字段，`Incomplete` 表示字段描述或父类描述不完整、继承链循环或达到深度上限。`FieldDescriptor` 提供字段偏移、元素大小、静态数组长度和 `ValueDescriptor`，后者包含属性种类、引用类型和容器元素类型。消费者可据此发现诸如 `Health` 的候选字段及其类型，不需要解析 `runtime.json` 或反射 JSON 才能取得结构信息。
 
 要浏览某个类型直接声明的字段，可遍历描述数组；继承字段可由 `FindField` 查找，也可沿已解析的 `superFullName` 继续检查：
 
@@ -93,11 +103,16 @@ for (std::size_t index = 0; playerStateType && index < playerStateType->fieldCou
 下面示例展示完整的通用调用链：通过反射描述检查 `Health` 字段及类型，再沿目标对象的字段和数组读取实例。示例中的类名、字段名和关系仅作说明，必须根据具体游戏产出的元数据确定实际路径。标量字段可直接读入 C++ 类型；对象、结构体、数组、静态数组、数组元素和 map 键/值也可用相应输出类型直接读取，避免手动检查 `RemoteValue` 的 variant。
 
 ```cpp
-const auto worldResult = runtime.FindFirstObjectOfType("Class /Script/Engine.World");
+NextDumper::ObjectFlagsFilter excludeTemplates;
+excludeTemplates.excludeAny = NextDumper::ObjectFlag::ClassDefaultObject |
+                              NextDumper::ObjectFlag::ArchetypeObject;
+const auto worldResult = runtime.FindFirstObjectOfType(
+    "Class /Script/Engine.World", true, excludeTemplates);
 const auto *playerStateType = runtime.FindType("Class /Script/Engine.PlayerState");
-const auto *healthField = runtime.FindField(playerStateType, "Health");
+const auto healthLookup = runtime.FindField(playerStateType, "Health");
+const auto *healthField = healthLookup.field;
 
-if (worldResult.object && healthField && healthField->validBounds && healthField->type &&
+if (worldResult.object && healthLookup.Ok() && healthField->validBounds && healthField->type &&
     healthField->type->kind == NextDumper::PropertyKind::Float)
 {
     NextDumper::RemoteObjectView gameState;

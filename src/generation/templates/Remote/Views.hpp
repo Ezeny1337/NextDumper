@@ -195,6 +195,32 @@ namespace NextDumper
         std::string fullName;
     };
 
+    namespace ObjectFlag
+    {
+        inline constexpr std::uint32_t ClassDefaultObject = 0x00000010u;
+        inline constexpr std::uint32_t ArchetypeObject = 0x00000020u;
+    } // namespace ObjectFlag
+
+    struct ObjectFlagsFilter
+    {
+        std::uint32_t requireAll = 0;
+        std::uint32_t excludeAny = 0;
+
+        [[nodiscard]] bool IsEmpty() const { return requireAll == 0 && excludeAny == 0; }
+        [[nodiscard]] bool Matches(std::uint32_t flags) const
+        {
+            return (flags & requireAll) == requireAll && (flags & excludeAny) == 0;
+        }
+    };
+
+    struct FieldLookupResult
+    {
+        ReadStatus status = ReadStatus::NotFound;
+        const FieldDescriptor *field = nullptr;
+
+        [[nodiscard]] bool Ok() const { return status == ReadStatus::Ok && field != nullptr; }
+    };
+
     struct ObjectQuery
     {
         std::string_view fullName;

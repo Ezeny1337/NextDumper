@@ -39,26 +39,28 @@ namespace NextDumper
 
     [[nodiscard]] std::optional<ObjectInfo> Describe(const RemoteObjectView &object);
 
-    [[nodiscard]] ObjectQueryResult FindObjects(const ObjectQuery &query, std::size_t maxResults = 128);
+    // Object queries scan the raw UObject array; no object flags are excluded by default.
+    [[nodiscard]] ObjectQueryResult FindObjects(const ObjectQuery &query, std::size_t maxResults = 128,
+                                                ObjectFlagsFilter flags = {});
 
-    [[nodiscard]] ObjectLookupResult FindFirstObject(const ObjectQuery &query);
+    [[nodiscard]] ObjectLookupResult FindFirstObject(const ObjectQuery &query, ObjectFlagsFilter flags = {});
 
     // Finds the first UClass metadata object with this short object name, including reflected subclasses.
-    [[nodiscard]] ObjectLookupResult FindFirstUClassObject(std::string_view name);
+    [[nodiscard]] ObjectLookupResult FindFirstUClassObject(std::string_view name, ObjectFlagsFilter flags = {});
 
     // classFullName must match TypeDescriptor::fullName; derived matches require complete reflected ancestry.
     [[nodiscard]] ObjectLookupResult FindFirstObjectOfType(std::string_view classFullName,
-                                                           bool includeDerived = true);
+                                                           bool includeDerived = true, ObjectFlagsFilter flags = {});
 
     // Uses reflected type matching and returns up to maxResults objects.
     [[nodiscard]] ObjectQueryResult FindObjectsOfType(std::string_view classFullName, std::size_t maxResults = 128,
-                                                      bool includeDerived = true);
+                                                      bool includeDerived = true, ObjectFlagsFilter flags = {});
 
     // Uses an exact TypeDescriptor::fullName match.
     [[nodiscard]] const TypeDescriptor *FindType(std::string_view fullName) const;
 
-    // Searches the type and its reflected base types for the field.
-    [[nodiscard]] const FieldDescriptor *FindField(const TypeDescriptor *type, std::string_view name) const;
+    // Searches available descriptors and reports incomplete type or ancestry metadata.
+    [[nodiscard]] FieldLookupResult FindField(const TypeDescriptor *type, std::string_view name) const;
 
     // Tests reflected inheritance metadata without reading target memory. False may mean
     // either a non-match or that ancestry metadata was unavailable.
@@ -137,7 +139,8 @@ namespace NextDumper
     [[nodiscard]] bool ValidateHandle(const ObjectHandle &handle);
 
     [[nodiscard]] ObjectQueryResult FindObjectsImpl(const ObjectQuery &query, std::size_t maxResults,
-                                                    std::string_view requiredTypeFullName, bool includeDerived);
+                                                    std::string_view requiredTypeFullName, bool includeDerived,
+                                                    ObjectFlagsFilter flags);
 
     [[nodiscard]] bool IsTypeA(const TypeDescriptor *type, std::string_view baseFullName,
                                bool &chainComplete) const;
@@ -155,6 +158,8 @@ namespace NextDumper
     [[nodiscard]] bool ReadFullName(TargetAddress object, std::string &fullName, std::size_t depth = 0);
 
     [[nodiscard]] std::optional<ObjectInfo> ReadObjectInfo(const ObjectHandle &handle);
+
+    [[nodiscard]] ReadStatus ReadObjectFlags(TargetAddress object, std::uint32_t &flags) const;
 
     [[nodiscard]] bool LocateNameEntry(std::int32_t index, TargetAddress &entry, std::size_t &available);
 

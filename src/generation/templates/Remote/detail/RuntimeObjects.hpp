@@ -25,9 +25,11 @@ namespace NextDumper
             return ReadStatus::AddressOverflow;
         std::int32_t count = 0;
         TargetAddress storage = 0;
-        if (!ReadExact(countAddress, &count, sizeof(count)).Ok() ||
-            ReadPointer(storageAddress, storage).status != ReadStatus::Ok)
+        if (!ReadExact(countAddress, &count, sizeof(count)).Ok())
             return ReadStatus::ReadFailure;
+        const ReadStatus storageStatus = ReadPointer(storageAddress, storage);
+        if (storageStatus != ReadStatus::Ok)
+            return storageStatus;
         if (count <= 0 || count > options_.maxObjectCount || !storage ||
             (objectStorage_ && storage != objectStorage_) ||
             (objectStorage_ && binding_.objects.kind == ObjectArrayKind::Fixed && count != objectCount_))
@@ -119,12 +121,14 @@ namespace NextDumper
         return ReadObjectInfo(object.handle);
     }
 
-    [[nodiscard]] inline ObjectQueryResult RemoteRuntime::FindObjects(const ObjectQuery &query, std::size_t maxResults)
+    [[nodiscard]] inline ObjectQueryResult RemoteRuntime::FindObjects(const ObjectQuery &query, std::size_t maxResults,
+                                                                      ObjectFlagsFilter flags)
     {
-        return FindObjectsImpl(query, maxResults, {}, false);
+        return FindObjectsImpl(query, maxResults, {}, false, flags);
     }
 
-    [[nodiscard]] inline ObjectLookupResult RemoteRuntime::FindFirstUClassObject(std::string_view name)
+    [[nodiscard]] inline ObjectLookupResult RemoteRuntime::FindFirstUClassObject(std::string_view name,
+                                                                                 ObjectFlagsFilter flags)
     {
         if (name.empty())
             return {ReadStatus::InvalidArgument, std::nullopt, 0};
@@ -136,7 +140,7 @@ namespace NextDumper
             return {ReadStatus::Unsupported, std::nullopt, 0};
         ObjectQuery query;
         query.name = name;
-        ObjectQueryResult matches = FindObjectsImpl(query, 1, uclassFullName, true);
+        ObjectQueryResult matches = FindObjectsImpl(query, 1, uclassFullName, true, flags);
         if (!matches.objects.empty())
             return {matches.status == ReadStatus::Incomplete ? ReadStatus::Incomplete : ReadStatus::Ok,
                     matches.objects.front(), matches.slotsVisited};
@@ -145,9 +149,10 @@ namespace NextDumper
     }
 
     [[nodiscard]] inline ObjectLookupResult RemoteRuntime::FindFirstObjectOfType(std::string_view classFullName,
-                                                                                 bool includeDerived)
+                                                                                 bool includeDerived,
+                                                                                 ObjectFlagsFilter flags)
     {
-        ObjectQueryResult matches = FindObjectsOfType(classFullName, 1, includeDerived);
+        ObjectQueryResult matches = FindObjectsOfType(classFullName, 1, includeDerived, flags);
         if (!matches.objects.empty())
             return {matches.status == ReadStatus::Incomplete ? ReadStatus::Incomplete : ReadStatus::Ok,
                     matches.objects.front(), matches.slotsVisited};
@@ -156,7 +161,8 @@ namespace NextDumper
     }
 
     [[nodiscard]] inline ObjectQueryResult RemoteRuntime::FindObjectsOfType(std::string_view classFullName,
-                                                                            std::size_t maxResults, bool includeDerived)
+                                                                            std::size_t maxResults, bool includeDerived,
+                                                                            ObjectFlagsFilter flags)
     {
         if (!initialized_)
             return {ReadStatus::NotInitialized, 0, false, {}};
@@ -167,13 +173,14 @@ namespace NextDumper
         const TypeDescriptor *requestedType = FindType(classFullName);
         if ((includeDerived && !requestedType) || (requestedType && requestedType->kind != TypeKind::Class))
             return {ReadStatus::Unsupported, 0, false, {}};
-        return FindObjectsImpl({}, maxResults, classFullName, includeDerived);
+        return FindObjectsImpl({}, maxResults, classFullName, includeDerived, flags);
     }
 
     [[nodiscard]] inline ObjectQueryResult RemoteRuntime::FindObjectsImpl(const ObjectQuery &query,
                                                                           std::size_t maxResults,
                                                                           std::string_view requiredTypeFullName,
-                                                                          bool includeDerived)
+                                                                          bool includeDerived,
+                                                                          ObjectFlagsFilter flags)
     {
         ObjectQueryResult result;
         if (!initialized_)
@@ -190,6 +197,16 @@ namespace NextDumper
         if (maxResults == 0)
         {
             result.status = ReadStatus::InvalidArgument;
+            return result;
+        }
+        if ((flags.requireAll & flags.excludeAny) != 0)
+        {
+            result.status = ReadStatus::InvalidArgument;
+            return result;
+        }
+        if (!flags.IsEmpty() && binding_.uobject.flagsOffset < 0)
+        {
+            result.status = ReadStatus::Unsupported;
             return result;
         }
         const std::size_t resultLimit = std::min(maxResults, options_.maxSearchResults);
@@ -210,6 +227,17 @@ namespace NextDumper
             {
                 result.status = ReadStatus::Incomplete;
                 continue;
+            }
+            if (!flags.IsEmpty())
+            {
+                std::uint32_t objectFlags = 0;
+                if (ReadObjectFlags(object.handle.address, objectFlags) != ReadStatus::Ok)
+                {
+                    result.status = ReadStatus::Incomplete;
+                    continue;
+                }
+                if (!flags.Matches(objectFlags))
+                    continue;
             }
             bool matches = true;
             std::string objectName, className, classFullName, fullName;
@@ -294,9 +322,10 @@ namespace NextDumper
         return result;
     }
 
-    [[nodiscard]] inline ObjectLookupResult RemoteRuntime::FindFirstObject(const ObjectQuery &query)
+    [[nodiscard]] inline ObjectLookupResult RemoteRuntime::FindFirstObject(const ObjectQuery &query,
+                                                                           ObjectFlagsFilter flags)
     {
-        ObjectQueryResult matches = FindObjects(query, 1);
+        ObjectQueryResult matches = FindObjects(query, 1, flags);
         if (!matches.objects.empty())
             return {matches.status == ReadStatus::Incomplete ? ReadStatus::Incomplete : ReadStatus::Ok,
                     matches.objects.front(), matches.slotsVisited};
@@ -426,6 +455,19 @@ namespace NextDumper
             return std::nullopt;
         info.classFullName = std::move(classFullName);
         return info;
+    }
+
+    [[nodiscard]] inline ReadStatus RemoteRuntime::ReadObjectFlags(TargetAddress object, std::uint32_t &flags) const
+    {
+        flags = 0;
+        if (!object || binding_.uobject.flagsOffset < 0)
+            return ReadStatus::Unsupported;
+        TargetAddress flagsAddress = 0;
+        if (!Add(object, static_cast<std::uint32_t>(binding_.uobject.flagsOffset), flagsAddress))
+            return ReadStatus::AddressOverflow;
+        if (!ReadExact(flagsAddress, &flags, sizeof(flags)).Ok())
+            return ReadStatus::ReadFailure;
+        return ReadStatus::Ok;
     }
 
 } // namespace NextDumper

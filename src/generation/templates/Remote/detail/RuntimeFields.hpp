@@ -21,12 +21,16 @@ namespace NextDumper
         if (!type)
         {
             const auto info = ReadObjectInfo(object.handle);
-            type = info ? FindType(info->classFullName) : nullptr;
+            if (!info)
+                return {ReadStatus::Incomplete, {}};
+            type = FindType(info->classFullName);
         }
-        const FieldDescriptor *field = FindField(type, name);
-        if (!field)
-            return {ReadStatus::NotFound, {}};
-        return ReadFieldAt(object.handle.address, *field);
+        if (!type)
+            return {ReadStatus::Unsupported, {}};
+        const FieldLookupResult field = FindField(type, name);
+        if (!field.Ok())
+            return {field.status, {}};
+        return ReadFieldAt(object.handle.address, *field.field);
     }
 
     [[nodiscard]] inline ValueReadResult RemoteRuntime::ReadField(const RemoteStructView &structure,
@@ -34,10 +38,10 @@ namespace NextDumper
     {
         if (structure.runtime != this || !structure.address || !structure.type)
             return {ReadStatus::InvalidArgument, {}};
-        const FieldDescriptor *field = FindField(structure.type, name);
-        if (!field)
-            return {ReadStatus::NotFound, {}};
-        return ReadFieldAt(structure.address, *field);
+        const FieldLookupResult field = FindField(structure.type, name);
+        if (!field.Ok())
+            return {field.status, {}};
+        return ReadFieldAt(structure.address, *field.field);
     }
 
     template <typename T>
@@ -118,8 +122,10 @@ namespace NextDumper
         {
             if (type.elementSize != binding_.fname.size)
                 return ReadOpaque(address, static_cast<std::size_t>(type.elementSize), "fname-size-mismatch");
-            const auto name = ReadFName(address);
-            return name ? ValueReadResult{ReadStatus::Ok, *name} : ValueReadResult{ReadStatus::ReadFailure, {}};
+            std::string name;
+            if (!ReadFName(address, name))
+                return {ReadStatus::ReadFailure, {}};
+            return {ReadStatus::Ok, std::move(name)};
         }
         case PropertyKind::String:
             return ReadString(address, type);

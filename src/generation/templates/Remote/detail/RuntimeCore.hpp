@@ -250,17 +250,46 @@ namespace NextDumper
         return nullptr;
     }
 
-    [[nodiscard]] inline const FieldDescriptor *RemoteRuntime::FindField(const TypeDescriptor *type,
-                                                                         std::string_view name) const
+    [[nodiscard]] inline FieldLookupResult RemoteRuntime::FindField(const TypeDescriptor *type,
+                                                                    std::string_view name) const
     {
-        for (std::size_t depth = 0; type && depth < 64; ++depth)
+        if (!type || name.empty())
+            return {ReadStatus::InvalidArgument, nullptr};
+
+        std::array<const TypeDescriptor *, 64> visited{};
+        std::size_t depth = 0;
+        bool descriptorIncomplete = false;
+        while (type && depth < visited.size())
         {
+            if (std::find(visited.begin(), visited.begin() + static_cast<std::ptrdiff_t>(depth), type) !=
+                visited.begin() + static_cast<std::ptrdiff_t>(depth))
+                return {ReadStatus::Incomplete, nullptr};
+            visited[depth++] = type;
+
+            if (!type->status || std::string_view(type->status) != "Complete")
+                descriptorIncomplete = true;
+            if (type->fieldCount != 0 && !type->fields)
+                return {ReadStatus::Incomplete, nullptr};
             for (std::size_t index = 0; index < type->fieldCount; ++index)
-                if (type->fields[index].name == name)
-                    return &type->fields[index];
+            {
+                if (!type->fields[index].name)
+                    return {ReadStatus::Incomplete, nullptr};
+                if (std::string_view(type->fields[index].name) == name)
+                    return {ReadStatus::Ok, &type->fields[index]};
+            }
+
+            if (!type->superFullName || type->superFullName[0] == '\0')
+                return {type->superTypeResolved && !descriptorIncomplete ? ReadStatus::NotFound
+                                                                         : ReadStatus::Incomplete,
+                        nullptr};
+
+            if (!type->superTypeResolved)
+                return {ReadStatus::Incomplete, nullptr};
             type = FindType(type->superFullName);
+            if (!type)
+                return {ReadStatus::Incomplete, nullptr};
         }
-        return nullptr;
+        return {ReadStatus::Incomplete, nullptr};
     }
 
     [[nodiscard]] inline bool RemoteRuntime::IsTypeA(const TypeDescriptor *type, std::string_view baseName) const
