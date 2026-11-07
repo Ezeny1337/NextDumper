@@ -9,9 +9,11 @@
 `sdk/SDK.hpp` 是聚合入口，包含以下运行时文件：
 
 - `Remote.hpp` 是外部读取器的聚合头文件。
-- `Remote/Memory.hpp` 定义读取回调和读取状态；`Remote/Metadata.hpp` 定义绑定与反射描述；`Remote/Views.hpp` 定义对象和值视图；`Remote/Runtime.hpp` 声明读取运行时。
+- `Remote/Memory.hpp` 定义读取回调和读取状态。
+- `Remote/Metadata.hpp` 定义绑定与反射描述；`Remote/Views.hpp` 定义对象和值视图；`Remote/Runtime.hpp` 声明读取运行时。
+- `Remote/NameTextCodec.hpp` 与 `Remote/DecodeDescriptor.hpp` 提供共享的内置名称算法和解码能力描述。
 - `Remote/detail/` 按核心、对象、名称、字段、标量、引用和容器职责保存运行时的 inline 实现。
-- `Binding.hpp` 保存已验证的 UE 根地址 RVA、对象/名称容器布局和 UObject/FName 布局。
+- `Binding.hpp` 保存已验证的 UE 根地址 RVA、对象/名称容器布局、UObject/FName 布局和解码规则。
 - `Metadata.hpp` 汇总生成的类型与枚举描述。
 - `Types/*.hpp` 提供类型字段描述及原有布局声明。
 
@@ -70,6 +72,40 @@ if (initialized != NextDumper::ReadStatus::Ok)
 ```
 
 示例中的后端名称仅用于说明。应按消费者自己的 API 映射回调参数和返回值；SDK 不要求特定的句柄类型、进程标识、权限级别或传输方式。
+
+## 解码与运行时能力
+
+`TargetBinding.decoding` 保存本次目标所需的算法与参数。Dumper 和生成 SDK 使用同一份 C++17 算法实现；消费者无需复制解码代码或修改绑定标记。
+
+| 名称算法 | 参数 | 适用条件 |
+| --- | --- | --- |
+| `Identity` | 无，`Key` 为 0 | 名称文本无需变换 |
+| `ByteXor` | 单字节 `Key` | 对名称字节逐项 XOR |
+| `LengthSchedule` | 无，`Key` 为 0 | 必须由 NamePool 条目头取得真实字符数 |
+
+SDK 在完整读取名称字节后执行解码，再转换字符并缓存结果。名称算法不会应用到 `FString`、普通字符串或业务字段。旧式 GNames 缺少条目长度，不能使用 `LengthSchedule`。
+
+`ByteXor` 的键在被验证的名称字节间保持一致，不证明它跨进程会话恒定。需要从当前会话读取密钥的算法应使用自定义回调；导出采集时的数值不能代替密钥获取规则。初始化名称校验失败时，应拒绝使用该绑定。
+
+`DecodeDescriptor::IsSupported(namePool, chunkedObjects)` 可在不读内存的情况下检查解码能力。必要位置仍依赖自定义回调时，`Initialize()` 返回 `Unsupported`；未知算法、非法参数或未定义的解码位置标志位返回 `InvalidArgument`。Dumper 的自定义回调不会被序列化成 SDK 可执行代码。
+
+`manifest.json`、`diagnostics.json` 和 `runtime.json` 均提供 `external_runtime`：
+
+| 字段 | 含义 |
+| --- | --- |
+| `status` | `supported` 或 `unsupported`，范围为本次绑定及其必要解码 |
+| `decoding.name_text` | 算法、参数、参数来源与选择来源；`default` 为默认 identity，`explicit` 为显式配置，`analysis` 为自动分析 |
+| `decoding.name_text.analysis_validation` | Analysis 已知名称匹配数、遍历条目数和窄/宽字符样本数；非 Analysis 来源为 `null` |
+| `decoding.custom_slots` | Dumper 中仍使用自定义回调的位置 |
+| `capture_validation` | 本次采集时对象、名称和语义绑定的验证结果 |
+| `required_inputs` | 无法以模块 RVA 导出的根地址，消费者需通过当前会话的 `RuntimeRoots` 提供 |
+| `unsupported` | 不支持的位置与原因，例如 `custom-decoder-not-exported` |
+
+已知名称匹配使用窄字符；额外采样分别记录窄/宽字符数量。`wide_samples` 为 0 表示没有宽字符采样证据，不代表所有宽字符名称已经验证。
+
+`external_runtime.status` 与 `reflection_status`、`sdk_status` 独立。反射 `Partial` 的产物可以支持已完整描述的字段；反射 `Complete` 也不能证明外部运行时具备自定义解码。`supported` 不代替当前会话的初始化检查，也不保证所有属性种类都支持值读取。
+
+生成头文件的绑定结构会随读取契约更新，升级产物时应整套替换 `sdk/`。JSON 读取器仅接受对应的新 schema，不提供旧格式兼容。
 
 ## 对象查询
 

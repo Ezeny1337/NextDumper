@@ -1,9 +1,11 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <optional>
 #include <span>
+#include <string>
 #include <utility>
 #include <variant>
 
@@ -37,15 +39,31 @@ namespace nextdumper::binding
         std::optional<Callback> callback_;
     };
 
+    struct NameTextValidationEvidence
+    {
+        std::size_t knownMatches = 0;
+        std::size_t walkedEntries = 0;
+        std::size_t narrowSamples = 0;
+        std::size_t wideSamples = 0;
+    };
+
+    struct NameTextEvidence
+    {
+        std::string source = "default";
+        std::optional<NameTextValidationEvidence> validation;
+    };
+
     class NameTextDecoder
     {
     public:
         using Callback = std::function<bool(std::span<uint8_t> bytes, uintptr_t address, bool wide)>;
 
-        [[nodiscard]] static NameTextDecoder Builtin(decoding::NameTextCodec codec)
+        [[nodiscard]] static NameTextDecoder Builtin(decoding::NameTextCodec codec,
+                                                     NameTextEvidence evidence = {"explicit", std::nullopt})
         {
             NameTextDecoder result;
             result.decoder_ = codec;
+            result.evidence_ = std::move(evidence);
             return result;
         }
 
@@ -53,6 +71,7 @@ namespace nextdumper::binding
         {
             NameTextDecoder result;
             result.decoder_ = std::move(callback);
+            result.evidence_.source = "custom-callback";
             return result;
         }
 
@@ -62,6 +81,7 @@ namespace nextdumper::binding
         }
 
         [[nodiscard]] bool IsCustom() const { return !BuiltinCodec(); }
+        [[nodiscard]] const NameTextEvidence &Evidence() const { return evidence_; }
         [[nodiscard]] bool IsIdentity() const
         {
             const auto *codec = BuiltinCodec();
@@ -89,6 +109,7 @@ namespace nextdumper::binding
 
     private:
         std::variant<decoding::NameTextCodec, Callback> decoder_;
+        NameTextEvidence evidence_;
     };
 
     struct DecodePlan

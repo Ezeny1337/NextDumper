@@ -41,8 +41,7 @@ namespace NextDumper
                 return false;
             TargetAddress chunksAddress = 0, chunkSlot = 0, chunk = 0, entrySlot = 0;
             if (!Add(nameRoot_, static_cast<std::uint32_t>(layout.chunksOffset), chunksAddress) ||
-                ReadPointer(chunksAddress, chunk) != ReadStatus::Ok ||
-                !AddScaled(chunk, chunkIndex, binding_.pointerWidth, chunkSlot) ||
+                !AddScaled(chunksAddress, chunkIndex, binding_.pointerWidth, chunkSlot) ||
                 ReadPointer(chunkSlot, chunk) != ReadStatus::Ok || !chunk ||
                 !AddScaled(chunk, within, binding_.pointerWidth, entrySlot) ||
                 ReadPointer(entrySlot, entry) != ReadStatus::Ok || !entry)

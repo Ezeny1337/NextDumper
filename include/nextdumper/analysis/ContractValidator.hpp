@@ -49,6 +49,8 @@ namespace nextdumper::analysis
         size_t Block0Valid = 0;
         size_t HighBlockSamples = 0;
         size_t HighBlockValid = 0;
+        size_t NarrowSamples = 0;
+        size_t WideSamples = 0;
         size_t AttemptedRoots = 0;
         std::string Failure;
         std::string FailureDetail;

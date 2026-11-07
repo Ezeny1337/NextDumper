@@ -70,7 +70,7 @@ namespace nextdumper::decoding
                 return true;
             }
 
-            // NamePool stores UTF-16 code units in target little-endian order.
+            // NamePool 以目标小端序存储 UTF-16 代码单元
             const std::uint16_t wideKey = static_cast<std::uint16_t>((key | 0x7Fu) + 0x80u);
             for (std::size_t index = 0; index < byteCount; index += 2)
             {

@@ -100,8 +100,6 @@ namespace nextdumper::binding
     struct NamePoolLayout
     {
         int32_t blocksOffset = -1;
-        // Boundary fields are relative to the table, so a blocks-table alias and
-        // a full pool root have the same publication contract. Empty means unknown.
         std::optional<int32_t> currentBlockFromBlocks;
         std::optional<int32_t> byteCursorFromBlocks;
         int32_t blocksBit = -1;

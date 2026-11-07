@@ -361,6 +361,8 @@ namespace nextdumper::analysis
                              std::to_string(validation.KnownMatched) +
                              " samples=" + std::to_string(validation.Block0Valid + validation.HighBlockValid) + "/" +
                              std::to_string(validation.Block0Samples + validation.HighBlockSamples) +
+                             " narrow_samples=" + std::to_string(validation.NarrowSamples) +
+                             " wide_samples=" + std::to_string(validation.WideSamples) +
                              " walked=" + std::to_string(validation.KnownWalked) +
                              " status=" + (validation.DecoderValidated ? "validated" : "observed")});
                     result.Diagnostics.push_back(

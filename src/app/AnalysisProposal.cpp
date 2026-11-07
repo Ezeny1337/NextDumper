@@ -46,7 +46,7 @@ namespace nextdumper::app
     std::optional<NameBindingProposal> MakeNameBindingProposal(const AnalysisResult &result,
                                                                const DecodePlan &baseDecode)
     {
-        // Analysis validates raw NamePool pointers and headers, without profile transforms.
+        // 分析过程校验原始 NamePool 指针与头部，不进行 profile 变换
         if (!baseDecode.IsValid() || !baseDecode.nameBlocks.IsIdentity() || !baseDecode.nameEntry.IsIdentity() ||
             !baseDecode.nameHeader.IsIdentity() || result.AddressSpaceChanged || result.NameStatus == AnalysisStatus::Ambiguous)
             return std::nullopt;
@@ -95,7 +95,10 @@ namespace nextdumper::app
 
             proposal.decode = baseDecode;
             const auto decoder = *validation.Decoder;
-            proposal.decode.nameText = binding::NameTextDecoder::Builtin(decoder);
+            proposal.decode.nameText = binding::NameTextDecoder::Builtin(
+                decoder, {"analysis", binding::NameTextValidationEvidence{
+                                          validation.KnownMatched, validation.KnownWalked,
+                                          validation.NarrowSamples, validation.WideSamples}});
             if (!proposal.decode.IsValid() || !proposal.IsValid())
                 continue;
 

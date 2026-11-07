@@ -165,6 +165,8 @@ A successful run creates a directory named after the package and the session tim
     ├── Remote.hpp
     ├── Remote/
     │   ├── Memory.hpp
+    │   ├── NameTextCodec.hpp
+    │   ├── DecodeDescriptor.hpp
     │   ├── Metadata.hpp
     │   ├── Views.hpp
     │   ├── Runtime.hpp
@@ -196,7 +198,7 @@ The output directory also receives the session log and diagnosis report:
 | `sdk/EngineLayouts.hpp` | Runtime offsets for selected Unreal reflection structures. `-1` means the offset was not resolved for this target. |
 | `sdk/Remote.hpp` | Stable umbrella header for the external-memory reader. |
 | `sdk/Remote/` | C++ headers grouped by read transport, reflection metadata, remote views, and runtime behavior. |
-| `sdk/Binding.hpp` | Validated target layout and relocatable module-root metadata. |
+| `sdk/Binding.hpp` | Validated target layout, relocatable module roots, and decoder descriptors. |
 | `sdk/Metadata.hpp` | Type and enum descriptors used by the runtime reader. |
 | `sdk/Types.hpp` | Includes every `sdk/Types/<Package>.hpp`. Use it to pull in all reflected classes and structs. |
 | `sdk/Types/<Package>.hpp` | Reflected classes and structs of one Unreal package, with names, inheritance, and field offsets. |
@@ -215,7 +217,9 @@ The timestamp is taken from local time when the session starts. If reflection or
 
 ## Game profiles
 
-Compiled profiles are the extension point for game-specific adaptations. Implement `IGameProfile` from `include/nextdumper/compat/GameProfile.hpp` and register the instance in `src/compat/GameProfiles.cpp`. Without a matching profile, the tool uses automatic discovery and default decoding.
+Automatic discovery validates roots, layouts, and the implemented name codecs (`Identity`, `ByteXor`, and `LengthSchedule`) against the target. The compiled profile registry is empty by default. Profiles supplement target knowledge that automatic discovery does not cover; their candidates still pass runtime validation.
+
+To add a verified override, implement `IGameProfile` from `include/nextdumper/compat/GameProfile.hpp` and register it in `src/compat/GameProfiles.cpp`. This example explicitly selects a built-in name codec for the matched target:
 
 ```cpp
 class ExampleGameProfile final : public nextdumper::compat::IGameProfile
@@ -234,7 +238,8 @@ public:
         const nextdumper::module::ModuleImage &) const override
     {
         auto decode = nextdumper::binding::DecodePlan::Identity();
-        // Only override decoders that were verified against the target build.
+        decode.nameText = nextdumper::binding::NameTextDecoder::Builtin(
+            {nextdumper::decoding::NameTextFamily::LengthSchedule, 0});
         return decode;
     }
 };
@@ -250,6 +255,8 @@ Add the class to `CreateGameProfiles()`. If the implementation has its own `.cpp
 | `MakeDecodePlan()` | Configures pointer, count, index, `FName`, header, and name-text decoders | Decoded values must still pass index, name, and layout checks. |
 
 `Matches()` should check the package, target ABI, and module name where possible. Module identity is derived from mapped segments, not a content hash, so a package-name match does not prove that the target binary is identical to the sample you reverse engineered. Profile callbacks receive only the read-only `IMemorySource`; the decode plan is kept for the lifetime of the session, so do not capture short-lived objects.
+
+Only select codecs supported by evidence from the target build. Built-in algorithms and parameters are exported to the SDK. For an algorithm that is not implemented, use an explicit `Custom(callback)` factory, such as `DecodePlan::PointerDecoder::Custom(callback)` for pointer decoding. Required custom callbacks keep external SDK initialization unsupported until an exportable implementation exists. NamePool decoding does not decrypt arbitrary game fields such as encoded coordinates.
 
 ## Compatibility diagnosis
 
@@ -308,6 +315,8 @@ The output contains no hash of the target binary. Confirm that the file open in 
 | `3` | Partial reflection capture or SDK output. |
 
 `manifest.json` records `reflection_status` and `sdk_status` separately. Fields emitted as fixed-size opaque storage keep their reflected size and semantics, but their contents are not expanded. Opaque storage alone does not make the SDK partial; omitted fields and layout warnings do.
+
+`external_runtime` separately records binding and decoding support, decoder provenance, observed name-sample coverage, required root inputs, and unsupported decoder slots. `supported` means the binding's necessary decoders are implemented; consumer initialization and individual field reads must still succeed. Replace the entire generated SDK when updating its binding contract. The current runtime, manifest, and diagnostics JSON schemas are 7, 10, and 12 respectively.
 
 JSON files keep complete field metadata. Logs keep diagnostic summaries, limited samples, and anomalies, with counts for omitted samples and references to the corresponding JSON records.
 

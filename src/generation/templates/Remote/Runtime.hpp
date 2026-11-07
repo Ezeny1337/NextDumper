@@ -39,31 +39,30 @@ namespace NextDumper
 
     [[nodiscard]] std::optional<ObjectInfo> Describe(const RemoteObjectView &object);
 
-    // Object queries scan the raw UObject array; no object flags are excluded by default.
+    // 对象查询扫描原始 UObject 数组；默认不排除任何 object flags
     [[nodiscard]] ObjectQueryResult FindObjects(const ObjectQuery &query, std::size_t maxResults = 128,
                                                 ObjectFlagsFilter flags = {});
 
     [[nodiscard]] ObjectLookupResult FindFirstObject(const ObjectQuery &query, ObjectFlagsFilter flags = {});
 
-    // Finds the first UClass metadata object with this short object name, including reflected subclasses.
+    // 查找首个具有该短对象名的 UClass 元数据对象，包括反射出的子类
     [[nodiscard]] ObjectLookupResult FindFirstUClassObject(std::string_view name, ObjectFlagsFilter flags = {});
 
-    // classFullName must match TypeDescriptor::fullName; derived matches require complete reflected ancestry.
+    // classFullName 必须与 TypeDescriptor::fullName 匹配，派生匹配要求完整的反射祖先链
     [[nodiscard]] ObjectLookupResult FindFirstObjectOfType(std::string_view classFullName,
                                                            bool includeDerived = true, ObjectFlagsFilter flags = {});
 
-    // Uses reflected type matching and returns up to maxResults objects.
+    // 使用反射类型匹配，最多返回 maxResults 个对象
     [[nodiscard]] ObjectQueryResult FindObjectsOfType(std::string_view classFullName, std::size_t maxResults = 128,
                                                       bool includeDerived = true, ObjectFlagsFilter flags = {});
 
-    // Uses an exact TypeDescriptor::fullName match.
+    // 使用精确的 TypeDescriptor::fullName 匹配
     [[nodiscard]] const TypeDescriptor *FindType(std::string_view fullName) const;
 
-    // Searches available descriptors and reports incomplete type or ancestry metadata.
+    // 搜索可用的描述符，并报告不完整的类型或祖先元数据
     [[nodiscard]] FieldLookupResult FindField(const TypeDescriptor *type, std::string_view name) const;
 
-    // Tests reflected inheritance metadata without reading target memory. False may mean
-    // either a non-match or that ancestry metadata was unavailable.
+    // 在不读取目标内存的情况下测试反射继承元数据，返回 False 可能意味着不匹配，或祖先元数据不可用
     [[nodiscard]] bool IsTypeA(const TypeDescriptor *type, std::string_view baseFullName) const;
 
     [[nodiscard]] ValueReadResult ReadField(const RemoteObjectView &object, std::string_view name);

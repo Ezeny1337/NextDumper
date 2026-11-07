@@ -1010,6 +1010,16 @@ namespace nextdumper::app
         }
         context_.CommitBinding(*binding);
         Note(RuntimeLogLevel::Info, "Runtime binding validated");
+        const auto decodeDescriptor = context_.Binding().decode.Describe();
+        const bool namePool = context_.Binding().names.kind == binding::NameContainerKind::Pool;
+        const bool chunkedObjects = context_.Binding().objects.kind == binding::ObjectContainerKind::Chunked;
+        const bool runtimeSupported = decodeDescriptor.IsSupported(namePool, chunkedObjects);
+        const auto *nameCodec = context_.Binding().decode.nameText.BuiltinCodec();
+        Note(runtimeSupported ? RuntimeLogLevel::Info : RuntimeLogLevel::Warning,
+             "external_runtime status=" + std::string(runtimeSupported ? "supported" : "unsupported") +
+                 " scope=binding name_text=" + (nameCodec ? decoding::NameTextFamilyName(nameCodec->Family) : "custom") +
+                 " source=" + context_.Binding().decode.nameText.Evidence().source +
+                 " required_custom_slots=" + Hex(decodeDescriptor.RequiredCustomSlots(namePool, chunkedObjects)));
         Note(RuntimeLogLevel::Info, "compatibility_checkpoint stage=binding status=validated profile=" +
                                         diagnosis_.profileId);
         for (const std::string &evidence : context_.Binding().report.evidence)

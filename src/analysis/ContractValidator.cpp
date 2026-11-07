@@ -37,6 +37,8 @@ namespace nextdumper::analysis
         {
             size_t Tested = 0;
             size_t Valid = 0;
+            size_t Narrow = 0;
+            size_t Wide = 0;
             std::string Failure;
             std::string Detail;
             uintptr_t Site = 0;
@@ -373,6 +375,10 @@ namespace nextdumper::analysis
                 }
                 ++out.Tested;
                 ++out.Valid;
+                if (entry.Wide)
+                    ++out.Wide;
+                else
+                    ++out.Narrow;
                 consumed += entry.Size;
                 address += entry.Size;
             }
@@ -700,6 +706,8 @@ namespace nextdumper::analysis
                     }
                     validation.HighBlockSamples += samples.Tested;
                     validation.HighBlockValid += samples.Valid;
+                    validation.NarrowSamples += samples.Narrow;
+                    validation.WideSamples += samples.Wide;
                 }
             }
             else
@@ -723,6 +731,8 @@ namespace nextdumper::analysis
             }
             validation.Block0Samples = block0Samples.Tested;
             validation.Block0Valid = block0Samples.Valid;
+            validation.NarrowSamples += block0Samples.Narrow;
+            validation.WideSamples += block0Samples.Wide;
 
             if (validation.HighBlockSamples != validation.HighBlockValid ||
                 validation.Block0Samples != validation.Block0Valid ||

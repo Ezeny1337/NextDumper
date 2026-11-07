@@ -165,6 +165,8 @@ NextDumper -o <输出目录> -p <包名> [options]
     ├── Remote.hpp
     ├── Remote/
     │   ├── Memory.hpp
+    │   ├── NameTextCodec.hpp
+    │   ├── DecodeDescriptor.hpp
     │   ├── Metadata.hpp
     │   ├── Views.hpp
     │   ├── Runtime.hpp
@@ -196,7 +198,7 @@ NextDumper -o <输出目录> -p <包名> [options]
 | `sdk/EngineLayouts.hpp` | 所选 Unreal 反射结构的运行时偏移；`-1` 表示该偏移未解析。 |
 | `sdk/Remote.hpp` | 外部内存读取器的稳定聚合头文件。 |
 | `sdk/Remote/` | 按读取接口、反射元数据、远程视图和运行时行为组织的 C++ 头文件。 |
-| `sdk/Binding.hpp` | 已验证的目标布局和可重定位模块根信息。 |
+| `sdk/Binding.hpp` | 已验证的目标布局、可重定位模块根和解码规则描述。 |
 | `sdk/Metadata.hpp` | 运行时读取器使用的类型与枚举描述。 |
 | `sdk/Types.hpp` | 包含全部 `sdk/Types/<Package>.hpp`；用于一次性引入所有反射类与结构体。 |
 | `sdk/Types/<Package>.hpp` | 单个 Unreal 包反射出的类和结构体，包含名称、继承关系和字段偏移。 |
@@ -215,7 +217,9 @@ NextDumper -o <输出目录> -p <包名> [options]
 
 ## 游戏 profile
 
-游戏 profile 以编译期实现的形式提供，是适配特定游戏的扩展点。在 `include/nextdumper/compat/GameProfile.hpp` 中实现 `IGameProfile`，并在 `src/compat/GameProfiles.cpp` 中注册实例。没有匹配的 profile 时，工具使用自动发现和默认解码。
+自动发现会根据目标进程验证根地址、布局和已实现的名称算法（`Identity`、`ByteXor`、`LengthSchedule`）。编译期 profile 注册表默认为空；profile 用于补充自动发现尚未覆盖的目标知识，提供的候选仍需通过运行时校验。
+
+需要添加已验证的适配时，实现 `include/nextdumper/compat/GameProfile.hpp` 中的 `IGameProfile`，并在 `src/compat/GameProfiles.cpp` 中注册实例。以下示例为匹配的目标显式选择一种内置名称算法：
 
 ```cpp
 class ExampleGameProfile final : public nextdumper::compat::IGameProfile
@@ -234,7 +238,8 @@ public:
         const nextdumper::module::ModuleImage &) const override
     {
         auto decode = nextdumper::binding::DecodePlan::Identity();
-        // 只覆盖已通过目标样本验证的字段解码器。
+        decode.nameText = nextdumper::binding::NameTextDecoder::Builtin(
+            {nextdumper::decoding::NameTextFamily::LengthSchedule, 0});
         return decode;
     }
 };
@@ -250,6 +255,8 @@ public:
 | `MakeDecodePlan()` | 配置指针、计数、索引、`FName`、header 和名称文本解码器 | 解码结果仍需通过索引、名称和布局校验。 |
 
 `Matches()` 应尽量同时检查包名、目标 ABI 和模块名。模块标识来自已映射的段，不是内容哈希，因此包名匹配不能证明目标二进制与逆向样本完全相同。profile 回调只能通过只读的 `IMemorySource` 读取数据；解码配置会随本次会话一直保留，不要捕获短生命周期对象。
+
+只选择有当前目标构建证据支持的算法。内置算法和参数会导出到 SDK；尚未实现的算法应通过 `Custom(callback)` 显式提供，例如指针解码使用 `DecodePlan::PointerDecoder::Custom(callback)`。必要位置仍依赖自定义回调时，外部 SDK 会拒绝初始化，直到具备可导出的实现。NamePool 名称解码不会解密编码坐标等业务字段。
 
 ## 兼容性诊断
 
@@ -308,6 +315,10 @@ public:
 | `3` | 反射采集或 SDK 输出不完整。 |
 
 `manifest.json` 分别记录 `reflection_status` 和 `sdk_status`。以固定大小不透明存储输出的字段会保留反射得到的大小和语义，但不会展开内部内容。不透明存储本身不会让 SDK 变成部分完成；遗漏字段和布局警告才会。
+
+`external_runtime` 独立记录绑定与解码支持、算法来源、已观察的名称样本覆盖、需要提供的根地址，以及尚未支持的解码位置。`supported` 表示绑定所需的解码已实现，消费者仍需检查初始化和各次字段读取结果。
+
+绑定契约更新时，应整套替换生成 SDK。当前 `runtime.json`、`manifest.json`、`diagnostics.json` 的 schema 分别为 **7、10、12**。
 
 JSON 文件保留完整字段元数据。日志保留诊断摘要、有限的样本和异常，并记录省略的样本数量及对应 JSON 记录的位置。
 

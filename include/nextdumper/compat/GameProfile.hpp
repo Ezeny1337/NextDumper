@@ -1,9 +1,7 @@
 #pragma once
 
-#include <cstdint>
 #include <functional>
 #include <memory>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -48,7 +46,7 @@ namespace nextdumper::compat
             return {};
         }
 
-        // 返回的解码回调会随 RuntimeBinding 存活到本次 RuntimeSession 结束
+        // 解码规则和自定义回调会随 RuntimeBinding 存活到本次 RuntimeSession 结束
         [[nodiscard]] virtual DecodePlan MakeDecodePlan(
             const IMemorySource &memory,
             const ModuleImage &module) const
@@ -60,9 +58,6 @@ namespace nextdumper::compat
 
         // 提示会替代对应容器的自动布局发现，但仍必须通过相同的运行时探针
         [[nodiscard]] virtual BindingLayoutHints LayoutHints() const { return {}; }
-
-        // 加固可能对只读段做单字节 XOR 混淆，默认无混淆
-        [[nodiscard]] virtual std::optional<uint8_t> RodataXorKey() const { return std::nullopt; }
     };
 
     // 新增编译期 profile 时，在 src/compat/GameProfiles.cpp 中注册其工厂实例

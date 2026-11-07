@@ -124,14 +124,12 @@ namespace nextdumper::binding
                    firstFunction != 0 && memory.IsExecutable(firstFunction, sizeof(uintptr_t));
         }
 
-        // AddSingle/AddRange 先递增 NumElements 再返回索引，调用方随后才填充该槽位；
-        // FreeUObjectIndex 只清空槽位，从不回退计数。因此任何已解析对象的槽位必然满足
-        // index < NumElements（写入时刻成立，且计数单调不减）。反过来，若在 [count, capacity)
-        // 内找到可解析对象，则该 count 不可能是 NumElements。
-        // 返回的是采样到的最大已解析下标（-1 表示采样点全空），不是窗口内真实最大值：
-        // 采样可能漏判，但不会凭空造出矛盾，所以误判方向只会「漏否决」而不会「假否决」。
-        // 返回下标而非直接下结论，是因为调用方必须用「探测之后」重读的 count 比较：
-        // 探测期间数组可能继续增长，旧快照会把正常增长误判成矛盾。
+        // AddSingle/AddRange 先递增 NumElements 再返回索引，调用方随后才填充该槽位，FreeUObjectIndex 只清空槽位，从不回退计数
+        // 因此任何已解析对象的槽位必然满足 index < NumElements
+        // 反过来，若在 [count, capacity)，内找到可解析对象，则该 count 不可能是 NumElements
+        // 返回的是采样到的最大已解析下标，不是窗口内真实最大值
+        // 返回下标而非直接下结论，是因为调用方必须用探测之后重读的 count 比较
+        // 探测期间数组可能继续增长，旧快照会把正常增长误判成矛盾
         int64_t MaxResolvedIndexAbove(const IMemorySource &memory, const DecodePlan &decode,
                                       uintptr_t storage, int32_t chunkPrefix, int32_t elementsPerChunk,
                                       int32_t stride, bool packed, int32_t objectOffset, int32_t count)
@@ -172,8 +170,6 @@ namespace nextdumper::binding
                     highest = std::max(highest, index);
             };
 
-            // 密集段抓住紧邻 count 的矛盾；几何与尾段覆盖稀疏空区，
-            // 避免 count 远低于真实计数时因一段连续空槽而漏判。总探测数仍有界。
             for (int32_t probe = 0; probe < kDenseProbes; ++probe)
                 probeIndex(static_cast<int64_t>(count) + probe);
             for (int64_t step = kDenseProbes; step < capacity; step *= 2)
@@ -183,11 +179,10 @@ namespace nextdumper::binding
             return highest;
         }
 
-        // elementsPerChunk 决定了 index -> (chunk, within) 的映射，因此可以只用 item 数据检验：
-        // 取 chunk 1 起始处的若干槽位，凡能解析到对象的，其 InternalIndex 必须等于
-        // elementsPerChunk + 槽内偏移。若出现不符，则 elementsPerChunk 必错。
-        // 窗口内没有可解析对象时返回 false（无法判定，不是反对证据）——本函数只用于否决，
-        // 不作为接受依据，所以无法判定时必须放行给下游探针。
+        // elementsPerChunk 决定了 index -> (chunk, within) 的映射，因此可以只用 item 数据检验
+        // 取 chunk 1 起始处的若干槽位，凡能解析到对象的，其 InternalIndex 必须等于 elementsPerChunk + 槽内偏移
+        // 若出现不符，则 elementsPerChunk 必错
+        // 本函数只用于否决，不作为接受依据，所以无法判定时必须放行给下游探针
         bool ChunkBoundaryContradicted(const IMemorySource &memory, const DecodePlan &decode,
                                        uintptr_t storage, int32_t chunkPrefix, int32_t elementsPerChunk,
                                        int32_t stride, int32_t objectOffset, int32_t indexOffset, bool packed)
@@ -234,8 +229,6 @@ namespace nextdumper::binding
         {
             for (const auto &[existing, score] : out)
             {
-                // 容量字段偏移也计入身份：仅差 maxElements/maxChunks/numChunks 的候选
-                // 在读取器看来是不同的契约，不能互相吞掉
                 if (existing.kind == layout.kind && existing.objectsOffset == layout.objectsOffset &&
                     existing.numElementsOffset == layout.numElementsOffset &&
                     existing.maxElementsOffset == layout.maxElementsOffset &&
@@ -373,10 +366,6 @@ namespace nextdumper::binding
 
         constexpr size_t kMaxDiscoveryEvidence = 8;
         size_t chunkEvidence = 0;
-
-        // 每个 storage 的 chunk 表形态只读一次：连续非空前缀数，以及在 header 窗口内
-        // 取值等于该前缀数的字段偏移。两者都只依赖 storage，与 count/容量字段无关，
-        // 因此可以提到最内层循环之外，避免把偏移枚举乘进组合数。
         struct ChunkFacts
         {
             int32_t prefix = 0;
@@ -406,9 +395,6 @@ namespace nextdumper::binding
             return chunkFacts.emplace(storage, std::move(facts)).first->second;
         };
 
-        // MaxResolvedIndexAbove 的采样结果只取决于 storage、chunk 几何、item 形状与 count 取值，
-        // 与 count/maxElements/maxChunks/numChunks 的偏移无关。缓存后，偏移枚举不会把
-        // 采样成本乘进组合数——否则光是 numChunks 偏移的自由枚举就会放大一个数量级。
         std::map<std::tuple<uintptr_t, int32_t, int32_t, int32_t, bool, int32_t>, int64_t> resolvedCache;
         const auto sampledAboveFor = [&](uintptr_t storage, int32_t chunkPrefix, int32_t elementsPerChunk,
                                          const Shape &shape, bool packed, int32_t count) -> int64_t
@@ -502,8 +488,6 @@ namespace nextdumper::binding
                                 if (!chunkShape.valid)
                                     continue;
 
-                                // elementsPerChunk 决定 index -> (chunk, within) 的映射，可用 chunk 1
-                                // 起始处对象的 InternalIndex 独立检验；读不到可判定样本时放行给下游探针。
                                 if (ChunkBoundaryContradicted(memory_, decode, storage, facts.prefix, elementsPerChunk,
                                                               chunkShape.stride, chunkShape.objectOffset,
                                                               chunkShape.indexOffset, packed != 0))
@@ -567,10 +551,10 @@ namespace nextdumper::binding
                                 layout.itemStride = chunkShape.stride;
                                 layout.itemIndexOffset = chunkShape.indexOffset;
                                 layout.packedPointers = packed != 0;
-                                // 该候选的五个字段位置由 chunk 表实测前缀数与 item 索引一致性判定，
-                                // 不依赖引擎声明顺序；下游探针据此跳过固定字段顺序检查，改走数值校验。
-                                // 计数下界判据在采样点全空时无法否决，此时本标志仅表示「未发现反证」，
-                                // 接受与否仍由下游探针的 valid/confidence 门槛决定。
+                                // 该候选的五个字段位置由 chunk 表实测前缀数与 item 索引一致性判定，不依赖引擎声明顺序
+                                // 下游探针据此跳过固定字段顺序检查，改走数值校验
+                                // 计数下界判据在采样点全空时无法否决，此时本标志仅表示未发现反证
+                                // 接受与否仍由下游探针的 valid/confidence 门槛决定
                                 layout.chunkFieldsValidated = true;
                                 AddUniqueObjectCandidate(result.Layouts, std::move(layout),
                                                          0.35 + 0.65 * chunkShape.confidence, maxCandidates);

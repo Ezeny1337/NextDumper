@@ -4,6 +4,7 @@
 #include <ostream>
 #include <set>
 #include <string>
+#include <vector>
 
 #include "nextdumper/common/Hex.hpp"
 #include "nextdumper/generation/JsonExport.hpp"
@@ -22,6 +23,92 @@ namespace nextdumper::generation::detail
     using ::nextdumper::ue::FNameNumberLayout;
     using ::nextdumper::ue::SchemaLayoutVariantName;
 
+    namespace
+    {
+        void WriteExternalRuntimeJson(std::ostream &stream, const RuntimeContext &context)
+        {
+            using decoding::DecodeSlot;
+            const RuntimeBinding &binding = context.Binding();
+            const auto descriptor = binding.decode.Describe();
+            const bool namePool = binding.names.kind == NameContainerKind::Pool;
+            const bool chunkedObjects = binding.objects.kind == ObjectContainerKind::Chunked;
+            const bool supported = binding.IsValid() && descriptor.IsSupported(namePool, chunkedObjects);
+            const auto *codec = binding.decode.nameText.BuiltinCodec();
+            const auto &evidence = binding.decode.nameText.Evidence();
+            const std::uint32_t required = descriptor.RequiredCustomSlots(namePool, chunkedObjects);
+
+            stream << "{\"status\":\"" << (supported ? "supported" : "unsupported")
+                   << "\",\"scope\":\"binding\",\"decoding\":{\"name_text\":{\"family\":\""
+                   << (codec ? decoding::NameTextFamilyName(codec->Family) : "custom")
+                   << "\",\"source\":\"" << EscapeJson(evidence.source) << "\",\"key\":";
+            if (codec)
+                stream << static_cast<unsigned int>(codec->Key);
+            else
+                stream << "null";
+            stream << ",\"key_source\":\""
+                   << (!codec ? "callback" : codec->RequiresLength()                          ? "length"
+                                         : codec->Family == decoding::NameTextFamily::ByteXor ? "constant"
+                                                                                              : "none")
+                   << "\",\"analysis_validation\":";
+            if (evidence.validation)
+            {
+                const auto &validation = *evidence.validation;
+                stream << "{\"known_matches\":" << validation.knownMatches
+                       << ",\"walked_entries\":" << validation.walkedEntries
+                       << ",\"narrow_samples\":" << validation.narrowSamples
+                       << ",\"wide_samples\":" << validation.wideSamples << '}';
+            }
+            else
+                stream << "null";
+            stream << "},\"custom_slots\":[";
+            bool first = true;
+            std::vector<std::pair<const char *, const char *>> unsupported;
+            if (!binding.IsValid() || !descriptor.IsValid())
+                unsupported.emplace_back("binding", "invalid-binding-or-decoding");
+            if (!namePool && descriptor.nameText.RequiresLength())
+                unsupported.emplace_back("nameText", "name-array-has-no-entry-length");
+            for (std::uint8_t index = 0; index < static_cast<std::uint8_t>(DecodeSlot::Count); ++index)
+            {
+                const auto slot = static_cast<DecodeSlot>(index);
+                if ((descriptor.customSlots & decoding::DecodeSlotBit(slot)) != 0)
+                {
+                    if (!first)
+                        stream << ',';
+                    first = false;
+                    stream << '"' << decoding::DecodeSlotName(slot) << '"';
+                }
+                if ((required & decoding::DecodeSlotBit(slot)) != 0)
+                    unsupported.emplace_back(decoding::DecodeSlotName(slot), "custom-decoder-not-exported");
+            }
+            stream << "]},\"capture_validation\":{\"objects\":"
+                   << (binding.report.objectContainerValidated ? "true" : "false")
+                   << ",\"names\":" << (binding.report.nameContainerValidated ? "true" : "false")
+                   << ",\"semantics\":" << (binding.report.semanticValidationPassed ? "true" : "false")
+                   << "},\"required_inputs\":[";
+            first = true;
+            for (const auto &[name, address] : {std::pair{"object_root", binding.objectRoot.address},
+                                                std::pair{"name_root", binding.nameRoot.address}})
+            {
+                if (context.Module().Contains(address))
+                    continue;
+                if (!first)
+                    stream << ',';
+                first = false;
+                stream << '"' << name << '"';
+            }
+            stream << "],\"unsupported\":[";
+            first = true;
+            for (const auto &[slot, reason] : unsupported)
+            {
+                if (!first)
+                    stream << ',';
+                first = false;
+                stream << "{\"slot\":\"" << slot << "\",\"reason\":\"" << reason << "\"}";
+            }
+            stream << "]}";
+        }
+    } // namespace
+
     void ManifestJson(std::ostream &stream, const RuntimeContext &context, const ReflectionIR &reflection,
                       const std::string &packageName, const ArtifactProvenance &provenance,
                       const GenerationReport &report, ParseStatus status,
@@ -29,7 +116,7 @@ namespace nextdumper::generation::detail
     {
         const ReflectionStats &stats = reflection.stats;
         stream << "{\n";
-        stream << "  \"schema_version\": 9,\n";
+        stream << "  \"schema_version\": 10,\n";
         stream << "  \"package\": \"" << EscapeJson(packageName) << "\",\n";
         stream << "  \"engine\": \"" << EscapeJson(context.Schema().identity.canonicalVersionRange.empty() ? context.Schema().validation.familyEvidence : context.Schema().identity.canonicalVersionRange) << "\",\n";
         stream << "  \"profile\": {\"id\":\""
@@ -42,6 +129,9 @@ namespace nextdumper::generation::detail
         stream << "  \"status\": \"" << ParseStatusName(status) << "\",\n";
         stream << "  \"reflection_status\": \"" << ParseStatusName(reflection.status) << "\",\n";
         stream << "  \"sdk_status\": \"" << ParseStatusName(report.Status()) << "\",\n";
+        stream << "  \"external_runtime\":";
+        WriteExternalRuntimeJson(stream, context);
+        stream << ",\n";
         stream << "  \"artifact_kind\": \"" << (status == ParseStatus::Partial ? "partial" : "complete") << "\",\n";
         stream << "  \"module\": \"" << EscapeJson(context.Module().name) << "\",\n";
         stream << "  \"provenance\":{\"producer_commit\":\"" << EscapeJson(provenance.producerCommit)
@@ -100,10 +190,13 @@ namespace nextdumper::generation::detail
     void DiagnosticsJson(std::ostream &stream, const RuntimeContext &context, const ReflectionIR &reflection,
                          const GenerationReport &report, ParseStatus status)
     {
-        stream << "{\n  \"schema_version\": 11,\n  \"status\": \""
+        stream << "{\n  \"schema_version\": 12,\n  \"status\": \""
                << ParseStatusName(status) << "\",\n";
         stream << "  \"reflection_status\":\"" << ParseStatusName(reflection.status) << "\",\n";
         stream << "  \"sdk_status\":\"" << ParseStatusName(report.Status()) << "\",\n";
+        stream << "  \"external_runtime\":";
+        WriteExternalRuntimeJson(stream, context);
+        stream << ",\n";
         stream << "  \"schema_identity\":";
         WriteSchemaIdentityJson(stream, context.Schema().identity);
         stream << ",\n";
@@ -403,7 +496,10 @@ namespace nextdumper::generation::detail
     {
         const RuntimeBinding &binding = context.Binding();
         const EngineSchema &schema = context.Schema();
-        stream << "{\n  \"schema_version\": 6,\n";
+        stream << "{\n  \"schema_version\": 7,\n";
+        stream << "  \"external_runtime\":";
+        WriteExternalRuntimeJson(stream, context);
+        stream << ",\n";
         stream << "  \"engine\": \"" << EscapeJson(schema.identity.canonicalVersionRange.empty() ? schema.validation.familyEvidence : schema.identity.canonicalVersionRange) << "\",\n";
         stream << "  \"profile\": {\"id\":\"" << EscapeJson(schema.validation.profileId)
                << "\",\"label\":\"" << EscapeJson(schema.validation.profileLabel)
