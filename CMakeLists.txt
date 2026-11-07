@@ -48,6 +48,8 @@ endif()
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated/nextdumper")
 configure_file(cmake/BuildInfo.hpp.in generated/nextdumper/BuildInfo.hpp @ONLY)
 set(NEXTDUMPER_REMOTE_SDK_TEMPLATE_PATHS
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/nextdumper/decoding/NameTextCodec.hpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/nextdumper/decoding/DecodeDescriptor.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/generation/templates/Remote.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/generation/templates/Remote/Memory.hpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/generation/templates/Remote/Metadata.hpp"
@@ -65,6 +67,10 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
     ${NEXTDUMPER_REMOTE_SDK_TEMPLATE_PATHS})
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/generation/templates/Remote.hpp"
     NEXTDUMPER_REMOTE_SDK_TEMPLATE)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/include/nextdumper/decoding/NameTextCodec.hpp"
+    NEXTDUMPER_REMOTE_NAME_TEXT_CODEC_TEMPLATE)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/include/nextdumper/decoding/DecodeDescriptor.hpp"
+    NEXTDUMPER_REMOTE_DECODE_DESCRIPTOR_TEMPLATE)
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/generation/templates/Remote/Memory.hpp"
     NEXTDUMPER_REMOTE_MEMORY_TEMPLATE)
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/generation/templates/Remote/Metadata.hpp"

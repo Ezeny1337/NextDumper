@@ -1,12 +1,19 @@
 #pragma once
 
 #include "../BasicTypes.hpp"
+#include "DecodeDescriptor.hpp"
 
 #include <cstddef>
 #include <cstdint>
 
 namespace NextDumper
 {
+    using ::nextdumper::decoding::DecodeDescriptor;
+    using ::nextdumper::decoding::DecodeSlot;
+    using ::nextdumper::decoding::DecodeSlotName;
+    using ::nextdumper::decoding::NameTextCodec;
+    using ::nextdumper::decoding::NameTextFamily;
+
     enum class PropertyKind : std::uint8_t
     {
         Unknown,
@@ -237,7 +244,7 @@ namespace NextDumper
         std::uint8_t pointerWidth = 0;
         bool hasObjectRootRva = false;
         bool hasNameRootRva = false;
-        bool customDecodingRequired = false;
+        DecodeDescriptor decoding;
         TargetAddress objectRootRva = 0;
         TargetAddress nameRootRva = 0;
         ObjectArrayDescriptor objects;

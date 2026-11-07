@@ -7,7 +7,7 @@
 #include <utility>
 #include <variant>
 
-#include "nextdumper/decoding/NameTextCodec.hpp"
+#include "nextdumper/decoding/DecodeDescriptor.hpp"
 
 namespace nextdumper::binding
 {
@@ -118,5 +118,6 @@ namespace nextdumper::binding
         [[nodiscard]] static DecodePlan Identity() { return {}; }
         [[nodiscard]] bool IsValid() const;
         [[nodiscard]] bool IsIdentity() const;
+        [[nodiscard]] decoding::DecodeDescriptor Describe() const;
     };
 } // namespace nextdumper::binding

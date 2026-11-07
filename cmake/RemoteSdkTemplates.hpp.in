@@ -2,6 +2,12 @@
 
 namespace nextdumper::generation::detail
 {
+    inline constexpr char kRemoteNameTextCodecTemplate[] = R"NDSDK(
+@NEXTDUMPER_REMOTE_NAME_TEXT_CODEC_TEMPLATE@
+)NDSDK";
+    inline constexpr char kRemoteDecodeDescriptorTemplate[] = R"NDSDK(
+@NEXTDUMPER_REMOTE_DECODE_DESCRIPTOR_TEMPLATE@
+)NDSDK";
     inline constexpr char kRemoteSdkTemplate[] = R"NDSDK(
 @NEXTDUMPER_REMOTE_SDK_TEMPLATE@
 )NDSDK";

@@ -168,8 +168,8 @@ namespace NextDumper
 
     [[nodiscard]] bool ReadNameEntry(std::int32_t index, std::string &name, std::size_t depth = 0);
 
-    [[nodiscard]] bool ReadTextBytes(TargetAddress address, std::size_t chars, bool wide,
-                                     std::string &result) const;
+    [[nodiscard]] bool ReadNameText(TargetAddress address, std::size_t chars, bool wide,
+                                    std::string &result) const;
 
     static void AppendUtf8(std::string &output, std::uint32_t codePoint);
 

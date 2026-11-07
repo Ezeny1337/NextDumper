@@ -39,7 +39,10 @@ namespace NextDumper
             (enumCount_ && !enums_) || binding_.pointerWidth != sizeof(TargetAddress) ||
             std::string_view(moduleName) != binding_.moduleName)
             return ReadStatus::InvalidArgument;
-        if (binding_.customDecodingRequired)
+        if (!binding_.decoding.IsValid())
+            return ReadStatus::InvalidArgument;
+        if (!binding_.decoding.IsSupported(binding_.names.kind == NameStoreKind::Pool,
+                                           binding_.objects.kind == ObjectArrayKind::Chunked))
             return ReadStatus::Unsupported;
         if (!moduleBase_ &&
             ((!roots.objectRoot && binding_.hasObjectRootRva) || (!roots.nameRoot && binding_.hasNameRootRva)))

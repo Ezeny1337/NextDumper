@@ -126,7 +126,7 @@ namespace NextDumper
                 return false;
             const bool wide = (rawIndex & 1u) != 0;
             const std::size_t chars = std::min<std::size_t>(1024, available / (wide ? 2 : 1));
-            if (chars == 0 || !ReadTextBytes(stringAddress, chars, wide, name))
+            if (chars == 0 || !ReadNameText(stringAddress, chars, wide, name))
                 return false;
         }
         else
@@ -161,9 +161,9 @@ namespace NextDumper
             {
                 const bool wide = (header & layout.entryWideMask) != 0;
                 const std::size_t bytes = length * (wide ? 2 : 1);
-                if (layout.poolStringOffset > available ||
+                if (layout.poolStringOffset < 0 || static_cast<std::size_t>(layout.poolStringOffset) > available ||
                     bytes > available - static_cast<std::size_t>(layout.poolStringOffset) ||
-                    !ReadTextBytes(stringAddress, length, wide, name))
+                    !ReadNameText(stringAddress, length, wide, name))
                     return false;
             }
         }
@@ -172,22 +172,25 @@ namespace NextDumper
         return true;
     }
 
-    [[nodiscard]] inline bool RemoteRuntime::ReadTextBytes(TargetAddress address, std::size_t chars, bool wide,
-                                                           std::string &result) const
+    [[nodiscard]] inline bool RemoteRuntime::ReadNameText(TargetAddress address, std::size_t chars, bool wide,
+                                                          std::string &result) const
     {
         if (chars == 0 || chars > 1024)
             return false;
         if (!wide)
         {
-            std::vector<char> bytes(chars);
-            if (!ReadExact(address, bytes.data(), bytes.size()).Ok())
+            std::vector<std::uint8_t> bytes(chars);
+            if (!ReadExact(address, bytes.data(), bytes.size()).Ok() ||
+                !binding_.decoding.nameText.Apply(bytes.data(), bytes.size(), chars, false))
                 return false;
-            const auto end = std::find(bytes.begin(), bytes.end(), '\0');
+            const auto end = std::find(bytes.begin(), bytes.end(), std::uint8_t{0});
             result.assign(bytes.begin(), end);
             return true;
         }
         std::vector<char16_t> text(chars);
-        if (!ReadExact(address, text.data(), text.size() * sizeof(char16_t)).Ok())
+        if (!ReadExact(address, text.data(), text.size() * sizeof(char16_t)).Ok() ||
+            !binding_.decoding.nameText.Apply(reinterpret_cast<std::uint8_t *>(text.data()),
+                                              text.size() * sizeof(char16_t), chars, true))
             return false;
         result.clear();
         for (std::size_t index = 0; index < text.size() && text[index] != 0; ++index)

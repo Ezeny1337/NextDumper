@@ -197,6 +197,8 @@ namespace nextdumper::generation::detail
     const std::vector<std::string_view> &SdkEmitter::RemoteFiles()
     {
         static const std::vector<std::string_view> files{
+            "Remote/NameTextCodec.hpp",
+            "Remote/DecodeDescriptor.hpp",
             "Remote/Memory.hpp",
             "Remote/Metadata.hpp",
             "Remote/Views.hpp",
@@ -216,7 +218,17 @@ namespace nextdumper::generation::detail
     {
         const char *source = nullptr;
         size_t size = 0;
-        if (path == "Remote/Memory.hpp")
+        if (path == "Remote/NameTextCodec.hpp")
+        {
+            source = kRemoteNameTextCodecTemplate;
+            size = sizeof(kRemoteNameTextCodecTemplate) - 1;
+        }
+        else if (path == "Remote/DecodeDescriptor.hpp")
+        {
+            source = kRemoteDecodeDescriptorTemplate;
+            size = sizeof(kRemoteDecodeDescriptorTemplate) - 1;
+        }
+        else if (path == "Remote/Memory.hpp")
         {
             source = kRemoteMemoryTemplate;
             size = sizeof(kRemoteMemoryTemplate) - 1;
@@ -277,6 +289,16 @@ namespace nextdumper::generation::detail
 
     void SdkEmitter::Binding(std::ostream &stream) const
     {
+        const auto descriptor = binding_.decode.Describe();
+        if (!binding_.decode.IsValid() || !descriptor.IsValid())
+        {
+            stream.setstate(std::ios::failbit);
+            return;
+        }
+        const auto family = descriptor.nameText.Family;
+        const char *familyName = family == decoding::NameTextFamily::ByteXor          ? "ByteXor"
+                                 : family == decoding::NameTextFamily::LengthSchedule ? "LengthSchedule"
+                                                                                      : "Identity";
         const auto &object = binding_.objects;
         const auto &name = binding_.names;
         const bool hasObjectRva = module_.Contains(binding_.objectRoot.address);
@@ -292,7 +314,8 @@ namespace nextdumper::generation::detail
         stream << "    " << static_cast<unsigned int>(module_.pointerWidth) << ",\n";
         stream << "    " << (hasObjectRva ? "true" : "false") << ",\n";
         stream << "    " << (hasNameRva ? "true" : "false") << ",\n";
-        stream << "    " << (!binding_.decode.IsIdentity() ? "true" : "false") << ",\n";
+        stream << "    DecodeDescriptor{NameTextCodec{NameTextFamily::" << familyName << ", "
+               << static_cast<unsigned int>(descriptor.nameText.Key) << "}, " << descriptor.customSlots << "u},\n";
         stream << "    static_cast<TargetAddress>(" << Hex(objectRva) << "),\n";
         stream << "    static_cast<TargetAddress>(" << Hex(nameRva) << "),\n";
         stream << "    ObjectArrayDescriptor{\n";

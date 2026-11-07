@@ -59,11 +59,38 @@ namespace nextdumper::binding
 
     bool DecodePlan::IsIdentity() const
     {
-        return objectStorage.IsIdentity() && objectChunk.IsIdentity() && objectPointer.IsIdentity() &&
-               objectClass.IsIdentity() && objectOuter.IsIdentity() && nameBlocks.IsIdentity() &&
-               nameChunks.IsIdentity() && nameEntry.IsIdentity() && objectCount.IsIdentity() &&
-               objectFlags.IsIdentity() && objectIndex.IsIdentity() && nameIndex.IsIdentity() &&
-               nameNumber.IsIdentity() && nameEntryIndex.IsIdentity() && nameHeader.IsIdentity() && nameText.IsIdentity();
+        const auto descriptor = Describe();
+        return descriptor.IsValid() && descriptor.customSlots == 0 && nameText.IsIdentity();
+    }
+
+    decoding::DecodeDescriptor DecodePlan::Describe() const
+    {
+        using decoding::DecodeSlot;
+        decoding::DecodeDescriptor descriptor;
+        if (const auto *codec = nameText.BuiltinCodec())
+            descriptor.nameText = *codec;
+        const auto mark = [&](DecodeSlot slot, const auto &decoder)
+        {
+            if (decoder.IsCustom())
+                descriptor.customSlots |= decoding::DecodeSlotBit(slot);
+        };
+        mark(DecodeSlot::ObjectStorage, objectStorage);
+        mark(DecodeSlot::ObjectChunk, objectChunk);
+        mark(DecodeSlot::ObjectPointer, objectPointer);
+        mark(DecodeSlot::ObjectClass, objectClass);
+        mark(DecodeSlot::ObjectOuter, objectOuter);
+        mark(DecodeSlot::NameBlocks, nameBlocks);
+        mark(DecodeSlot::NameChunks, nameChunks);
+        mark(DecodeSlot::NameEntry, nameEntry);
+        mark(DecodeSlot::ObjectCount, objectCount);
+        mark(DecodeSlot::ObjectFlags, objectFlags);
+        mark(DecodeSlot::ObjectIndex, objectIndex);
+        mark(DecodeSlot::NameIndex, nameIndex);
+        mark(DecodeSlot::NameNumber, nameNumber);
+        mark(DecodeSlot::NameEntryIndex, nameEntryIndex);
+        mark(DecodeSlot::NameHeader, nameHeader);
+        mark(DecodeSlot::NameText, nameText);
+        return descriptor;
     }
 
     bool DecodePlan::IsValid() const
