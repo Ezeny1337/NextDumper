@@ -2,15 +2,6 @@
 
 namespace nextdumper::binding
 {
-    namespace
-    {
-        uintptr_t IdentityPointer(uintptr_t value, uintptr_t) { return value; }
-        int32_t IdentityInt32(int32_t value, uintptr_t) { return value; }
-        uint32_t IdentityUInt32(uint32_t value, uintptr_t) { return value; }
-        uint16_t IdentityUInt16(uint16_t value, uintptr_t) { return value; }
-        bool IdentityNameText(std::span<uint8_t>, uintptr_t, bool) { return true; }
-    }
-
     bool ObjectContainerLayout::IsValid() const
     {
         if (packedPointers && sizeof(uintptr_t) != 8)
@@ -66,73 +57,28 @@ namespace nextdumper::binding
         return kind == NameContainerKind::Pool ? pool.IsValid() : array.IsValid();
     }
 
-    DecodePlan DecodePlan::Identity()
-    {
-        DecodePlan result;
-        result.objectStorage = IdentityPointer;
-        result.objectChunk = IdentityPointer;
-        result.objectPointer = IdentityPointer;
-        result.objectClass = IdentityPointer;
-        result.objectOuter = IdentityPointer;
-        result.nameBlocks = IdentityPointer;
-        result.nameChunks = IdentityPointer;
-        result.nameEntry = IdentityPointer;
-        result.objectCount = IdentityInt32;
-        result.objectFlags = IdentityInt32;
-        result.objectIndex = IdentityInt32;
-        result.nameIndex = IdentityInt32;
-        result.nameNumber = IdentityUInt32;
-        result.nameEntryIndex = IdentityUInt32;
-        result.nameHeader = IdentityUInt16;
-        result.nameText = IdentityNameText;
-        return result;
-    }
-
     bool DecodePlan::IsIdentity() const
     {
-        const auto pointerIsIdentity = [](const PointerDecoder &decoder)
-        {
-            const auto function = decoder.target<uintptr_t (*)(uintptr_t, uintptr_t)>();
-            return function && *function == IdentityPointer;
-        };
-        const auto int32IsIdentity = [](const Int32Decoder &decoder)
-        {
-            const auto function = decoder.target<int32_t (*)(int32_t, uintptr_t)>();
-            return function && *function == IdentityInt32;
-        };
-        const auto uint32IsIdentity = [](const UInt32Decoder &decoder)
-        {
-            const auto function = decoder.target<uint32_t (*)(uint32_t, uintptr_t)>();
-            return function && *function == IdentityUInt32;
-        };
-        const auto uint16IsIdentity = [](const UInt16Decoder &decoder)
-        {
-            const auto function = decoder.target<uint16_t (*)(uint16_t, uintptr_t)>();
-            return function && *function == IdentityUInt16;
-        };
-        const auto nameTextFunction = nameText.target<bool (*)(std::span<uint8_t>, uintptr_t, bool)>();
-        return pointerIsIdentity(objectStorage) && pointerIsIdentity(objectChunk) &&
-               pointerIsIdentity(objectPointer) && pointerIsIdentity(objectClass) &&
-               pointerIsIdentity(objectOuter) && pointerIsIdentity(nameBlocks) &&
-               pointerIsIdentity(nameChunks) && pointerIsIdentity(nameEntry) &&
-               int32IsIdentity(objectCount) && int32IsIdentity(objectFlags) &&
-               int32IsIdentity(objectIndex) && int32IsIdentity(nameIndex) &&
-               uint32IsIdentity(nameNumber) && uint32IsIdentity(nameEntryIndex) &&
-               uint16IsIdentity(nameHeader) && nameTextFunction &&
-               *nameTextFunction == IdentityNameText;
+        return objectStorage.IsIdentity() && objectChunk.IsIdentity() && objectPointer.IsIdentity() &&
+               objectClass.IsIdentity() && objectOuter.IsIdentity() && nameBlocks.IsIdentity() &&
+               nameChunks.IsIdentity() && nameEntry.IsIdentity() && objectCount.IsIdentity() &&
+               objectFlags.IsIdentity() && objectIndex.IsIdentity() && nameIndex.IsIdentity() &&
+               nameNumber.IsIdentity() && nameEntryIndex.IsIdentity() && nameHeader.IsIdentity() && nameText.IsIdentity();
     }
 
     bool DecodePlan::IsValid() const
     {
-        return objectStorage && objectChunk && objectPointer && objectClass && objectOuter &&
-               nameBlocks && nameChunks && nameEntry && objectCount && objectFlags && objectIndex &&
-               nameIndex && nameNumber && nameEntryIndex && nameHeader && nameText;
+        return objectStorage.IsValid() && objectChunk.IsValid() && objectPointer.IsValid() &&
+               objectClass.IsValid() && objectOuter.IsValid() && nameBlocks.IsValid() && nameChunks.IsValid() &&
+               nameEntry.IsValid() && objectCount.IsValid() && objectFlags.IsValid() && objectIndex.IsValid() &&
+               nameIndex.IsValid() && nameNumber.IsValid() && nameEntryIndex.IsValid() && nameHeader.IsValid() && nameText.IsValid();
     }
 
     bool RuntimeBinding::IsValid() const
     {
         return objectRoot.address != 0 && nameRoot.address != 0 && objects.IsValid() && names.IsValid() &&
-               decode.IsValid() && objectSchema && report.objectContainerValidated && report.nameContainerValidated &&
+               decode.IsValid() && (names.kind == NameContainerKind::Pool || !decode.nameText.RequiresLength()) &&
+               objectSchema && report.objectContainerValidated && report.nameContainerValidated &&
                report.semanticValidationPassed;
     }
 } // namespace nextdumper::binding

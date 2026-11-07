@@ -8,10 +8,12 @@
 
 #include "nextdumper/analysis/Contract.hpp"
 #include "nextdumper/analysis/ImageModel.hpp"
-#include "nextdumper/analysis/NameDecoderSynthesis.hpp"
+#include "nextdumper/decoding/NameTextCodec.hpp"
 
 namespace nextdumper::analysis
 {
+    using decoding::NameTextCodec;
+
     struct ObjectContractScanOptions
     {
         uint64_t MaxScanBytes = 128ull * 1024 * 1024;
@@ -170,6 +172,6 @@ namespace nextdumper::analysis
     [[nodiscard]] ObjectContractScanResult ScanObjectContracts(const ImageModel &image,
                                                                uintptr_t nameRoot,
                                                                const NamePoolFields &nameFields,
-                                                               const NameTextDecoder &nameDecoder,
+                                                               const NameTextCodec &nameDecoder,
                                                                const ObjectContractScanOptions &options = {});
 } // namespace nextdumper::analysis

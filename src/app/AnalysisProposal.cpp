@@ -1,7 +1,6 @@
 #include "nextdumper/app/AnalysisProposal.hpp"
 
 #include <cstddef>
-#include <span>
 #include <utility>
 
 #include "nextdumper/common/Hex.hpp"
@@ -14,7 +13,6 @@ namespace nextdumper::app
         using ::nextdumper::analysis::AnalysisStatus;
         using ::nextdumper::analysis::ContractState;
         using ::nextdumper::analysis::NamePoolFields;
-        using ::nextdumper::analysis::NameTextDecoder;
         using ::nextdumper::analysis::NameTextFamilyName;
         using ::nextdumper::binding::DecodePlan;
         using ::nextdumper::binding::NameContainerKind;
@@ -48,7 +46,9 @@ namespace nextdumper::app
     std::optional<NameBindingProposal> MakeNameBindingProposal(const AnalysisResult &result,
                                                                const DecodePlan &baseDecode)
     {
-        if (result.AddressSpaceChanged || result.NameStatus == AnalysisStatus::Ambiguous)
+        // Analysis validates raw NamePool pointers and headers, without profile transforms.
+        if (!baseDecode.IsValid() || !baseDecode.nameBlocks.IsIdentity() || !baseDecode.nameEntry.IsIdentity() ||
+            !baseDecode.nameHeader.IsIdentity() || result.AddressSpaceChanged || result.NameStatus == AnalysisStatus::Ambiguous)
             return std::nullopt;
         for (const auto &validation : result.NameValidations)
         {
@@ -93,15 +93,9 @@ namespace nextdumper::app
             if (!proposal.layout.IsValid())
                 continue;
 
-            proposal.decode = baseDecode.IsValid() ? baseDecode : DecodePlan::Identity();
-            const NameTextDecoder decoder = *validation.Decoder;
-            proposal.decode.nameText = [decoder](std::span<uint8_t> bytes, uintptr_t, bool wide)
-            {
-                if (wide && bytes.size() % sizeof(char16_t) != 0)
-                    return false;
-                const size_t length = wide ? bytes.size() / sizeof(char16_t) : bytes.size();
-                return decoder.Apply(bytes, length, wide);
-            };
+            proposal.decode = baseDecode;
+            const auto decoder = *validation.Decoder;
+            proposal.decode.nameText = binding::NameTextDecoder::Builtin(decoder);
             if (!proposal.decode.IsValid() || !proposal.IsValid())
                 continue;
 

@@ -1,12 +1,12 @@
 #pragma once
 
 #include <cstdint>
-#include <functional>
 #include <memory>
 #include <optional>
-#include <span>
 #include <string>
 #include <vector>
+
+#include "nextdumper/binding/DecodePlan.hpp"
 
 namespace nextdumper::ue
 {
@@ -159,36 +159,6 @@ namespace nextdumper::binding
         }
     };
 
-    struct DecodePlan
-    {
-        using PointerDecoder = std::function<uintptr_t(uintptr_t value, uintptr_t fieldAddress)>;
-        using Int32Decoder = std::function<int32_t(int32_t value, uintptr_t fieldAddress)>;
-        using UInt32Decoder = std::function<uint32_t(uint32_t value, uintptr_t fieldAddress)>;
-        using UInt16Decoder = std::function<uint16_t(uint16_t value, uintptr_t fieldAddress)>;
-        using NameTextDecoder = std::function<bool(std::span<uint8_t> bytes, uintptr_t address, bool wide)>;
-
-        PointerDecoder objectStorage;
-        PointerDecoder objectChunk;
-        PointerDecoder objectPointer;
-        PointerDecoder objectClass;
-        PointerDecoder objectOuter;
-        PointerDecoder nameBlocks;
-        PointerDecoder nameChunks;
-        PointerDecoder nameEntry;
-        Int32Decoder objectCount;
-        Int32Decoder objectFlags;
-        Int32Decoder objectIndex;
-        Int32Decoder nameIndex;
-        UInt32Decoder nameNumber;
-        UInt32Decoder nameEntryIndex;
-        UInt16Decoder nameHeader;
-        NameTextDecoder nameText;
-
-        static DecodePlan Identity();
-        [[nodiscard]] bool IsValid() const;
-        [[nodiscard]] bool IsIdentity() const;
-    };
-
     struct BindingReport
     {
         bool staticCandidatesFound = false;
@@ -206,7 +176,6 @@ namespace nextdumper::binding
         ObjectContainerLayout objects;
         NameContainerLayout names;
         DecodePlan decode = DecodePlan::Identity();
-        bool identityDecoding = true;
         std::optional<UObjectLayoutHint> uobject;
         std::shared_ptr<const ue::EngineSchema> objectSchema;
         BindingReport report;

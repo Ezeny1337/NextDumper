@@ -348,7 +348,7 @@ namespace nextdumper::analysis
 
                 if (validation.Decoder)
                 {
-                    const NameTextDecoder &decoderValue = *validation.Decoder;
+                    const NameTextCodec &decoderValue = *validation.Decoder;
                     result.Diagnostics.push_back(
                         {DiagnosticSeverity::Info, "ANALYSIS_DECODER",
                          "family=" + std::string(NameTextFamilyName(decoderValue.Family)) +
@@ -426,9 +426,9 @@ namespace nextdumper::analysis
                 const NamePoolFields objectNameFields = objectScanNameContract
                                                             ? objectScanNameContract->NamePool
                                                             : NamePoolFields{};
-                const NameTextDecoder objectNameDecoder = objectScanNameValidation && objectScanNameValidation->Decoder
-                                                              ? *objectScanNameValidation->Decoder
-                                                              : NameTextDecoder{};
+                const NameTextCodec objectNameDecoder = objectScanNameValidation && objectScanNameValidation->Decoder
+                                                            ? *objectScanNameValidation->Decoder
+                                                            : NameTextCodec{};
                 const ObjectContractScanResult objectScan =
                     ScanObjectContracts(image, objectNameRoot, objectNameFields, objectNameDecoder, objectOptions);
                 objectContractsAmbiguous = objectScan.ContractsAmbiguous;

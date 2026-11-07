@@ -144,15 +144,15 @@ namespace nextdumper::app
             std::string error;
         };
 
-        // 将 profile 回调异常转为受控失败，避免被误记为普通内存读取失败。
+        // 将 profile 回调异常转为受控失败，避免被误记为普通内存读取失败
         template <typename Decoder, typename Result>
         Decoder GuardProfileDecoder(Decoder decoder, Result fallback,
                                     const std::shared_ptr<ProfileExecutionState> &state)
         {
-            if (!decoder)
+            if (!decoder.IsCustom() || !decoder.IsValid())
                 return decoder;
-            return Decoder([decoder = std::move(decoder), fallback, state](auto... arguments) mutable -> Result
-                           {
+            return Decoder::Custom([decoder = std::move(decoder), fallback, state](auto... arguments) mutable -> Result
+                                   {
                               if (state->failed)
                                   return fallback;
                               try

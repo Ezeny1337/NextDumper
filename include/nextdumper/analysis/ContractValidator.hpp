@@ -8,10 +8,14 @@
 
 #include "nextdumper/analysis/Contract.hpp"
 #include "nextdumper/analysis/MemoryView.hpp"
-#include "nextdumper/analysis/NameDecoderSynthesis.hpp"
+#include "nextdumper/decoding/NameTextCodec.hpp"
 
 namespace nextdumper::analysis
 {
+    using decoding::NameTextCodec;
+    using decoding::NameTextFamily;
+    using decoding::NameTextFamilyName;
+
     struct NamePoolValidationOptions
     {
         std::vector<uintptr_t> RootHints;
@@ -39,7 +43,7 @@ namespace nextdumper::analysis
         size_t KnownPlausible = 0;
         size_t KnownWalked = 0;
         std::string KnownNamesPreview;
-        std::optional<NameTextDecoder> Decoder;
+        std::optional<NameTextCodec> Decoder;
         bool DecoderValidated = false;
         size_t Block0Samples = 0;
         size_t Block0Valid = 0;

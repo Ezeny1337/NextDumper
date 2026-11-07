@@ -84,6 +84,8 @@ namespace nextdumper::ue
 
         if (layout_.kind == NameContainerKind::Array)
         {
+            if (decode_.nameText.RequiresLength())
+                return std::nullopt;
             const NameArrayLayout &array = layout_.array;
             if (array.elementsPerChunk <= 0)
                 return std::nullopt;

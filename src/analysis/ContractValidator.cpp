@@ -60,7 +60,7 @@ namespace nextdumper::analysis
 
         struct SequenceMatch
         {
-            NameTextDecoder Decoder;
+            NameTextCodec Decoder;
             size_t Matched = 0;
             size_t Plausible = 0;
             size_t Walked = 0;
@@ -185,23 +185,23 @@ namespace nextdumper::analysis
             return true;
         }
 
-        bool DecodesTo(const EntryRead &entry, const NameTextDecoder &decoder,
+        bool DecodesTo(const EntryRead &entry, const NameTextCodec &decoder,
                        std::string_view expected)
         {
             if (entry.Length == 0 || entry.Wide || entry.Length != expected.size())
                 return false;
             std::vector<uint8_t> text = entry.Text;
-            if (!decoder.Apply(text, entry.Length, entry.Wide))
+            if (!decoder.Apply(text.data(), text.size(), entry.Length, entry.Wide))
                 return false;
             return std::memcmp(text.data(), expected.data(), expected.size()) == 0;
         }
 
-        std::optional<std::string> DecodePrintable(const EntryRead &entry, const NameTextDecoder &decoder)
+        std::optional<std::string> DecodePrintable(const EntryRead &entry, const NameTextCodec &decoder)
         {
             if (entry.Length == 0 || entry.Wide)
                 return std::nullopt;
             std::vector<uint8_t> text = entry.Text;
-            if (!decoder.Apply(text, entry.Length, entry.Wide))
+            if (!decoder.Apply(text.data(), text.size(), entry.Length, entry.Wide))
                 return std::nullopt;
             if (!std::all_of(text.begin(), text.end(), [](uint8_t value)
                              { return value >= 0x20 && value <= 0x7E; }))
@@ -223,25 +223,25 @@ namespace nextdumper::analysis
                 return index;
             }();
 
-            std::vector<NameTextDecoder> candidates;
-            const auto addCandidate = [&](const NameTextDecoder &decoder, std::string label)
+            std::vector<NameTextCodec> candidates;
+            const auto addCandidate = [&](const NameTextCodec &decoder, std::string label)
             {
                 if (!DecodesTo(entries.front().Entry, decoder, "None"))
                     return;
                 candidates.push_back(decoder);
                 anchor.push_back(std::move(label));
             };
-            addCandidate(NameTextDecoder{}, "identity");
+            addCandidate(NameTextCodec{}, "identity");
             for (uint32_t key = 1; key <= 0xFFu; ++key)
             {
-                const NameTextDecoder decoder{NameTextFamily::ByteXor, static_cast<uint8_t>(key)};
+                const NameTextCodec decoder{NameTextFamily::ByteXor, static_cast<uint8_t>(key)};
                 if (DecodesTo(entries.front().Entry, decoder, "None"))
                 {
                     candidates.push_back(decoder);
                     anchor.push_back("byte-xor:" + std::to_string(key));
                 }
             }
-            addCandidate(NameTextDecoder{NameTextFamily::LengthSchedule, 0}, "length-schedule");
+            addCandidate(NameTextCodec{NameTextFamily::LengthSchedule, 0}, "length-schedule");
             if (candidates.empty())
                 return std::nullopt;
 
@@ -261,7 +261,7 @@ namespace nextdumper::analysis
 
             std::optional<SequenceMatch> best;
             int bestRank = 1000;
-            for (const NameTextDecoder &decoder : candidates)
+            for (const NameTextCodec &decoder : candidates)
             {
                 SequenceMatch match;
                 match.Decoder = decoder;
@@ -273,7 +273,7 @@ namespace nextdumper::analysis
                     if (entry.Length == 0 || entry.Wide)
                         continue;
                     std::vector<uint8_t> text = entry.Text;
-                    if (!decoder.Apply(text, entry.Length, entry.Wide))
+                    if (!decoder.Apply(text.data(), text.size(), entry.Length, entry.Wide))
                         continue;
                     if (!std::all_of(text.begin(), text.end(), [](uint8_t value)
                                      { return value >= 0x20 && value <= 0x7E; }))
@@ -306,7 +306,7 @@ namespace nextdumper::analysis
         }
 
         std::string DescribePrefix(const std::vector<WalkedEntry> &entries,
-                                   const NameTextDecoder &decoder, size_t limit)
+                                   const NameTextCodec &decoder, size_t limit)
         {
             std::string result;
             const size_t count = std::min(limit, entries.size());
@@ -327,7 +327,7 @@ namespace nextdumper::analysis
         }
 
         bool SampleBlock(const MemoryView &memory, const NamePoolFields &fields, uintptr_t block,
-                         uint64_t byteLimit, size_t maxEntries, const NameTextDecoder &decoder,
+                         uint64_t byteLimit, size_t maxEntries, const NameTextCodec &decoder,
                          SampleOutcome &out)
         {
             if (block == 0 || maxEntries == 0)
@@ -356,7 +356,7 @@ namespace nextdumper::analysis
                     return false;
                 }
                 std::vector<uint8_t> text = entry.Text;
-                if (!decoder.Apply(text, entry.Length, entry.Wide))
+                if (!decoder.Apply(text.data(), text.size(), entry.Length, entry.Wide))
                 {
                     out.Failure = "sample-decoder";
                     out.Detail = "length=" + std::to_string(entry.Length) +
@@ -422,7 +422,7 @@ namespace nextdumper::analysis
                                                           const NamePoolFields &fields,
                                                           uint64_t blockSize, uint64_t maxBlocks,
                                                           uint64_t reservedBytes, size_t allocated,
-                                                          const NameTextDecoder &decoder)
+                                                          const NameTextCodec &decoder)
         {
             const int32_t standardOffset = fields.BlocksOffset - 8;
             if (standardOffset < 0)
@@ -449,7 +449,7 @@ namespace nextdumper::analysis
                 if (entry.Length != 0)
                 {
                     std::vector<uint8_t> text = entry.Text;
-                    if (!decoder.Apply(text, entry.Length, entry.Wide) || !PlausibleText(text, entry.Wide))
+                    if (!decoder.Apply(text.data(), text.size(), entry.Length, entry.Wide) || !PlausibleText(text, entry.Wide))
                         return false;
                 }
 
@@ -604,10 +604,10 @@ namespace nextdumper::analysis
                               " names=" + match->NamesPreview;
                 }
                 detail += " prefix=" +
-                          DescribePrefix(walked, match ? match->Decoder : NameTextDecoder{}, 6);
+                          DescribePrefix(walked, match ? match->Decoder : NameTextCodec{}, 6);
                 if (!match || match->Decoder.Family != NameTextFamily::LengthSchedule)
                     detail += " schedule_prefix=" +
-                              DescribePrefix(walked, NameTextDecoder{NameTextFamily::LengthSchedule, 0}, 6);
+                              DescribePrefix(walked, NameTextCodec{NameTextFamily::LengthSchedule, 0}, 6);
                 Fail(validation, "known-names", std::move(detail));
                 return false;
             }
@@ -624,7 +624,7 @@ namespace nextdumper::analysis
             validation.KnownPlausible = match->Plausible;
             validation.KnownWalked = match->Walked;
             validation.KnownNamesPreview = match->NamesPreview;
-            const NameTextDecoder &decoder = *validation.Decoder;
+            const NameTextCodec &decoder = *validation.Decoder;
             entryAddress = prefixAddress;
 
             const size_t allocated = ScanAllocatedBlocks(memory, *blocksAddress, maxBlocks);

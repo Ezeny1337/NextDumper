@@ -89,7 +89,7 @@ namespace nextdumper::analysis
         {
         public:
             NameResolver(const MemoryView &memory, uintptr_t root, const NamePoolFields &fields,
-                         const NameTextDecoder &decoder)
+                         const NameTextCodec &decoder)
                 : memory_(memory), root_(root), fields_(fields), decoder_(decoder)
             {
             }
@@ -134,7 +134,7 @@ namespace nextdumper::analysis
                 std::vector<uint8_t> text(static_cast<size_t>(length));
                 const auto textAddress = entry ? AddOffset(*entry, fields_.StringOffset) : std::nullopt;
                 if (!textAddress || !ReadExact(memory_, *textAddress, text.data(), text.size()) ||
-                    !decoder_.Apply(text, text.size(), false) ||
+                    !decoder_.Apply(text.data(), text.size(), text.size(), false) ||
                     !std::all_of(text.begin(), text.end(), [](uint8_t value)
                                  { return value >= 0x20 && value <= 0x7E; }))
                     return false;
@@ -148,7 +148,7 @@ namespace nextdumper::analysis
             const MemoryView &memory_;
             uintptr_t root_ = 0;
             NamePoolFields fields_;
-            NameTextDecoder decoder_;
+            NameTextCodec decoder_;
             std::unordered_map<int32_t, std::string> cache_;
         };
 
@@ -947,7 +947,7 @@ namespace nextdumper::analysis
 
     ObjectContractScanResult ScanObjectContracts(const ImageModel &image, uintptr_t nameRoot,
                                                  const NamePoolFields &nameFields,
-                                                 const NameTextDecoder &nameDecoder,
+                                                 const NameTextCodec &nameDecoder,
                                                  const ObjectContractScanOptions &options)
     {
         ObjectContractScanResult result;

@@ -977,6 +977,9 @@ namespace nextdumper::binding
             }
         }
 
+        if (decode.nameText.RequiresLength())
+            return result;
+
         for (int32_t chunksOffset = 0; chunksOffset <= 0x100 - static_cast<int32_t>(sizeof(uintptr_t)); chunksOffset += 4)
         {
             const uintptr_t chunksAddress = root + static_cast<uintptr_t>(chunksOffset);

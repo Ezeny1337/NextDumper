@@ -278,7 +278,8 @@ namespace nextdumper::binding
                                                 const DecodePlan &decode) const
     {
         LayoutProbeReport report;
-        if (root == 0 || !layout.IsValid())
+        if (root == 0 || !layout.IsValid() || !decode.IsValid() ||
+            (layout.kind == NameContainerKind::Array && decode.nameText.RequiresLength()))
         {
             report.failures.push_back("invalid name layout probe input");
             return report;

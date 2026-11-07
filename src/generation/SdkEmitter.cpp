@@ -292,7 +292,7 @@ namespace nextdumper::generation::detail
         stream << "    " << static_cast<unsigned int>(module_.pointerWidth) << ",\n";
         stream << "    " << (hasObjectRva ? "true" : "false") << ",\n";
         stream << "    " << (hasNameRva ? "true" : "false") << ",\n";
-        stream << "    " << (!binding_.identityDecoding ? "true" : "false") << ",\n";
+        stream << "    " << (!binding_.decode.IsIdentity() ? "true" : "false") << ",\n";
         stream << "    static_cast<TargetAddress>(" << Hex(objectRva) << "),\n";
         stream << "    static_cast<TargetAddress>(" << Hex(nameRva) << "),\n";
         stream << "    ObjectArrayDescriptor{\n";
