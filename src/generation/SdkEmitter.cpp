@@ -391,7 +391,7 @@ namespace nextdumper::generation::detail
         stream << "struct FUnknownValueLayout {};\n";
         for (const auto &[id, layout] : reflection_.valueStorageLayouts)
         {
-            stream << "struct " << ValueLayoutCppName(id) << " // " << layout.sourceRange << "\n{\n";
+            stream << "struct " << symbols.valueLayouts.at(id) << " // " << layout.sourceRange << "\n{\n";
             stream << "    static constexpr std::size_t size = " << layout.size
                    << ";\n    static constexpr std::size_t alignment = " << layout.alignment << ";\n";
             for (const auto &[member, offset] : layout.offsets)
@@ -1125,7 +1125,8 @@ namespace nextdumper::generation::detail
         for (const size_t typeIndex : shard.types)
         {
             const TypeIR &type = reflection_.types[typeIndex];
-            const std::string &typeName = symbols.types.at(type.address).name;
+            const auto &typeSymbols = symbols.types.at(type.address);
+            const std::string &typeName = typeSymbols.name;
             std::vector<std::string> fieldTypeNames;
             fieldTypeNames.reserve(type.properties.size());
             std::function<std::string(const ir::TypeReferenceIR &, const std::string &)> emitValue;
@@ -1142,7 +1143,7 @@ namespace nextdumper::generation::detail
                 size_t storageMemberCount = 0;
                 if (reference.valueStorage && !reference.valueStorage->offsets.empty())
                 {
-                    storageMembers = identifier + "_StorageMembers";
+                    storageMembers = typeSymbols.MetadataName(identifier + "_StorageMembers");
                     storageMemberCount = reference.valueStorage->offsets.size();
                     stream << "inline constexpr StorageMemberDescriptor " << storageMembers << "[] = {\n";
                     for (const auto &[member, offset] : reference.valueStorage->offsets)
@@ -1150,7 +1151,8 @@ namespace nextdumper::generation::detail
                     stream << "};\n";
                 }
                 const auto &container = reference.containerStorage;
-                stream << "inline constexpr ValueDescriptor " << identifier << "{\n";
+                const std::string valueName = typeSymbols.MetadataName(identifier);
+                stream << "inline constexpr ValueDescriptor " << valueName << "{\n";
                 stream << "    PropertyKind::" << PropertyKindCppName(reference.kind) << ", "
                        << CppString(reference.reflectedClass) << ", "
                        << CppString(fullNameForAddress(reference.referencedObject)) << ", "
@@ -1189,7 +1191,7 @@ namespace nextdumper::generation::detail
                 stream << ",\n    " << (inner.empty() ? "nullptr" : "&" + inner) << ", "
                        << (key.empty() ? "nullptr" : "&" + key) << ", "
                        << (value.empty() ? "nullptr" : "&" + value) << "};\n";
-                return identifier;
+                return valueName;
             };
 
             for (size_t fieldIndex = 0; fieldIndex < type.properties.size(); ++fieldIndex)
@@ -1199,7 +1201,7 @@ namespace nextdumper::generation::detail
             }
             if (!type.properties.empty())
             {
-                stream << "inline constexpr FieldDescriptor " << typeName << "_RemoteFields[] = {\n";
+                stream << "inline constexpr FieldDescriptor " << typeSymbols.MetadataName(typeName + "_RemoteFields") << "[] = {\n";
                 for (size_t fieldIndex = 0; fieldIndex < type.properties.size(); ++fieldIndex)
                 {
                     const auto &property = type.properties[fieldIndex];
@@ -1221,11 +1223,11 @@ namespace nextdumper::generation::detail
                              { return candidate.address == type.superAddress; });
             const std::string_view superName = super == reflection_.types.end() ? std::string_view{} : super->fullName;
             const bool superResolved = type.superAddress == 0 || super != reflection_.types.end();
-            stream << "inline constexpr TypeDescriptor " << typeName << "_RemoteType{" << CppString(type.fullName)
+            stream << "inline constexpr TypeDescriptor " << typeSymbols.MetadataName(typeName + "_RemoteType") << "{" << CppString(type.fullName)
                    << ", " << CppString(type.name) << ", " << CppString(superName)
                    << ", TypeKind::" << (type.kind == ir::TypeKind::Class ? "Class" : "Struct") << ", " << type.size
                    << ", " << CppString(ParseStatusName(type.status)) << ", "
-                   << (type.properties.empty() ? "nullptr" : typeName + "_RemoteFields") << ", "
+                   << (type.properties.empty() ? "nullptr" : typeSymbols.MetadataName(typeName + "_RemoteFields")) << ", "
                    << type.properties.size() << ", " << (superResolved ? "true" : "false") << "};\n\n";
         }
         stream << "}\n";
@@ -1321,11 +1323,11 @@ namespace nextdumper::generation::detail
             stream << "};\n";
             if (info.values.empty())
             {
-                stream << "inline constexpr EnumValueDescriptor " << info.name << "_RemoteValues[1]{};\n";
+                stream << "inline constexpr EnumValueDescriptor " << info.remoteValues << "[1]{};\n";
             }
             else
             {
-                stream << "inline constexpr EnumValueDescriptor " << info.name << "_RemoteValues[] = {\n";
+                stream << "inline constexpr EnumValueDescriptor " << info.remoteValues << "[] = {\n";
                 for (size_t index = 0; index < info.values.size(); ++index)
                 {
                     stream << "    {" << CppString(info.values[index]) << ", ";
@@ -1341,10 +1343,10 @@ namespace nextdumper::generation::detail
                                          info.underlyingType == EnumUnderlyingType::UInt16 ||
                                          info.underlyingType == EnumUnderlyingType::UInt32 ||
                                          info.underlyingType == EnumUnderlyingType::UInt64;
-            stream << "inline constexpr EnumDescriptor " << info.name << "_RemoteType{"
+            stream << "inline constexpr EnumDescriptor " << info.remoteType << "{"
                    << CppString(enumeration.fullName) << ", " << CppString(enumeration.name) << ", "
                    << info.size << ", " << (storageUnsigned ? "true" : "false") << ", "
-                   << info.name << "_RemoteValues, " << info.values.size() << "};\n\n";
+                   << info.remoteValues << ", " << info.values.size() << "};\n\n";
         }
         stream << "}\n";
     }
@@ -1362,7 +1364,10 @@ namespace nextdumper::generation::detail
         {
             stream << "inline constexpr TypeDescriptor AllTypes[] = {\n";
             for (const auto &type : reflection_.types)
-                stream << "    " << symbols.types.at(type.address).name << "_RemoteType,\n";
+            {
+                const auto &info = symbols.types.at(type.address);
+                stream << "    " << info.MetadataName(info.name + "_RemoteType") << ",\n";
+            }
             stream << "};\n";
             stream << "inline constexpr std::size_t AllTypeCount = sizeof(AllTypes) / sizeof(AllTypes[0]);\n";
         }
@@ -1375,7 +1380,7 @@ namespace nextdumper::generation::detail
         {
             stream << "inline constexpr EnumDescriptor AllEnums[] = {\n";
             for (const auto &enumeration : reflection_.enums)
-                stream << "    " << symbols.enums.at(enumeration.address).name << "_RemoteType,\n";
+                stream << "    " << symbols.enums.at(enumeration.address).remoteType << ",\n";
             stream << "};\n";
             stream << "inline constexpr std::size_t AllEnumCount = sizeof(AllEnums) / sizeof(AllEnums[0]);\n";
         }

@@ -15,6 +15,13 @@ namespace nextdumper::generation
         ir::LayoutRepresentation layout = ir::LayoutRepresentation::SequentialMembers;
         bool declarationDependencyBlocked = false;
         bool inheritsBase = false;
+        std::map<std::string, std::string> metadataNames;
+
+        [[nodiscard]] std::string MetadataName(const std::string &stem) const
+        {
+            const auto found = metadataNames.find(stem);
+            return found == metadataNames.end() ? stem : found->second;
+        }
     };
 
     struct CppEnumInfo
@@ -23,6 +30,8 @@ namespace nextdumper::generation
         ir::EnumUnderlyingType underlyingType = ir::EnumUnderlyingType::Unknown;
         int32_t size = 0;
         std::vector<std::string> values;
+        std::string remoteValues;
+        std::string remoteType;
     };
 
     struct CppSymbols
@@ -30,6 +39,7 @@ namespace nextdumper::generation
         std::unordered_map<uintptr_t, CppTypeInfo> types;
         std::unordered_map<uintptr_t, CppEnumInfo> enums;
         std::map<uintptr_t, std::string> functions;
+        std::map<std::string, std::string> valueLayouts;
         std::vector<size_t> typeOrder;
     };
 

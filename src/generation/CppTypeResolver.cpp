@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <functional>
 #include <string_view>
 #include <tuple>
 #include <unordered_set>
@@ -132,15 +133,34 @@ namespace nextdumper::generation
         CppSymbols result;
         std::unordered_set<std::string> used = {"FName", "FString", "FUtf8String", "FAnsiString", "FScriptInterface", "TargetAddress", "TTargetPointer", "FUnknownContainerLayout", "FHeapArrayLayout", "FHeapSparseSetLayout", "TArray", "TSet", "TMap", "TEnumStorage", "TOpaqueStorage", "TStructStorage", "TStaticArrayStorage", "FTextStorage", "TWeakObjectStorage", "TLazyObjectStorage", "TSoftObjectStorage", "TSoftClassStorage", "TFieldPathStorage", "TDelegateStorage", "TInlineMulticastDelegateStorage", "TSparseMulticastDelegateStorage", "TUnknownMulticastDelegateStorage", "TOptionalStorage"};
         used.insert({"FUnknownValueLayout", "FMemoryImageArrayLayout", "FMemoryImageSparseSetLayout"});
+        // // 在此处保留由 BasicTypes、Remote 及 SDK 聚合器所生成的命名空间级名称
+        used.insert({"std", "InRange", "EngineLayout", "detail", "ObjectFlag",
+                     "ReadStatus", "ReadResult", "ReadMemoryCallback", "MemoryReader",
+                     "DecodeDescriptor", "DecodeSlot", "DecodeSlotName", "NameTextCodec", "NameTextFamily",
+                     "PropertyKind", "TypeKind", "DelegateStorageKind", "ContainerAllocatorKind",
+                     "BoolLayoutDescriptor", "StorageMemberDescriptor", "ValueStorageDescriptor", "ContainerDescriptor",
+                     "ValueDescriptor", "FieldDescriptor", "TypeDescriptor", "EnumValueDescriptor", "EnumDescriptor",
+                     "ObjectArrayKind", "ObjectArrayDescriptor", "NameStoreKind", "NameStoreDescriptor",
+                     "FNameDescriptor", "ObjectDescriptor", "RuntimeBindingDescriptor", "RuntimeRoots", "RuntimeOptions",
+                     "RemoteRuntime", "ObjectHandle", "RemoteObjectView", "RemoteStructView", "RemoteStaticArrayView",
+                     "RemoteArrayView", "RemoteSparseContainerView", "RemoteMapEntryView", "ObjectReference", "EnumValue",
+                     "WeakObjectReference", "SoftObjectReference", "LazyObjectReference", "InterfaceReference",
+                     "DelegateReference", "TextReference", "OpaqueValue", "RemoteValue", "ValueReadResult", "ObjectInfo",
+                     "ObjectFlagsFilter", "FieldLookupResult", "ObjectQuery", "ObjectQueryResult", "ObjectLookupResult",
+                     "TargetBinding", "AllTypes", "AllTypeCount", "AllEnums", "AllEnumCount", "CreateRuntime"});
         for (const auto &[id, layout] : reflection.valueStorageLayouts)
         {
             (void)layout;
-            used.insert(ValueLayoutCppName(id));
+            result.valueLayouts.emplace(id, UniqueName(used, ValueLayoutCppName(id)));
         }
         // 所有声明和引用共用同一个符号表；重名后缀不依赖进程地址
         for (const auto &type : reflection.types)
             result.types.emplace(type.address, CppTypeInfo{UniqueName(used, SanitizeIdentifier(type.name, "Type_")),
-                                                           type.size, type.layout.representation});
+                                                           type.size,
+                                                           type.layout.representation,
+                                                           false,
+                                                           false,
+                                                           {}});
         for (const auto &enumeration : reflection.enums)
         {
             CppEnumInfo info;
@@ -182,6 +202,41 @@ namespace nextdumper::generation
             for (const auto &ending : endings)
                 used.insert(name + ending);
             result.functions.emplace(function.address, std::move(name));
+        }
+
+        for (const auto &type : reflection.types)
+        {
+            auto &info = result.types.at(type.address);
+            const auto reserve = [&](const std::string &stem)
+            {
+                std::string name = UniqueName(used, stem);
+                if (name != stem)
+                    info.metadataNames.emplace(stem, std::move(name));
+            };
+            std::function<void(const ir::TypeReferenceIR &, const std::string &)> reserveValue;
+            reserveValue = [&](const ir::TypeReferenceIR &reference, const std::string &stem)
+            {
+                if (reference.inner)
+                    reserveValue(*reference.inner, stem + "_Inner");
+                if (reference.key)
+                    reserveValue(*reference.key, stem + "_Key");
+                if (reference.value)
+                    reserveValue(*reference.value, stem + "_Value");
+                if (reference.valueStorage && !reference.valueStorage->offsets.empty())
+                    reserve(stem + "_StorageMembers");
+                reserve(stem);
+            };
+            for (size_t index = 0; index < type.properties.size(); ++index)
+                reserveValue(type.properties[index].type, info.name + "_Field_" + std::to_string(index) + "_Value");
+            if (!type.properties.empty())
+                reserve(info.name + "_RemoteFields");
+            reserve(info.name + "_RemoteType");
+        }
+        for (const auto &enumeration : reflection.enums)
+        {
+            auto &info = result.enums.at(enumeration.address);
+            info.remoteValues = UniqueName(used, info.name + "_RemoteValues");
+            info.remoteType = UniqueName(used, info.name + "_RemoteType");
         }
         const auto declarations = ir::PlanTypeDeclarations(reflection);
         result.typeOrder = declarations.order;
@@ -396,7 +451,16 @@ namespace nextdumper::generation
         const auto opaque = [&](const std::string &wrapper, const std::string &semantic, const std::string &argument = "",
                                 const std::string &layout = "")
         {
-            const std::string valueLayout = reference.valueStorage ? ", " + ValueLayoutCppName(reference.valueStorage->id) : "";
+            const auto layoutName = reference.valueStorage ? symbols.valueLayouts.find(reference.valueStorage->id)
+                                                           : symbols.valueLayouts.end();
+            if (reference.valueStorage && layout.empty() && layoutName == symbols.valueLayouts.end())
+            {
+                result.name.clear();
+                result.failureReason = "value-storage-layout-unavailable";
+                result.storage = PropertyStorageKind::Unavailable;
+                return;
+            }
+            const std::string valueLayout = layoutName != symbols.valueLayouts.end() ? ", " + layoutName->second : "";
             result.name = wrapper + "<" + argument + size + (layout.empty() ? valueLayout : layout) + ">";
             result.semanticName = semantic;
             result.storage = PropertyStorageKind::TypedOpaque;
