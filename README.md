@@ -320,7 +320,7 @@ The output contains no hash of the target binary. Confirm that the file open in 
 
 `external_runtime` separately records binding and decoding support, decoder provenance, observed name-sample coverage, required root inputs, and unsupported decoder slots. `supported` means the binding's necessary decoders are implemented; consumer initialization and individual field reads must still succeed. Replace the entire generated SDK when updating its binding contract. The current runtime, manifest, and diagnostics JSON schemas are 7, 10, and 12 respectively.
 
-Its `object_identity` section records the serial layout source. Automatic discovery does not infer the serial offset. Without a trusted layout, ordinary objects remain readable, but handles cannot validate serial identity; resolving non-null weak references and delegate targets returns `Unsupported`.
+Its `object_identity` section records the serial layout source. A bounded analysis after reflection correlates non-null reference pairs with object slots and rereads them to confirm a unique offset; candidates and failure reasons are exported. Without sufficient evidence, ordinary objects remain readable, but handles cannot validate serial identity; resolving non-null weak references and delegate targets returns `Unsupported`.
 
 JSON files keep complete field metadata. Logs keep diagnostic summaries, limited samples, and anomalies, with counts for omitted samples and references to the corresponding JSON records.
 

@@ -27,6 +27,7 @@
 #include "nextdumper/module/ModuleCatalog.hpp"
 #include "nextdumper/module/ElfSymbols.hpp"
 #include "nextdumper/reflection/ReflectionReader.hpp"
+#include "nextdumper/reflection/ObjectSerialDiscovery.hpp"
 #include "nextdumper/reflection/RuntimeInspector.hpp"
 #include "nextdumper/ue/SchemaCatalog.hpp"
 #include "nextdumper/ue/SchemaResolver.hpp"
@@ -1355,8 +1356,67 @@ namespace nextdumper::app
                                             " profile=" + diagnosis_.profileId);
         }
 
+        diagnosis_.stage = "object-serial-discovery";
+        BeginMemoryStage("object-serial-discovery");
+        profileExecutionState->stage = "object-serial-discovery";
+        auto serialBinding = context_.Binding();
+        try
+        {
+            serialBinding.objectSerialEvidence = reflection::DiscoverObjectSerial(
+                *memory_, context_.Binding(), context_.Schema(), reflection_);
+            if (serialBinding.objectSerialEvidence.status == "validated")
+                serialBinding.objects.itemSerialOffset = serialBinding.objectSerialEvidence.selectedOffset;
+        }
+        catch (const std::exception &error)
+        {
+            serialBinding.objectSerialEvidence.status = "analysis-failed";
+            Note(RuntimeLogLevel::Warning, "object_serial_discovery failed: " + std::string(error.what()));
+        }
+        context_.CommitBinding(std::move(serialBinding));
+        finishStage("object-serial-discovery");
+        const auto &serial = context_.Binding().objectSerialEvidence;
+        Note(RuntimeLogLevel::Info, "object_serial_discovery status=" + serial.status +
+                                        " selected_offset=" + std::to_string(serial.selectedOffset) +
+                                        " object_slots=" + std::to_string(serial.objectSlots) +
+                                        " scanned_slots=" + std::to_string(serial.scannedSlots) +
+                                        " reference_reads=" + std::to_string(serial.referenceReads) +
+                                        " non_null_references=" + std::to_string(serial.nonNullReferences) +
+                                        " stable_targets=" + std::to_string(serial.stableTargets) +
+                                        " validated_targets=" + std::to_string(serial.validatedTargets) +
+                                        " item_bytes=" + std::to_string(serial.itemBytes) +
+                                        " full_records=external_runtime/object_identity/analysis");
+        for (const auto &candidate : serial.candidates)
+            Note(RuntimeLogLevel::Debug, "object_serial_candidate offset=" + std::to_string(candidate.offset) +
+                                             " targets=" + std::to_string(candidate.targets) +
+                                             " distinct_serials=" + std::to_string(candidate.distinctSerials) +
+                                             " owners=" + std::to_string(candidate.owners));
+        for (const auto &[reason, count] : serial.skipped)
+            Note(RuntimeLogLevel::Debug, "object_serial_skipped reason=" + reason + " count=" + std::to_string(count));
+        for (const auto &sample : serial.samples)
+        {
+            std::string matches;
+            for (const int32_t offset : sample.matchingOffsets)
+                matches += (matches.empty() ? "" : ",") + std::to_string(offset);
+            Note(RuntimeLogLevel::Debug, "object_serial_sample owner=" + Hex(sample.owner) +
+                                             " reference=" + Hex(sample.reference) + " target=" + Hex(sample.target) +
+                                             " item=" + Hex(sample.item) + " index=" + std::to_string(sample.targetIndex) +
+                                             " serial=" + std::to_string(sample.serial) + " status=" + sample.status +
+                                             " matches=[" + matches + "]");
+        }
+        if (profileHooksValid && profileExecutionState->failed)
+        {
+            failures_.push_back("profile decoder failed during object serial discovery");
+            diagnosis_.status = CompatibilityStatus::ProfileValidationFailed;
+            diagnosis_.profileStatus = "decoder-failed";
+            RecordDiagnosis(DiagnosisDomain::Profile, "PROFILE_DECODER_EXCEPTION", "object-serial-discovery",
+                            "observed", std::string("A profile decoder threw an exception: ") + profileExecutionState->error,
+                            "Fix the profile decoder; object serial evidence from this run is not trusted.");
+            return RuntimeSessionStatus::SchemaReady;
+        }
+
         diagnosis_.stage = "runtime-value-evidence";
         BeginMemoryStage("runtime-value-evidence");
+        profileExecutionState->stage = "runtime-value-evidence";
         const ReadStats beforeValues = memory_->Stats();
         try
         {

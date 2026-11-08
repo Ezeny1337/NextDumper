@@ -320,7 +320,7 @@ public:
 
 `external_runtime` 独立记录绑定与解码支持、算法来源、已观察的名称样本覆盖、需要提供的根地址，以及尚未支持的解码位置。`supported` 表示绑定所需的解码已实现，消费者仍需检查初始化和各次字段读取结果。
 
-其中 `object_identity` 单独记录 serial 布局依据。自动探测不推算 serial 偏移；未提供可信布局时，普通对象可读，但无法提供 serial 保护的身份校验，非空弱引用和委托目标的解析返回 `Unsupported`。
+其中 `object_identity` 单独记录 serial 布局依据。反射后的有界分析会用非空引用中的索引和 serial 交叉验证对象槽，并重新读取确认唯一偏移；候选和失败原因会随产物导出。证据不足时普通对象仍可读，但不提供 serial 身份保护，非空弱引用和委托目标的解析返回 `Unsupported`。
 
 绑定契约更新时，应整套替换生成 SDK。当前 `runtime.json`、`manifest.json`、`diagnostics.json` 的 schema 分别为 **7、10、12**。
 

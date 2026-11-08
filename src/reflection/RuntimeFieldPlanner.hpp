@@ -29,7 +29,7 @@ namespace nextdumper::reflection::detail
     class RuntimeFieldPlanner
     {
     public:
-        explicit RuntimeFieldPlanner(const ir::ReflectionIR &reflection);
+        explicit RuntimeFieldPlanner(const ir::ReflectionIR &reflection, bool serialReferencesOnly = false);
         [[nodiscard]] const ir::TypeIR *Type(uintptr_t address) const;
         [[nodiscard]] const std::vector<RuntimeField> &Fields(uintptr_t classAddress);
         [[nodiscard]] const std::map<std::string, size_t> &Skipped() const { return skipped_; }
@@ -43,5 +43,6 @@ namespace nextdumper::reflection::detail
         std::unordered_set<uintptr_t> visitedProperties_;
         std::map<std::string, size_t> skipped_;
         size_t cachedFields_ = 0;
+        bool serialReferencesOnly_ = false;
     };
 } // namespace nextdumper::reflection::detail

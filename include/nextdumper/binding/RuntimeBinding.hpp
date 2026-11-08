@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "nextdumper/binding/DecodePlan.hpp"
+#include "nextdumper/binding/ObjectSerialEvidence.hpp"
 
 namespace nextdumper::ue
 {
@@ -60,7 +61,7 @@ namespace nextdumper::binding
         bool packedPointers = false;
         // 由对象契约探针按实际数据验证过 chunk 字段布局，读取器不再套用固定的 UE 字段顺序
         bool chunkFieldsValidated = false;
-        // 仅由掌握目标布局依据的显式适配设置，自动对象探测不推断序列号偏移
+        // 非负偏移来自显式布局知识或非空弱引用与对象槽的交叉验证
         int32_t itemSerialOffset = -1;
 
         [[nodiscard]] bool IsValid() const;
@@ -179,6 +180,7 @@ namespace nextdumper::binding
         std::optional<UObjectLayoutHint> uobject;
         std::shared_ptr<const ue::EngineSchema> objectSchema;
         BindingReport report;
+        ObjectSerialEvidence objectSerialEvidence;
 
         [[nodiscard]] bool IsValid() const;
     };

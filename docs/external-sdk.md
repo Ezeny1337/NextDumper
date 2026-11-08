@@ -96,7 +96,7 @@ SDK 在完整读取名称字节后执行解码，再转换字符并缓存结果�
 | 字段 | 含义 |
 | --- | --- |
 | `status` | `supported` 或 `unsupported`，范围为本次绑定及其必要解码 |
-| `object_identity` | serial 布局为 `explicit` 或 `unknown`，以及 `item_serial_offset`；不表示当前对象已分配 serial |
+| `object_identity` | serial 布局为 `weak-reference-validated`、`explicit` 或 `unknown`，以及 `item_serial_offset` 和分析证据；不表示当前对象已分配 serial |
 | `decoding.name_text` | 算法、参数、参数来源与选择来源；`default` 为默认 identity，`explicit` 为显式配置，`analysis` 为自动分析 |
 | `decoding.name_text.analysis_validation` | Analysis 已知名称匹配数、遍历条目数和窄/宽字符样本数；非 Analysis 来源为 `null` |
 | `decoding.custom_slots` | Dumper 中仍使用自定义回调的位置 |
@@ -272,7 +272,19 @@ SDK 只提供结构描述和通用读取，不判断本地玩家，也不解释 
 
 ## 对象序列号与身份
 
-对象槽的 serial 偏移不从指针宽度或槽大小推算。`ObjectContainerLayout::itemSerialOffset` 只接受掌握目标明文 `int32_t` serial 布局依据的显式适配；自动对象探测保持 `-1`，并将该值导出到绑定。Dumper 的运行时采样与 SDK 使用同一项偏移依据。
+对象槽的 serial 偏移通过反射完成后的独立分析寻找，或由显式适配提供。分析器使用非空弱引用、软/惰性引用中的本地弱引用缓存，以及单播委托中的索引和 serial，与对象槽中的 4 字节字段做关联。不依赖游戏名，也不以标准 UE 偏移或读到正数作为成功依据。
+
+自动分析规则：
+
+- 首尾交替、均匀分布地读取至多 512 个对象窗口，每窗口至多 128 槽；跳过 CDO，对每个类限制拥有者数量，使用独立的字段规划与读取预算。
+- 扫描已知对象槽前至多 256 字节中的 4 字节对齐位置，排除对象指针本身占用的字节。
+- 空引用不提供正向证据；同一目标和 serial 不重复计票。每个有效样本核对拥有者身份、目标索引、可用的目标类型关系，并验证引用与槽字节的读取稳定性。
+- 至少 4 个不同目标、4 个不同 serial 和 2 个拥有者才能使一个偏移成为候选；存在多个候选时不选择。
+- 唯一候选仍需重新读取，最终至少 8 个不同目标、8 个不同 serial 和 2 个拥有者再次吻合，才写入 `itemSerialOffset`。
+
+这些数量是证据门槛，不是绝对正确性的证明；读取仍不是原子快照。预算、候选、跳过原因和至多 12 个样本记录在 `external_runtime.object_identity.analysis`；稳定样本带对象槽原始字节，其中最多 4 个位置可保留不同原因的拒绝样本。日志中的 `object_serial_discovery`、`object_serial_candidate`、`object_serial_skipped` 和 `object_serial_sample` 提供摘要。`validated` 表示本次关联验证通过；`ambiguous-offsets`、`insufficient-correlated-targets`、`insufficient-confirmed-targets` 等状态保留失败原因。
+
+自动分析目前面向已知存储形式中的本地明文 `int32_t` 索引/serial 对，不分析编码 serial、远程对象 ID、动态容器内的引用元素或未反射的原生字段。空引用、过期引用、样本不足、元数据不足和读取变化均可能使布局保持未知。显式适配仍可通过 `ObjectContainerLayout::itemSerialOffset` 提供有依据的布局；Dumper 运行时采样和生成 SDK 共用最终绑定。
 
 `ObjectHandle::serialState` 区分：
 

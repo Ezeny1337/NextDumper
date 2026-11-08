@@ -25,6 +25,69 @@ namespace nextdumper::generation::detail
 
     namespace
     {
+        void WriteObjectSerialEvidenceJson(std::ostream &stream, const binding::ObjectSerialEvidence &evidence)
+        {
+            using Limits = binding::ObjectSerialDiscoveryLimits;
+            stream << "{\"status\":\"" << EscapeJson(evidence.status)
+                   << "\",\"selected_offset\":" << evidence.selectedOffset
+                   << ",\"object_slots\":" << evidence.objectSlots << ",\"scanned_slots\":" << evidence.scannedSlots
+                   << ",\"scan_complete\":" << (evidence.scanComplete ? "true" : "false")
+                   << ",\"reference_reads\":" << evidence.referenceReads
+                   << ",\"non_null_references\":" << evidence.nonNullReferences
+                   << ",\"stable_targets\":" << evidence.stableTargets
+                   << ",\"validated_targets\":" << evidence.validatedTargets
+                   << ",\"item_bytes\":" << evidence.itemBytes
+                   << ",\"max_windows\":" << Limits::kMaxWindows
+                   << ",\"max_reference_reads\":" << Limits::kMaxReferenceReads
+                   << ",\"max_owners_per_class\":" << Limits::kMaxOwnersPerClass
+                   << ",\"max_target_samples\":" << Limits::kMaxTargetSamples
+                   << ",\"max_item_bytes\":" << Limits::kMaxItemBytes
+                   << ",\"min_discovery_targets\":" << Limits::kMinDiscoveryTargets
+                   << ",\"min_validated_targets\":" << Limits::kMinValidatedTargets
+                   << ",\"min_owners\":" << Limits::kMinOwners << ",\"skipped\":{";
+            bool first = true;
+            for (const auto &[reason, count] : evidence.skipped)
+            {
+                if (!first)
+                    stream << ',';
+                first = false;
+                stream << '"' << EscapeJson(reason) << "\":" << count;
+            }
+            stream << "},\"candidates\":[";
+            for (size_t index = 0; index < evidence.candidates.size(); ++index)
+            {
+                if (index)
+                    stream << ',';
+                const auto &candidate = evidence.candidates[index];
+                stream << "{\"offset\":" << candidate.offset << ",\"targets\":" << candidate.targets
+                       << ",\"distinct_serials\":" << candidate.distinctSerials << ",\"owners\":" << candidate.owners << '}';
+            }
+            stream << "],\"samples\":[";
+            for (size_t index = 0; index < evidence.samples.size(); ++index)
+            {
+                if (index)
+                    stream << ',';
+                const auto &sample = evidence.samples[index];
+                stream << "{\"owner\":\"" << Hex(sample.owner) << "\",\"reference\":\"" << Hex(sample.reference)
+                       << "\",\"target\":\"" << Hex(sample.target) << "\",\"item\":\"" << Hex(sample.item)
+                       << "\",\"target_index\":" << sample.targetIndex << ",\"serial\":" << sample.serial
+                       << ",\"status\":\"" << EscapeJson(sample.status) << '"'
+                       << ",\"path\":\"" << EscapeJson(sample.path) << "\",\"matching_offsets\":[";
+                for (size_t at = 0; at < sample.matchingOffsets.size(); ++at)
+                {
+                    if (at)
+                        stream << ',';
+                    stream << sample.matchingOffsets[at];
+                }
+                stream << "],\"item_bytes\":\"";
+                constexpr char digits[] = "0123456789ABCDEF";
+                for (const uint8_t byte : sample.itemBytes)
+                    stream << digits[byte >> 4] << digits[byte & 15];
+                stream << "\"}";
+            }
+            stream << "]}";
+        }
+
         void WriteExternalRuntimeJson(std::ostream &stream, const RuntimeContext &context)
         {
             using decoding::DecodeSlot;
@@ -39,9 +102,13 @@ namespace nextdumper::generation::detail
 
             stream << "{\"status\":\"" << (supported ? "supported" : "unsupported")
                    << "\",\"scope\":\"binding\",\"object_identity\":{\"serial_layout\":\""
-                   << (binding.objects.itemSerialOffset >= 0 ? "explicit" : "unknown")
+                   << (binding.objects.itemSerialOffset < 0                 ? "unknown"
+                       : binding.objectSerialEvidence.status == "validated" ? "weak-reference-validated"
+                                                                            : "explicit")
                    << "\",\"item_serial_offset\":" << binding.objects.itemSerialOffset
-                   << "},\"decoding\":{\"name_text\":{\"family\":\""
+                   << ",\"analysis\":";
+            WriteObjectSerialEvidenceJson(stream, binding.objectSerialEvidence);
+            stream << "},\"decoding\":{\"name_text\":{\"family\":\""
                    << (codec ? decoding::NameTextFamilyName(codec->Family) : "custom")
                    << "\",\"source\":\"" << EscapeJson(evidence.source) << "\",\"key\":";
             if (codec)

@@ -43,7 +43,8 @@ namespace nextdumper::reflection::detail
         return std::string(kind) + ":" + ir::DelegateStorageKindName(storage);
     }
 
-    RuntimeFieldPlanner::RuntimeFieldPlanner(const ir::ReflectionIR &reflection)
+    RuntimeFieldPlanner::RuntimeFieldPlanner(const ir::ReflectionIR &reflection, bool serialReferencesOnly)
+        : serialReferencesOnly_(serialReferencesOnly)
     {
         for (const auto &type : reflection.types)
             types_.emplace(type.address, &type);
@@ -95,7 +96,12 @@ namespace nextdumper::reflection::detail
             {
                 if (!remaining)
                     break;
-                const bool value = RuntimeValueKind(property.type.kind) != nullptr;
+                const auto kind = property.type.kind;
+                const bool value = serialReferencesOnly_
+                                       ? kind == ir::PropertyKind::WeakObject || kind == ir::PropertyKind::LazyObject ||
+                                             kind == ir::PropertyKind::SoftObject || kind == ir::PropertyKind::SoftClass ||
+                                             kind == ir::PropertyKind::Delegate
+                                       : RuntimeValueKind(kind) != nullptr;
                 if (!value && property.type.kind != ir::PropertyKind::Struct)
                     continue;
                 // 同一基类字段被多个派生类复用时只计一次，primitive 字段不消耗实例证据预算

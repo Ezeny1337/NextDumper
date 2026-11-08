@@ -135,6 +135,7 @@ add_library(nextdumper_core STATIC
     src/module/ElfSymbols.cpp
     src/module/ElfSymbolQuery.cpp
     src/reflection/ReflectionReader.cpp
+    src/reflection/ObjectSerialDiscovery.cpp
     src/reflection/ReflectionEvidenceLog.cpp
     src/reflection/RuntimeInspector.cpp
     src/reflection/RuntimeFieldPlanner.cpp
