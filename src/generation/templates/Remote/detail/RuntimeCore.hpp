@@ -63,11 +63,12 @@ namespace NextDumper
             Reset();
             return objects;
         }
-        const auto none = ReadName(0);
-        if (!none || *none != "None")
+        std::string none;
+        const ReadStatus nameStatus = ReadNameEntry(0, none);
+        if (nameStatus != ReadStatus::Ok || none != "None")
         {
             Reset();
-            return ReadStatus::InvalidHeader;
+            return nameStatus != ReadStatus::Ok ? nameStatus : ReadStatus::InvalidHeader;
         }
         return ReadStatus::Ok;
     }
@@ -177,16 +178,20 @@ namespace NextDumper
         if (binding_.pointerWidth == 4)
         {
             std::uint32_t raw = 0;
-            if (!ReadExact(address, &raw, sizeof(raw)).Ok())
-                return ReadStatus::ReadFailure;
+            const ReadResult read = ReadExact(address, &raw, sizeof(raw));
+            if (!read.Ok())
+                return read.status;
             value = static_cast<TargetAddress>(raw);
             return ReadStatus::Ok;
         }
         if (binding_.pointerWidth == 8)
         {
             std::uint64_t raw = 0;
-            if (!ReadExact(address, &raw, sizeof(raw)).Ok() || raw > std::numeric_limits<TargetAddress>::max())
-                return ReadStatus::ReadFailure;
+            const ReadResult read = ReadExact(address, &raw, sizeof(raw));
+            if (!read.Ok())
+                return read.status;
+            if (raw > std::numeric_limits<TargetAddress>::max())
+                return ReadStatus::InvalidReference;
             value = static_cast<TargetAddress>(raw);
             return ReadStatus::Ok;
         }
@@ -205,6 +210,9 @@ namespace NextDumper
             objects.itemStride <= 0 || objects.itemObjectOffset > objects.itemStride - pointer ||
             objects.itemIndexOffset < 0 || object.classOffset < 0 || object.internalIndexOffset < 0 ||
             object.nameOffset < 0 || object.outerOffset < 0)
+            return false;
+        if (objects.itemSerialOffset < -1 ||
+            (objects.itemSerialOffset >= 0 && objects.itemSerialOffset > objects.itemStride - 4))
             return false;
         if (binding_.casePreservingName &&
             (binding_.fname.displayIndex < 0 || binding_.fname.displayIndex > binding_.fname.size - 4))
@@ -229,12 +237,12 @@ namespace NextDumper
 
     [[nodiscard]] inline const TypeDescriptor *RemoteRuntime::FindType(std::string_view fullName) const
     {
-        if (fullName.empty())
+        if (fullName.empty() || !types_)
             return nullptr;
         const TypeDescriptor *found = nullptr;
         for (std::size_t index = 0; index < typeCount_; ++index)
         {
-            if (types_[index].fullName != fullName)
+            if (Empty(types_[index].fullName) || types_[index].fullName != fullName)
                 continue;
             if (found)
                 return nullptr;
@@ -301,6 +309,17 @@ namespace NextDumper
         return IsTypeA(type, baseName, chainComplete);
     }
 
+    [[nodiscard]] inline ReadStatus RemoteRuntime::MatchType(const TypeDescriptor *type, std::string_view baseName,
+                                                             bool &matches) const
+    {
+        matches = false;
+        if (!type || baseName.empty())
+            return ReadStatus::InvalidArgument;
+        bool chainComplete = false;
+        matches = IsTypeA(type, baseName, chainComplete);
+        return chainComplete ? ReadStatus::Ok : ReadStatus::Incomplete;
+    }
+
     [[nodiscard]] inline bool RemoteRuntime::IsTypeA(const TypeDescriptor *type, std::string_view baseName,
                                                      bool &chainComplete) const
     {
@@ -309,6 +328,11 @@ namespace NextDumper
         chainComplete = type != nullptr;
         for (; type && count < visited.size(); ++count)
         {
+            if (!type->fullName)
+            {
+                chainComplete = false;
+                return false;
+            }
             if (type->fullName == baseName)
                 return true;
             if (std::find(visited.begin(), visited.begin() + static_cast<std::ptrdiff_t>(count),
@@ -323,6 +347,11 @@ namespace NextDumper
                 chainComplete = type->superTypeResolved;
                 return false;
             }
+            if (!type->superTypeResolved)
+            {
+                chainComplete = false;
+                return false;
+            }
             type = FindType(type->superFullName);
             if (!type)
             {
@@ -335,14 +364,22 @@ namespace NextDumper
         return false;
     }
 
-    [[nodiscard]] inline bool RemoteRuntime::ValidateHandle(const ObjectHandle &handle)
+    [[nodiscard]] inline ReadStatus RemoteRuntime::ValidateHandle(const ObjectHandle &handle)
     {
-        if (!initialized_ || handle.index < 0 || handle.index >= objectCount_ || !handle.address)
-            return false;
+        if (!initialized_)
+            return ReadStatus::NotInitialized;
+        if (handle.index < 0 || handle.index >= objectCount_ || !handle.address)
+            return ReadStatus::StaleObject;
         RemoteObjectView current;
-        if (ReadObject(handle.index, current) != ReadStatus::Ok || current.handle.address != handle.address)
-            return false;
-        return !handle.serialKnown || (current.handle.serialKnown && current.handle.serial == handle.serial);
+        const ReadStatus status = ReadObject(handle.index, current);
+        if (status == ReadStatus::Empty || status == ReadStatus::InvalidIndex)
+            return ReadStatus::StaleObject;
+        if (status != ReadStatus::Ok)
+            return status;
+        if (current.handle.address != handle.address ||
+            (handle.serialKnown && (!current.handle.serialKnown || current.handle.serial != handle.serial)))
+            return ReadStatus::StaleObject;
+        return ReadStatus::Ok;
     }
 
 } // namespace NextDumper

@@ -192,6 +192,7 @@ namespace NextDumper
         std::int32_t itemStride = -1;
         std::int32_t itemIndexOffset = -1;
         bool packedPointers = false;
+        std::int32_t itemSerialOffset = -1;
     };
 
     enum class NameStoreKind : std::uint8_t

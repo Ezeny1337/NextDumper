@@ -38,7 +38,10 @@ namespace nextdumper::generation::detail
             const std::uint32_t required = descriptor.RequiredCustomSlots(namePool, chunkedObjects);
 
             stream << "{\"status\":\"" << (supported ? "supported" : "unsupported")
-                   << "\",\"scope\":\"binding\",\"decoding\":{\"name_text\":{\"family\":\""
+                   << "\",\"scope\":\"binding\",\"object_identity\":{\"serial_layout\":\""
+                   << (binding.objects.itemSerialOffset >= 0 ? "explicit" : "unknown")
+                   << "\",\"item_serial_offset\":" << binding.objects.itemSerialOffset
+                   << "},\"decoding\":{\"name_text\":{\"family\":\""
                    << (codec ? decoding::NameTextFamilyName(codec->Family) : "custom")
                    << "\",\"source\":\"" << EscapeJson(evidence.source) << "\",\"key\":";
             if (codec)
@@ -546,7 +549,8 @@ namespace nextdumper::generation::detail
                << ",\"item_object_offset\":" << binding.objects.itemObjectOffset
                << ",\"item_stride\":" << binding.objects.itemStride
                << ",\"packed_pointers\":" << (binding.objects.packedPointers ? "true" : "false")
-               << ",\"item_index_offset\":" << binding.objects.itemIndexOffset << "},\n";
+               << ",\"item_index_offset\":" << binding.objects.itemIndexOffset
+               << ",\"item_serial_offset\":" << binding.objects.itemSerialOffset << "},\n";
         stream << "    \"names\": {\"kind\":\""
                << (binding.names.kind == NameContainerKind::Pool ? "pool" : "array") << "\"";
         if (binding.names.kind == NameContainerKind::Pool)

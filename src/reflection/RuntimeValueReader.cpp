@@ -76,7 +76,7 @@ namespace nextdumper::reflection::detail
             const auto actualSerial = objects_.Objects().ReadSerialNumber(target);
             const auto actualIndex = target.IsValid() ? objects_.InternalIndex(target.address) : std::nullopt;
             if (!actualSerial)
-                result.targetStatus = "object-slot-or-serial-unreadable";
+                result.targetStatus = "object-slot-or-serial-unavailable";
             else if (*actualSerial != result.objectSerial)
                 result.targetStatus = "stale-serial";
             else if (!actualIndex || *actualIndex != result.objectIndex)

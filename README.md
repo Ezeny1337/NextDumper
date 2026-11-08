@@ -213,6 +213,8 @@ The output directory also receives the session log and diagnosis report:
 
 The headers use the `NextDumper` namespace. The reader consumes target addresses through a caller-supplied read callback; generated C++ declarations remain layout descriptions and are not native ABI-compatible objects. See [the external SDK guide](docs/external-sdk.md) for the callback contract, supported value families, and session lifecycle.
 
+For incremental scans, use `ReadObject`, `ResolveObjectType`, and the status-returning `MatchType` before calling `Describe` on candidates. The consumer owns its scan cursor and read budget. Queries include CDOs and archetypes unless an explicit flags filter excludes them.
+
 The timestamp is taken from local time when the session starts. If reflection or SDK generation is partial, the directory name contains `.partial`, for example `com_example_game.partial_20261021163000/`.
 
 ## Game profiles
@@ -317,6 +319,8 @@ The output contains no hash of the target binary. Confirm that the file open in 
 `manifest.json` records `reflection_status` and `sdk_status` separately. Fields emitted as fixed-size opaque storage keep their reflected size and semantics, but their contents are not expanded. Opaque storage alone does not make the SDK partial; omitted fields and layout warnings do.
 
 `external_runtime` separately records binding and decoding support, decoder provenance, observed name-sample coverage, required root inputs, and unsupported decoder slots. `supported` means the binding's necessary decoders are implemented; consumer initialization and individual field reads must still succeed. Replace the entire generated SDK when updating its binding contract. The current runtime, manifest, and diagnostics JSON schemas are 7, 10, and 12 respectively.
+
+Its `object_identity` section records the serial layout source. Automatic discovery does not infer the serial offset. Without a trusted layout, ordinary objects remain readable, but handles cannot validate serial identity; resolving non-null weak references and delegate targets returns `Unsupported`.
 
 JSON files keep complete field metadata. Logs keep diagnostic summaries, limited samples, and anomalies, with counts for omitted samples and references to the corresponding JSON records.
 

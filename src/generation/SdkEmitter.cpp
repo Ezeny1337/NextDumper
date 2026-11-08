@@ -323,7 +323,7 @@ namespace nextdumper::generation::detail
                << object.objectsOffset << ", " << object.numElementsOffset << ", " << object.maxElementsOffset << ", "
                << object.numChunksOffset << ", " << object.maxChunksOffset << ", " << object.elementsPerChunk << ", "
                << object.itemObjectOffset << ", " << object.itemStride << ", " << object.itemIndexOffset << ", "
-               << (object.packedPointers ? "true" : "false") << "},\n";
+               << (object.packedPointers ? "true" : "false") << ", " << object.itemSerialOffset << "},\n";
         stream << "    NameStoreDescriptor{\n";
         stream << "        NameStoreKind::" << (name.kind == ::nextdumper::binding::NameContainerKind::Pool ? "Pool" : "Array") << ", ";
         if (name.kind == ::nextdumper::binding::NameContainerKind::Array)

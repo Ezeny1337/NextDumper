@@ -38,6 +38,11 @@ namespace NextDumper
     [[nodiscard]] ReadStatus ReadObject(std::int32_t index, RemoteObjectView &out);
 
     [[nodiscard]] std::optional<ObjectInfo> Describe(const RemoteObjectView &object);
+    [[nodiscard]] ReadStatus Describe(const RemoteObjectView &object, ObjectInfo &out);
+
+    // 只解析对象的类描述，不读取对象自身的名称或 Outer 链，失败时清空 type
+    [[nodiscard]] ReadStatus ResolveObjectType(RemoteObjectView &object);
+    [[nodiscard]] ReadStatus ReadObjectFlags(const RemoteObjectView &object, std::uint32_t &flags);
 
     // 对象查询扫描原始 UObject 数组；默认不排除任何 object flags
     [[nodiscard]] ObjectQueryResult FindObjects(const ObjectQuery &query, std::size_t maxResults = 128,
@@ -64,6 +69,9 @@ namespace NextDumper
 
     // 在不读取目标内存的情况下测试反射继承元数据，返回 False 可能意味着不匹配，或祖先元数据不可用
     [[nodiscard]] bool IsTypeA(const TypeDescriptor *type, std::string_view baseFullName) const;
+    // Ok 时 matches 表示确定的匹配结果，祖先链不足以判定时返回 Incomplete
+    [[nodiscard]] ReadStatus MatchType(const TypeDescriptor *type, std::string_view baseFullName,
+                                       bool &matches) const;
 
     [[nodiscard]] ValueReadResult ReadField(const RemoteObjectView &object, std::string_view name);
 
@@ -135,7 +143,7 @@ namespace NextDumper
 
     [[nodiscard]] const EnumDescriptor *FindEnum(std::string_view fullName) const;
 
-    [[nodiscard]] bool ValidateHandle(const ObjectHandle &handle);
+    [[nodiscard]] ReadStatus ValidateHandle(const ObjectHandle &handle);
 
     [[nodiscard]] ObjectQueryResult FindObjectsImpl(const ObjectQuery &query, std::size_t maxResults,
                                                     std::string_view requiredTypeFullName,
@@ -145,36 +153,34 @@ namespace NextDumper
     [[nodiscard]] bool IsTypeA(const TypeDescriptor *type, std::string_view baseFullName,
                                bool &chainComplete) const;
 
-    [[nodiscard]] bool ReadObjectSerial(std::int32_t index, std::int32_t &serial);
+    [[nodiscard]] ReadStatus ReadObjectName(TargetAddress object, std::string &name);
 
-    [[nodiscard]] bool ReadObjectName(TargetAddress object, std::string &name);
+    [[nodiscard]] ReadStatus ReadObjectClass(TargetAddress object, TargetAddress &classAddress);
 
-    [[nodiscard]] bool ReadObjectClass(TargetAddress object, TargetAddress &classAddress);
+    [[nodiscard]] ReadStatus ReadObjectType(TargetAddress object, const TypeDescriptor *&type);
 
-    [[nodiscard]] bool ReadObjectClassName(TargetAddress object, std::string &className);
+    [[nodiscard]] ReadStatus ReadObjectClassName(TargetAddress object, std::string &className);
 
-    [[nodiscard]] bool ReadOuter(TargetAddress object, TargetAddress &outer);
+    [[nodiscard]] ReadStatus ReadOuter(TargetAddress object, TargetAddress &outer);
 
-    [[nodiscard]] bool ReadFullName(TargetAddress object, std::string &fullName, std::size_t depth = 0);
+    [[nodiscard]] ReadStatus ReadFullName(TargetAddress object, std::string &fullName);
 
-    [[nodiscard]] std::optional<ObjectInfo> ReadObjectInfo(const ObjectHandle &handle);
+    [[nodiscard]] ReadStatus ReadObjectInfo(const ObjectHandle &handle, ObjectInfo &out);
 
     [[nodiscard]] ReadStatus ReadObjectFlags(TargetAddress object, std::uint32_t &flags) const;
 
-    [[nodiscard]] bool LocateNameEntry(std::int32_t index, TargetAddress &entry, std::size_t &available);
+    [[nodiscard]] ReadStatus LocateNameEntry(std::int32_t index, TargetAddress &entry, std::size_t &available);
 
     [[nodiscard]] static bool AddSigned(TargetAddress base, std::int32_t offset, TargetAddress &out);
 
-    [[nodiscard]] bool ReadNameEntry(std::int32_t index, std::string &name, std::size_t depth = 0);
+    [[nodiscard]] ReadStatus ReadNameEntry(std::int32_t index, std::string &name, std::size_t depth = 0);
 
-    [[nodiscard]] bool ReadNameText(TargetAddress address, std::size_t chars, bool wide,
-                                    std::string &result) const;
+    [[nodiscard]] ReadStatus ReadNameText(TargetAddress address, std::size_t chars, bool wide,
+                                          std::string &result) const;
 
     static void AppendUtf8(std::string &output, std::uint32_t codePoint);
 
-    [[nodiscard]] std::optional<std::string> ReadName(std::int32_t index);
-
-    [[nodiscard]] bool ReadFName(TargetAddress address, std::string &result);
+    [[nodiscard]] ReadStatus ReadFName(TargetAddress address, std::string &result);
 
     [[nodiscard]] ValueReadResult ReadSignedValue(TargetAddress address, std::int32_t size);
 

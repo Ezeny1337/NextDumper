@@ -25,8 +25,9 @@ namespace NextDumper
             return ReadStatus::AddressOverflow;
         std::int32_t count = 0;
         TargetAddress storage = 0;
-        if (!ReadExact(countAddress, &count, sizeof(count)).Ok())
-            return ReadStatus::ReadFailure;
+        const ReadResult countRead = ReadExact(countAddress, &count, sizeof(count));
+        if (!countRead.Ok())
+            return countRead.status;
         const ReadStatus storageStatus = ReadPointer(storageAddress, storage);
         if (storageStatus != ReadStatus::Ok)
             return storageStatus;
@@ -38,9 +39,12 @@ namespace NextDumper
         {
             std::int32_t capacity = 0;
             TargetAddress capacityAddress = 0;
-            if (!Add(objectRoot_, static_cast<std::uint32_t>(binding_.objects.maxElementsOffset), capacityAddress) ||
-                !ReadExact(capacityAddress, &capacity, sizeof(capacity)).Ok() || capacity < count ||
-                capacity > options_.maxObjectCount)
+            if (!Add(objectRoot_, static_cast<std::uint32_t>(binding_.objects.maxElementsOffset), capacityAddress))
+                return ReadStatus::AddressOverflow;
+            const ReadResult capacityRead = ReadExact(capacityAddress, &capacity, sizeof(capacity));
+            if (!capacityRead.Ok())
+                return capacityRead.status;
+            if (capacity < count || capacity > options_.maxObjectCount)
                 return ReadStatus::InvalidHeader;
         }
         if (binding_.objects.kind == ObjectArrayKind::Chunked)
@@ -52,8 +56,12 @@ namespace NextDumper
                     continue;
                 TargetAddress address = 0;
                 std::int32_t chunks = 0;
-                if (!Add(objectRoot_, static_cast<std::uint32_t>(offset), address) ||
-                    !ReadExact(address, &chunks, sizeof(chunks)).Ok() || chunks < requiredChunks || chunks > 0x1000)
+                if (!Add(objectRoot_, static_cast<std::uint32_t>(offset), address))
+                    return ReadStatus::AddressOverflow;
+                const ReadResult chunkRead = ReadExact(address, &chunks, sizeof(chunks));
+                if (!chunkRead.Ok())
+                    return chunkRead.status;
+                if (chunks < requiredChunks || chunks > 0x1000)
                     return ReadStatus::InvalidHeader;
             }
         }
@@ -104,21 +112,68 @@ namespace NextDumper
 
         std::int32_t reportedIndex = -1;
         TargetAddress indexAddress = 0;
-        if (binding_.uobject.internalIndexOffset < 0 ||
-            !Add(address, static_cast<std::uint32_t>(binding_.uobject.internalIndexOffset), indexAddress) ||
-            !ReadExact(indexAddress, &reportedIndex, sizeof(reportedIndex)).Ok() || reportedIndex != index)
+        if (binding_.uobject.internalIndexOffset < 0)
+            return ReadStatus::Unsupported;
+        if (!Add(address, static_cast<std::uint32_t>(binding_.uobject.internalIndexOffset), indexAddress))
+            return ReadStatus::AddressOverflow;
+        const ReadResult indexRead = ReadExact(indexAddress, &reportedIndex, sizeof(reportedIndex));
+        if (!indexRead.Ok())
+            return indexRead.status;
+        if (reportedIndex != index)
             return ReadStatus::InvalidReference;
         ObjectHandle handle{address, index, 0, false};
-        handle.serialKnown = ReadObjectSerial(index, handle.serial);
+        if (binding_.objects.itemSerialOffset >= 0)
+        {
+            TargetAddress serialAddress = 0;
+            if (!Add(itemBase, static_cast<std::uint32_t>(binding_.objects.itemSerialOffset), serialAddress))
+                return ReadStatus::AddressOverflow;
+            const ReadResult serialRead = ReadExact(serialAddress, &handle.serial, sizeof(handle.serial));
+            if (!serialRead.Ok())
+                return serialRead.status;
+            if (handle.serial < 0)
+                return ReadStatus::InvalidReference;
+            handle.serialKnown = handle.serial > 0;
+            handle.serialState = handle.serialKnown ? ObjectSerialState::Known : ObjectSerialState::Unassigned;
+        }
         out = {this, handle, nullptr};
         return ReadStatus::Ok;
     }
 
     [[nodiscard]] inline std::optional<ObjectInfo> RemoteRuntime::Describe(const RemoteObjectView &object)
     {
-        if (object.runtime != this || !ValidateHandle(object.handle))
+        ObjectInfo info;
+        if (Describe(object, info) != ReadStatus::Ok)
             return std::nullopt;
-        return ReadObjectInfo(object.handle);
+        return info;
+    }
+
+    [[nodiscard]] inline ReadStatus RemoteRuntime::Describe(const RemoteObjectView &object, ObjectInfo &out)
+    {
+        out = {};
+        if (object.runtime != this)
+            return ReadStatus::InvalidArgument;
+        const ReadStatus status = ValidateHandle(object.handle);
+        return status == ReadStatus::Ok ? ReadObjectInfo(object.handle, out) : status;
+    }
+
+    [[nodiscard]] inline ReadStatus RemoteRuntime::ResolveObjectType(RemoteObjectView &object)
+    {
+        object.type = nullptr;
+        if (object.runtime != this)
+            return ReadStatus::InvalidArgument;
+        const ReadStatus status = ValidateHandle(object.handle);
+        if (status != ReadStatus::Ok)
+            return status;
+        return ReadObjectType(object.handle.address, object.type);
+    }
+
+    [[nodiscard]] inline ReadStatus RemoteRuntime::ReadObjectFlags(const RemoteObjectView &object, std::uint32_t &flags)
+    {
+        flags = 0;
+        if (object.runtime != this)
+            return ReadStatus::InvalidArgument;
+        const ReadStatus status = ValidateHandle(object.handle);
+        return status == ReadStatus::Ok ? ReadObjectFlags(object.handle.address, flags) : status;
     }
 
     [[nodiscard]] inline ObjectQueryResult RemoteRuntime::FindObjects(const ObjectQuery &query, std::size_t maxResults,
@@ -211,9 +266,10 @@ namespace NextDumper
             return result;
         }
         const std::size_t resultLimit = std::min(maxResults, options_.maxSearchResults);
-        if (RefreshObjectCount() != ReadStatus::Ok)
+        const ReadStatus refreshStatus = RefreshObjectCount();
+        if (refreshStatus != ReadStatus::Ok)
         {
-            result.status = ReadStatus::InvalidHeader;
+            result.status = refreshStatus;
             return result;
         }
         const std::size_t limit = std::min<std::size_t>(objectCount_, options_.maxObjectsPerSearch);
@@ -245,7 +301,7 @@ namespace NextDumper
             TargetAddress classAddress = 0;
             if (!query.name.empty() || !query.fullName.empty())
             {
-                if (!ReadObjectName(object.handle.address, objectName))
+                if (ReadObjectName(object.handle.address, objectName) != ReadStatus::Ok)
                 {
                     result.status = ReadStatus::Incomplete;
                     continue;
@@ -255,14 +311,14 @@ namespace NextDumper
             if (matches && (!query.className.empty() || !query.classFullName.empty() ||
                             !requiredTypeFullName.empty()))
             {
-                if (!ReadObjectClass(object.handle.address, classAddress))
+                if (ReadObjectClass(object.handle.address, classAddress) != ReadStatus::Ok)
                 {
                     result.status = ReadStatus::Incomplete;
                     continue;
                 }
                 if (!query.className.empty())
                 {
-                    if (!ReadObjectName(classAddress, className))
+                    if (ReadObjectName(classAddress, className) != ReadStatus::Ok)
                     {
                         result.status = ReadStatus::Incomplete;
                         continue;
@@ -272,7 +328,7 @@ namespace NextDumper
             }
             if (matches && (!query.classFullName.empty() || !requiredTypeFullName.empty()))
             {
-                if (!ReadFullName(classAddress, classFullName))
+                if (ReadFullName(classAddress, classFullName) != ReadStatus::Ok)
                 {
                     result.status = ReadStatus::Incomplete;
                     continue;
@@ -308,7 +364,7 @@ namespace NextDumper
             }
             if (matches && !query.fullName.empty())
             {
-                if (!ReadFullName(object.handle.address, fullName))
+                if (ReadFullName(object.handle.address, fullName) != ReadStatus::Ok)
                 {
                     result.status = ReadStatus::Incomplete;
                     continue;
@@ -345,97 +401,100 @@ namespace NextDumper
                 matches.slotsVisited};
     }
 
-    [[nodiscard]] inline bool RemoteRuntime::ReadObjectSerial(std::int32_t index, std::int32_t &serial)
+    [[nodiscard]] inline ReadStatus RemoteRuntime::ReadObjectName(TargetAddress object, std::string &name)
     {
-        serial = 0;
-        const std::size_t pointerWidth =
-            binding_.objects.packedPointers ? sizeof(std::uint32_t) : binding_.pointerWidth;
-        const std::int64_t offset =
-            static_cast<std::int64_t>(binding_.objects.itemObjectOffset) + static_cast<std::int64_t>(pointerWidth) + 8;
-        if (binding_.objects.itemObjectOffset != 0 || offset < 0 || offset + 4 > binding_.objects.itemStride)
-            return false;
-        TargetAddress item = 0;
+        if (binding_.uobject.nameOffset < 0)
+            return ReadStatus::Unsupported;
         TargetAddress address = 0;
-        if (binding_.objects.kind == ObjectArrayKind::Fixed)
-        {
-            if (!AddScaled(objectStorage_, index, binding_.objects.itemStride, item))
-                return false;
-        }
-        else
-        {
-            const std::int32_t chunkIndex = index / binding_.objects.elementsPerChunk;
-            const std::int32_t within = index % binding_.objects.elementsPerChunk;
-            TargetAddress chunkSlot = 0;
-            TargetAddress chunk = 0;
-            if (!AddScaled(objectStorage_, chunkIndex, binding_.pointerWidth, chunkSlot) ||
-                ReadPointer(chunkSlot, chunk) != ReadStatus::Ok ||
-                !AddScaled(chunk, within, binding_.objects.itemStride, item))
-                return false;
-        }
-        if (!Add(item, static_cast<std::uint32_t>(offset), address))
-            return false;
-        return ReadExact(address, &serial, sizeof(serial)).Ok() && serial > 0;
+        if (!Add(object, static_cast<std::uint32_t>(binding_.uobject.nameOffset), address))
+            return ReadStatus::AddressOverflow;
+        return ReadFName(address, name);
     }
 
-    [[nodiscard]] inline bool RemoteRuntime::ReadObjectName(TargetAddress object, std::string &name)
+    [[nodiscard]] inline ReadStatus RemoteRuntime::ReadObjectClass(TargetAddress object, TargetAddress &classAddress)
     {
+        classAddress = 0;
+        if (binding_.uobject.classOffset < 0)
+            return ReadStatus::Unsupported;
         TargetAddress address = 0;
-        return binding_.uobject.nameOffset >= 0 &&
-               Add(object, static_cast<std::uint32_t>(binding_.uobject.nameOffset), address) &&
-               ReadFName(address, name);
+        if (!Add(object, static_cast<std::uint32_t>(binding_.uobject.classOffset), address))
+            return ReadStatus::AddressOverflow;
+        const ReadStatus status = ReadPointer(address, classAddress);
+        if (status != ReadStatus::Ok)
+            return status;
+        return classAddress ? ReadStatus::Ok : ReadStatus::InvalidReference;
     }
 
-    [[nodiscard]] inline bool RemoteRuntime::ReadObjectClass(TargetAddress object, TargetAddress &classAddress)
+    [[nodiscard]] inline ReadStatus RemoteRuntime::ReadObjectType(TargetAddress object, const TypeDescriptor *&type)
     {
-        TargetAddress address = 0;
-        return binding_.uobject.classOffset >= 0 &&
-               Add(object, static_cast<std::uint32_t>(binding_.uobject.classOffset), address) &&
-               ReadPointer(address, classAddress) == ReadStatus::Ok && classAddress != 0;
+        type = nullptr;
+        TargetAddress classAddress = 0;
+        ReadStatus status = ReadObjectClass(object, classAddress);
+        if (status != ReadStatus::Ok)
+            return status;
+        std::string classFullName;
+        status = ReadFullName(classAddress, classFullName);
+        if (status != ReadStatus::Ok)
+            return status;
+        const TypeDescriptor *resolved = FindType(classFullName);
+        if (!resolved || resolved->kind != TypeKind::Class)
+            return ReadStatus::Incomplete;
+        type = resolved;
+        return ReadStatus::Ok;
     }
 
-    [[nodiscard]] inline bool RemoteRuntime::ReadObjectClassName(TargetAddress object, std::string &className)
+    [[nodiscard]] inline ReadStatus RemoteRuntime::ReadObjectClassName(TargetAddress object, std::string &className)
     {
         TargetAddress classAddress = 0;
-        return ReadObjectClass(object, classAddress) && ReadObjectName(classAddress, className);
+        const ReadStatus status = ReadObjectClass(object, classAddress);
+        return status == ReadStatus::Ok ? ReadObjectName(classAddress, className) : status;
     }
 
-    [[nodiscard]] inline bool RemoteRuntime::ReadOuter(TargetAddress object, TargetAddress &outer)
+    [[nodiscard]] inline ReadStatus RemoteRuntime::ReadOuter(TargetAddress object, TargetAddress &outer)
     {
+        outer = 0;
+        if (binding_.uobject.outerOffset < 0)
+            return ReadStatus::Unsupported;
         TargetAddress address = 0;
-        return binding_.uobject.outerOffset >= 0 &&
-               Add(object, static_cast<std::uint32_t>(binding_.uobject.outerOffset), address) &&
-               ReadPointer(address, outer) == ReadStatus::Ok;
+        if (!Add(object, static_cast<std::uint32_t>(binding_.uobject.outerOffset), address))
+            return ReadStatus::AddressOverflow;
+        return ReadPointer(address, outer);
     }
 
-    [[nodiscard]] inline bool RemoteRuntime::ReadFullName(TargetAddress object, std::string &fullName,
-                                                          std::size_t depth)
+    [[nodiscard]] inline ReadStatus RemoteRuntime::ReadFullName(TargetAddress object, std::string &fullName)
     {
-        if (depth >= options_.maxOuterDepth)
-            return false;
+        if (options_.maxOuterDepth == 0)
+            return ReadStatus::LimitExceeded;
         std::string objectName;
         std::string className;
-        if (!ReadObjectName(object, objectName) || !ReadObjectClassName(object, className))
-            return false;
+        ReadStatus status = ReadObjectName(object, objectName);
+        if (status != ReadStatus::Ok)
+            return status;
+        status = ReadObjectClassName(object, className);
+        if (status != ReadStatus::Ok)
+            return status;
         std::vector<std::string> outerNames;
         std::vector<TargetAddress> visited{object};
         TargetAddress current = object;
         for (std::size_t level = 0; level < options_.maxOuterDepth; ++level)
         {
             TargetAddress outer = 0;
-            if (!ReadOuter(current, outer))
-                return false;
+            status = ReadOuter(current, outer);
+            if (status != ReadStatus::Ok)
+                return status;
             if (!outer)
                 break;
             if (std::find(visited.begin(), visited.end(), outer) != visited.end())
-                return false;
+                return ReadStatus::InvalidReference;
             visited.push_back(outer);
             std::string name;
-            if (!ReadObjectName(outer, name))
-                return false;
+            status = ReadObjectName(outer, name);
+            if (status != ReadStatus::Ok)
+                return status;
             outerNames.push_back(std::move(name));
             current = outer;
             if (level + 1 == options_.maxOuterDepth)
-                return false;
+                return ReadStatus::LimitExceeded;
         }
         fullName = std::move(className);
         fullName.push_back(' ');
@@ -445,28 +504,36 @@ namespace NextDumper
             fullName.push_back('.');
         }
         fullName += objectName;
-        return true;
+        return ReadStatus::Ok;
     }
 
-    [[nodiscard]] inline std::optional<ObjectInfo> RemoteRuntime::ReadObjectInfo(const ObjectHandle &handle)
+    [[nodiscard]] inline ReadStatus RemoteRuntime::ReadObjectInfo(const ObjectHandle &handle, ObjectInfo &out)
     {
         ObjectInfo info;
         info.handle = handle;
-        if (!ReadObjectClass(handle.address, info.classAddress) || !ReadOuter(handle.address, info.outerAddress) ||
-            !ReadObjectName(handle.address, info.name) || !ReadObjectClassName(handle.address, info.className) ||
-            !ReadFullName(handle.address, info.fullName))
-            return std::nullopt;
-        TargetAddress flagsAddress = 0;
-        std::int32_t flags = 0;
-        if (binding_.uobject.flagsOffset >= 0 &&
-            Add(handle.address, static_cast<std::uint32_t>(binding_.uobject.flagsOffset), flagsAddress) &&
-            ReadExact(flagsAddress, &flags, sizeof(flags)).Ok())
-            info.flags = static_cast<std::uint32_t>(flags);
-        std::string classFullName;
-        if (!ReadFullName(info.classAddress, classFullName))
-            return std::nullopt;
-        info.classFullName = std::move(classFullName);
-        return info;
+        ReadStatus status = ReadObjectClass(handle.address, info.classAddress);
+        if (status != ReadStatus::Ok)
+            return status;
+        status = ReadOuter(handle.address, info.outerAddress);
+        if (status != ReadStatus::Ok)
+            return status;
+        status = ReadObjectName(handle.address, info.name);
+        if (status != ReadStatus::Ok)
+            return status;
+        status = ReadObjectName(info.classAddress, info.className);
+        if (status != ReadStatus::Ok)
+            return status;
+        status = ReadFullName(handle.address, info.fullName);
+        if (status != ReadStatus::Ok)
+            return status;
+        status = ReadObjectFlags(handle.address, info.flags);
+        if (status != ReadStatus::Ok)
+            return status;
+        status = ReadFullName(info.classAddress, info.classFullName);
+        if (status != ReadStatus::Ok)
+            return status;
+        out = std::move(info);
+        return ReadStatus::Ok;
     }
 
     [[nodiscard]] inline ReadStatus RemoteRuntime::ReadObjectFlags(TargetAddress object, std::uint32_t &flags) const
@@ -477,9 +544,7 @@ namespace NextDumper
         TargetAddress flagsAddress = 0;
         if (!Add(object, static_cast<std::uint32_t>(binding_.uobject.flagsOffset), flagsAddress))
             return ReadStatus::AddressOverflow;
-        if (!ReadExact(flagsAddress, &flags, sizeof(flags)).Ok())
-            return ReadStatus::ReadFailure;
-        return ReadStatus::Ok;
+        return ReadExact(flagsAddress, &flags, sizeof(flags)).status;
     }
 
 } // namespace NextDumper

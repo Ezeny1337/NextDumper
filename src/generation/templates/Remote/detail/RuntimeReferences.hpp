@@ -25,9 +25,9 @@ namespace NextDumper
             ObjectHandle handle;
             if (ReadObjectHandle(objectAddress, handle))
             {
-                const auto info = ReadObjectInfo(handle);
-                const TypeDescriptor *type = info ? FindType(info->classFullName) : nullptr;
-                if (type && (Empty(typeName) || IsTypeA(type, typeName)))
+                const TypeDescriptor *type = nullptr;
+                if (ReadObjectType(handle.address, type) == ReadStatus::Ok &&
+                    (Empty(typeName) || IsTypeA(type, typeName)))
                     reference.object = RemoteObjectView{this, handle, type};
             }
         }
@@ -61,26 +61,43 @@ namespace NextDumper
         TargetAddress indexAddress = 0, serialAddress = 0;
         std::int32_t index = -1, serial = 0;
         if (!Add(address, static_cast<std::uint32_t>(indexOffset), indexAddress) ||
-            !Add(address, static_cast<std::uint32_t>(serialOffset), serialAddress) ||
-            !ReadExact(indexAddress, &index, sizeof(index)).Ok() ||
-            !ReadExact(serialAddress, &serial, sizeof(serial)).Ok())
-            return {ReadStatus::ReadFailure, {}};
+            !Add(address, static_cast<std::uint32_t>(serialOffset), serialAddress))
+            return {ReadStatus::AddressOverflow, {}};
+        ReadResult read = ReadExact(indexAddress, &index, sizeof(index));
+        if (!read.Ok())
+            return {read.status, {}};
+        read = ReadExact(serialAddress, &serial, sizeof(serial));
+        if (!read.Ok())
+            return {read.status, {}};
         WeakObjectReference result{index, serial, std::nullopt};
         if ((index == 0 || index == -1) && serial == 0)
             return {ReadStatus::Ok, std::move(result)};
         if (index < 0 || serial <= 0)
             return {ReadStatus::InvalidReference, {}};
         RemoteObjectView object;
-        if (ReadObject(index, object) != ReadStatus::Ok)
-            return {ReadStatus::InvalidReference, {}};
-        if (!object.handle.serialKnown)
-            return {ReadStatus::Unsupported, {}};
-        if (object.handle.serial != serial)
-            return {ReadStatus::StaleObject, {}};
-        const auto info = ReadObjectInfo(object.handle);
-        const TypeDescriptor *objectType = info ? FindType(info->classFullName) : nullptr;
-        if (!objectType || (!Empty(type.referencedType) && !IsTypeA(objectType, type.referencedType)))
-            return {ReadStatus::InvalidReference, {}};
+        const ReadStatus objectStatus = ReadObject(index, object);
+        if (objectStatus != ReadStatus::Ok)
+            return {objectStatus == ReadStatus::Empty || objectStatus == ReadStatus::InvalidIndex
+                        ? ReadStatus::InvalidReference
+                        : objectStatus,
+                    {}};
+        if (object.handle.serialState == ObjectSerialState::UnknownLayout)
+            return {ReadStatus::Unsupported, std::move(result)};
+        if (!object.handle.serialKnown || object.handle.serial != serial)
+            return {ReadStatus::StaleObject, std::move(result)};
+        const TypeDescriptor *objectType = nullptr;
+        ReadStatus typeStatus = ReadObjectType(object.handle.address, objectType);
+        if (typeStatus != ReadStatus::Ok)
+            return {typeStatus, {}};
+        if (!Empty(type.referencedType))
+        {
+            bool matches = false;
+            typeStatus = MatchType(objectType, type.referencedType, matches);
+            if (typeStatus != ReadStatus::Ok)
+                return {typeStatus, {}};
+            if (!matches)
+                return {ReadStatus::InvalidReference, {}};
+        }
         object.type = objectType;
         result.object = object;
         return {ReadStatus::Ok, std::move(result)};
@@ -135,13 +152,17 @@ namespace NextDumper
         if (!Add(address, static_cast<std::uint32_t>(assetOffset), assetAddress))
             return {ReadStatus::AddressOverflow, {}};
         std::string firstName;
-        if (!ReadFName(assetAddress, firstName))
-            return {ReadStatus::ReadFailure, {}};
+        const ReadStatus firstNameStatus = ReadFName(assetAddress, firstName);
+        if (firstNameStatus != ReadStatus::Ok)
+            return {firstNameStatus, {}};
         if (layoutId.find("top-level") != std::string_view::npos)
         {
             TargetAddress secondAddress = 0;
-            if (!Add(assetAddress, binding_.fname.size, secondAddress) || !ReadFName(secondAddress, result.assetName))
-                return {ReadStatus::ReadFailure, {}};
+            if (!Add(assetAddress, binding_.fname.size, secondAddress))
+                return {ReadStatus::AddressOverflow, {}};
+            const ReadStatus nameStatus = ReadFName(secondAddress, result.assetName);
+            if (nameStatus != ReadStatus::Ok)
+                return {nameStatus, {}};
             result.packageName = std::move(firstName);
         }
         else
@@ -222,8 +243,9 @@ namespace NextDumper
             ObjectHandle handle;
             if (ReadObjectHandle(objectAddress, handle))
             {
-                const auto info = ReadObjectInfo(handle);
-                result.resolvedObject = RemoteObjectView{this, handle, info ? FindType(info->classFullName) : nullptr};
+                const TypeDescriptor *objectType = nullptr;
+                if (ReadObjectType(handle.address, objectType) == ReadStatus::Ok)
+                    result.resolvedObject = RemoteObjectView{this, handle, objectType};
             }
         }
         return {ReadStatus::Ok, std::move(result)};
@@ -247,22 +269,32 @@ namespace NextDumper
         DelegateReference result;
         if (!Add(address, static_cast<std::uint32_t>(indexOffset), indexAddress) ||
             !Add(address, static_cast<std::uint32_t>(serialOffset), serialAddress) ||
-            !Add(address, static_cast<std::uint32_t>(nameOffset), nameAddress) ||
-            !ReadExact(indexAddress, &result.index, sizeof(result.index)).Ok() ||
-            !ReadExact(serialAddress, &result.serial, sizeof(result.serial)).Ok() ||
-            !ReadFName(nameAddress, result.functionName))
-            return {ReadStatus::ReadFailure, {}};
+            !Add(address, static_cast<std::uint32_t>(nameOffset), nameAddress))
+            return {ReadStatus::AddressOverflow, {}};
+        ReadResult read = ReadExact(indexAddress, &result.index, sizeof(result.index));
+        if (!read.Ok())
+            return {read.status, {}};
+        read = ReadExact(serialAddress, &result.serial, sizeof(result.serial));
+        if (!read.Ok())
+            return {read.status, {}};
+        const ReadStatus nameStatus = ReadFName(nameAddress, result.functionName);
+        if (nameStatus != ReadStatus::Ok)
+            return {nameStatus, {}};
         if ((result.index == 0 || result.index == -1) && result.serial == 0)
             return {ReadStatus::Ok, std::move(result)};
         if (result.index < 0 || result.serial <= 0)
             return {ReadStatus::InvalidReference, {}};
         RemoteObjectView target;
-        if (ReadObject(result.index, target) != ReadStatus::Ok)
-            return {ReadStatus::InvalidReference, {}};
-        if (!target.handle.serialKnown)
-            return {ReadStatus::Unsupported, {}};
-        if (target.handle.serial != result.serial)
-            return {ReadStatus::StaleObject, {}};
+        const ReadStatus targetStatus = ReadObject(result.index, target);
+        if (targetStatus != ReadStatus::Ok)
+            return {targetStatus == ReadStatus::Empty || targetStatus == ReadStatus::InvalidIndex
+                        ? ReadStatus::InvalidReference
+                        : targetStatus,
+                    {}};
+        if (target.handle.serialState == ObjectSerialState::UnknownLayout)
+            return {ReadStatus::Unsupported, std::move(result)};
+        if (!target.handle.serialKnown || target.handle.serial != result.serial)
+            return {ReadStatus::StaleObject, std::move(result)};
         result.target = target;
         return {ReadStatus::Ok, std::move(result)};
     }

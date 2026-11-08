@@ -9,6 +9,8 @@ namespace nextdumper::binding
         if (objectsOffset < 0 || numElementsOffset < 0 || itemObjectOffset < 0 || itemStride <= 0 || itemIndexOffset < 0 ||
             itemObjectOffset > itemStride || sizeof(uintptr_t) > static_cast<size_t>(itemStride - itemObjectOffset))
             return false;
+        if (itemSerialOffset < -1 || (itemSerialOffset >= 0 && itemSerialOffset > itemStride - 4))
+            return false;
         if (kind == ObjectContainerKind::Chunked)
             return elementsPerChunk > 0;
         return true;

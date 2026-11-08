@@ -142,7 +142,7 @@ namespace nextdumper::generation
                      "ValueDescriptor", "FieldDescriptor", "TypeDescriptor", "EnumValueDescriptor", "EnumDescriptor",
                      "ObjectArrayKind", "ObjectArrayDescriptor", "NameStoreKind", "NameStoreDescriptor",
                      "FNameDescriptor", "ObjectDescriptor", "RuntimeBindingDescriptor", "RuntimeRoots", "RuntimeOptions",
-                     "RemoteRuntime", "ObjectHandle", "RemoteObjectView", "RemoteStructView", "RemoteStaticArrayView",
+                     "RemoteRuntime", "ObjectSerialState", "ObjectHandle", "RemoteObjectView", "RemoteStructView", "RemoteStaticArrayView",
                      "RemoteArrayView", "RemoteSparseContainerView", "RemoteMapEntryView", "ObjectReference", "EnumValue",
                      "WeakObjectReference", "SoftObjectReference", "LazyObjectReference", "InterfaceReference",
                      "DelegateReference", "TextReference", "OpaqueValue", "RemoteValue", "ValueReadResult", "ObjectInfo",

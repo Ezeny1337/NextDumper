@@ -96,6 +96,7 @@ SDK 在完整读取名称字节后执行解码，再转换字符并缓存结果�
 | 字段 | 含义 |
 | --- | --- |
 | `status` | `supported` 或 `unsupported`，范围为本次绑定及其必要解码 |
+| `object_identity` | serial 布局为 `explicit` 或 `unknown`，以及 `item_serial_offset`；不表示当前对象已分配 serial |
 | `decoding.name_text` | 算法、参数、参数来源与选择来源；`default` 为默认 identity，`explicit` 为显式配置，`analysis` 为自动分析 |
 | `decoding.name_text.analysis_validation` | Analysis 已知名称匹配数、遍历条目数和窄/宽字符样本数；非 Analysis 来源为 `null` |
 | `decoding.custom_slots` | Dumper 中仍使用自定义回调的位置 |
@@ -132,6 +133,47 @@ const auto worldResult = runtime.FindFirstObjectOfType(
 ```
 
 过滤 CDO 或 archetype 仍不能保证结果是当前活动 World。`FindFirst...` 按对象数组顺序返回第一个匹配项，不保证名称唯一，也不代表当前活动的 World 或其他全局实例；需要消歧时使用完整对象名。
+
+### 增量扫描与单对象读取
+
+`FindObjects...` 每次从槽位 0 开始。需要在多个采样周期内扫描对象数组时，由消费者保存槽位游标，按以下顺序处理：
+
+| 接口 | 职责 |
+| --- | --- |
+| `ReadObject(slot, object)` | 读取并验证对象槽，空槽返回 `Empty` |
+| `ResolveObjectType(object)` | 只解析类描述，成功时填写 `object.type`；失败时清空它 |
+| `MatchType(object.type, baseFullName, matches)` | 使用本地反射描述判断继承，不读取目标内存 |
+| `ReadObjectFlags(object, flags)` | 验证句柄并读取 flags；只在需要过滤时调用 |
+| `Describe(object, info)` | 为候选对象读取完整名称、Outer、类和 flags，并返回具体状态 |
+
+```cpp
+NextDumper::RemoteObjectView object;
+auto status = runtime.ReadObject(slot, object);
+bool isWorld = false;
+if (status == NextDumper::ReadStatus::Ok)
+    status = runtime.ResolveObjectType(object);
+if (status == NextDumper::ReadStatus::Ok)
+    status = runtime.MatchType(object.type, "Class /Script/Engine.World", isWorld);
+
+if (status == NextDumper::ReadStatus::Ok && isWorld)
+{
+    std::uint32_t flags = 0;
+    status = runtime.ReadObjectFlags(object, flags);
+    // 检查 flags 后，再对需要的候选执行 Describe 或字段读取。
+}
+```
+
+`MatchType` 返回 `Ok` 时，`matches` 表示确定的匹配或不匹配。缺少必要的父类描述、继承循环或深度超限时返回 `Incomplete`；不能当成确定的不匹配。已有布尔接口 `IsTypeA` 保留，但无法表达这种区别。
+
+`ResolveObjectType` 仍会读取类的完整名和类的 Outer 链；它省去的是对象自身的完整描述。字段和对象引用的内部类型解析也使用这条较轻的路径。SDK 不缓存远程类地址与类型的永久对应关系，避免地址复用使缓存失效。
+
+扫描策略由消费者决定：
+
+- 先做类型筛选，只对候选读取完整描述和业务字段。
+- 预算中断时保留尚未完成的槽位，下个周期重试；明确失败后可记录原因并继续。
+- 分别统计预算让出、真实失败、已完成分类的槽位及候选数。
+
+读取回调只有字节数和负值失败，SDK 无法独立区分预算拒绝、取消和后端读取失败。消费者应立即结合自己读取适配层的状态判断。`Describe(object)` 的 `optional` 包装继续可用；需要诊断原因时使用带输出参数的重载。flags 不可用或读取失败时，描述不会以默认零值报告成功。
 
 ## 反射字段
 
@@ -201,6 +243,7 @@ SDK 只提供结构描述和通用读取，不判断本地玩家，也不解释 
 - `RemoteObjectView` 使用已验证的对象句柄。
 - 空引用返回 `ReadStatus::Empty`；非空但无法解析或验证的引用返回 `InvalidReference`。
 - 需要保留弱引用索引和 serial，或普通对象指针原始地址时，分别读取为 `WeakObjectReference` 或 `ObjectReference`。
+- 直接的对象、类型、名称和 flags 读取会保留可获得的 `ReadFailure`、`PartialRead`、`AddressOverflow` 等状态；批量查询仍以 `Incomplete` 汇总跳过的失败。
 
 容器行为：
 
@@ -226,6 +269,24 @@ SDK 只提供结构描述和通用读取，不判断本地玩家，也不解释 
 - 未验证平台元素布局的冻结 MemoryImage 容器不提供元素读取。
 
 `Unsupported`、`InvalidHeader`、`InvalidReference`、`LimitExceeded` 和 `StaleObject` 都表示读取未成功。
+
+## 对象序列号与身份
+
+对象槽的 serial 偏移不从指针宽度或槽大小推算。`ObjectContainerLayout::itemSerialOffset` 只接受掌握目标明文 `int32_t` serial 布局依据的显式适配；自动对象探测保持 `-1`，并将该值导出到绑定。Dumper 的运行时采样与 SDK 使用同一项偏移依据。
+
+`ObjectHandle::serialState` 区分：
+
+| 状态 | 含义 |
+| --- | --- |
+| `UnknownLayout` | serial 布局未知，没有尝试读取 |
+| `Unassigned` | 布局已指定，当前读到零；不因此否定对象有效性 |
+| `Known` | 布局已指定且读到正数，`serialKnown` 为 `true` |
+
+指定布局后，serial 读取失败会使 `ReadObject` 返回实际读取错误；负数返回 `InvalidReference`。读取时复用已定位的对象槽，不重复读取 chunk 指针。
+
+**没有已知 serial 的普通对象仍可读取，但句柄校验只能确认当次的槽索引与地址，无法识别同址复用。** 消费者应在每个采样周期重新读取对象与类型，不应把这种视图作为具有强身份保证的长期缓存。即使 serial 已知，读取也不提供 GC 存活或原子快照保证。
+
+非空弱引用和委托目标必须通过 serial 比较才会解析。布局未知返回 `Unsupported`；布局已指定但值为零或不匹配返回 `StaleObject`。这些分支的 `ValueReadResult::value` 保留已读取的 `WeakObjectReference` 或 `DelegateReference` 原始信息，供诊断使用；状态仍表示解析失败。
 
 ## 根地址与生命周期
 

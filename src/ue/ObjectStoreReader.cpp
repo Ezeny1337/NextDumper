@@ -318,15 +318,13 @@ namespace nextdumper::ue
 
     std::optional<int32_t> ObjectStoreReader::ReadSerialNumber(const ObjectReadResult &object) const
     {
-        // 4.23-5.6 的公共前缀为 Object、Flags、ClusterRootIndex、SerialNumber
-        // packing 只改变 Object 的存储宽度，尾部可选字段不影响此前缀
-        const size_t offset = (layout_.packedPointers ? sizeof(uint32_t) : sizeof(uintptr_t)) + 8;
-        if (!object.IsValid() || layout_.itemObjectOffset != 0 ||
-            static_cast<size_t>(layout_.itemStride) < offset + sizeof(int32_t))
+        if (!initialized_ || !object.IsValid() || layout_.itemSerialOffset < 0 ||
+            object.readAddress < static_cast<uintptr_t>(layout_.itemObjectOffset))
             return std::nullopt;
-        const auto address = AddOffset(object.readAddress, offset);
+        const uintptr_t item = object.readAddress - static_cast<uintptr_t>(layout_.itemObjectOffset);
+        const auto address = AddOffset(item, static_cast<uintptr_t>(layout_.itemSerialOffset));
         int32_t serial = 0;
-        if (!address || !memory_.Read(*address, serial))
+        if (!address || !memory_.Read(*address, serial) || serial < 0)
             return std::nullopt;
         return serial;
     }

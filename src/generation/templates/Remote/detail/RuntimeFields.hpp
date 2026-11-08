@@ -15,15 +15,17 @@ namespace NextDumper
 
     [[nodiscard]] inline ValueReadResult RemoteRuntime::ReadField(const RemoteObjectView &object, std::string_view name)
     {
-        if (object.runtime != this || !ValidateHandle(object.handle))
-            return {ReadStatus::StaleObject, {}};
+        if (object.runtime != this)
+            return {ReadStatus::InvalidArgument, {}};
+        const ReadStatus handleStatus = ValidateHandle(object.handle);
+        if (handleStatus != ReadStatus::Ok)
+            return {handleStatus, {}};
         const TypeDescriptor *type = object.type;
         if (!type)
         {
-            const auto info = ReadObjectInfo(object.handle);
-            if (!info)
-                return {ReadStatus::Incomplete, {}};
-            type = FindType(info->classFullName);
+            const ReadStatus status = ReadObjectType(object.handle.address, type);
+            if (status != ReadStatus::Ok)
+                return {status, {}};
         }
         if (!type)
             return {ReadStatus::Unsupported, {}};
@@ -123,8 +125,9 @@ namespace NextDumper
             if (type.elementSize != binding_.fname.size)
                 return ReadOpaque(address, static_cast<std::size_t>(type.elementSize), "fname-size-mismatch");
             std::string name;
-            if (!ReadFName(address, name))
-                return {ReadStatus::ReadFailure, {}};
+            const ReadStatus status = ReadFName(address, name);
+            if (status != ReadStatus::Ok)
+                return {status, {}};
             return {ReadStatus::Ok, std::move(name)};
         }
         case PropertyKind::String:

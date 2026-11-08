@@ -14,12 +14,20 @@
 
 namespace NextDumper
 {
+    enum class ObjectSerialState : std::uint8_t
+    {
+        UnknownLayout,
+        Unassigned,
+        Known,
+    };
+
     struct ObjectHandle
     {
         TargetAddress address = 0;
         std::int32_t index = -1;
         std::int32_t serial = 0;
         bool serialKnown = false;
+        ObjectSerialState serialState = ObjectSerialState::UnknownLayout;
     };
 
     class RemoteRuntime;

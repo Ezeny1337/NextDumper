@@ -50,6 +50,7 @@ namespace nextdumper::binding
                    " item_stride=" + std::to_string(layout.itemStride) +
                    " packed_pointers=" + std::to_string(layout.packedPointers) +
                    " item_index_offset=" + std::to_string(layout.itemIndexOffset) +
+                   " item_serial_offset=" + std::to_string(layout.itemSerialOffset) +
                    " chunk_fields_validated=" + std::to_string(layout.chunkFieldsValidated);
         }
 

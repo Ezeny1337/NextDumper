@@ -60,6 +60,8 @@ namespace nextdumper::binding
         bool packedPointers = false;
         // 由对象契约探针按实际数据验证过 chunk 字段布局，读取器不再套用固定的 UE 字段顺序
         bool chunkFieldsValidated = false;
+        // 仅由掌握目标布局依据的显式适配设置，自动对象探测不推断序列号偏移
+        int32_t itemSerialOffset = -1;
 
         [[nodiscard]] bool IsValid() const;
     };

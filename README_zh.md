@@ -213,6 +213,8 @@ NextDumper -o <输出目录> -p <包名> [options]
 
 头文件使用 `NextDumper` 命名空间。读取器通过调用方提供的回调读取目标进程地址；生成的 C++ 声明仍然只是布局描述，不是 native ABI 对象。回调契约、支持的数据类型和会话生命周期见[外部 SDK 使用文档](docs/external-sdk.md)。
 
+增量扫描可用 `ReadObject`、`ResolveObjectType` 和带状态的 `MatchType` 先筛选类型，再对候选执行 `Describe`；采样预算和扫描游标由消费者管理。对象查询默认包含 CDO、archetype，需要时显式过滤 flags。
+
 时间戳在会话启动时按本地时间生成。反射或 SDK 生成不完整时，目录名会带 `.partial`，例如 `com_example_game.partial_20261021163000/`。
 
 ## 游戏 profile
@@ -317,6 +319,8 @@ public:
 `manifest.json` 分别记录 `reflection_status` 和 `sdk_status`。以固定大小不透明存储输出的字段会保留反射得到的大小和语义，但不会展开内部内容。不透明存储本身不会让 SDK 变成部分完成；遗漏字段和布局警告才会。
 
 `external_runtime` 独立记录绑定与解码支持、算法来源、已观察的名称样本覆盖、需要提供的根地址，以及尚未支持的解码位置。`supported` 表示绑定所需的解码已实现，消费者仍需检查初始化和各次字段读取结果。
+
+其中 `object_identity` 单独记录 serial 布局依据。自动探测不推算 serial 偏移；未提供可信布局时，普通对象可读，但无法提供 serial 保护的身份校验，非空弱引用和委托目标的解析返回 `Unsupported`。
 
 绑定契约更新时，应整套替换生成 SDK。当前 `runtime.json`、`manifest.json`、`diagnostics.json` 的 schema 分别为 **7、10、12**。
 
