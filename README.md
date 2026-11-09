@@ -39,8 +39,8 @@ flowchart TD
     E --> F[Binding validation]
     E2 --> F
     F --> G[Reflection layout resolution]
-    G --> H[Common class collection]
-    H --> I[Reflection capture]
+    G --> H[Reflection capture]
+    H --> I[Object slot serial analysis]
     I --> J[Read-only runtime sampling]
     J --> K[SDK and JSON output]
 ```
@@ -50,8 +50,8 @@ flowchart TD
 3. Collect object and name root candidates from ELF symbols and profiles. When those are missing or fail validation, code analysis runs over the module image to recover the roots.
 4. Validate the object array and name pool against the expected layout.
 5. Resolve the UE reflection layouts and select the one the runtime evidence supports.
-6. Collect common `UClass` objects.
-7. Read reflected types, properties, functions, and enums.
+6. Read reflected types, properties, functions, and enums.
+7. Cross-check non-null references to determine the object slot serial offset.
 8. Sample a limited set of runtime values in read-only mode.
 9. Write the SDK and JSON files.
 
