@@ -20,6 +20,9 @@ env:
   ANDROID_PLATFORM: android-29
   NDK_VERSION: 26.3.11579264
   CMAKE_VERSION: 3.22.1
+  CCACHE_COMPILERCHECK: content
+  CCACHE_MAXSIZE: 512MiB
+  RELEASE_TAG: ${{ github.ref_type == 'branch' && format('ci-{0}', github.sha) || github.ref_name }}
 
 jobs:
   build:
@@ -39,6 +42,25 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+
+      - name: Install ccache
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v ccache >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install --yes ccache
+          fi
+          echo "CCACHE_DIR=$HOME/.cache/ccache" >> "$GITHUB_ENV"
+          ccache --version
+
+      - name: Restore ccache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ccache
+          key: ccache-v1-${{ runner.os }}-${{ runner.arch }}-ndk-${{ env.NDK_VERSION }}-cmake-${{ env.CMAKE_VERSION }}-${{ github.job }}-${{ matrix.abi }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ccache-v1-${{ runner.os }}-${{ runner.arch }}-ndk-${{ env.NDK_VERSION }}-cmake-${{ env.CMAKE_VERSION }}-${{ github.job }}-${{ matrix.abi }}-
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
@@ -85,6 +107,7 @@ jobs:
           set -euo pipefail
           cmake -S . -B "$BUILD_DIR" -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DANDROID_ABI="$ANDROID_ABI" \
             -DANDROID_PLATFORM="$ANDROID_PLATFORM" \
             -DNEXTDUMPER_ENABLE_THINLTO=ON \
@@ -95,7 +118,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          ccache --zero-stats
           cmake --build "$BUILD_DIR" --parallel "$(nproc)"
+          ccache --show-stats
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -107,7 +132,9 @@ jobs:
 
   release-build:
     name: Build release ${{ matrix.abi }}
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: >-
+      github.event_name == 'push' && !github.event.deleted &&
+      (github.ref_type == 'branch' || startsWith(github.ref, 'refs/tags/v'))
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
@@ -123,6 +150,25 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+
+      - name: Install ccache
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v ccache >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install --yes ccache
+          fi
+          echo "CCACHE_DIR=$HOME/.cache/ccache" >> "$GITHUB_ENV"
+          ccache --version
+
+      - name: Restore ccache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ccache
+          key: ccache-v1-${{ runner.os }}-${{ runner.arch }}-ndk-${{ env.NDK_VERSION }}-cmake-${{ env.CMAKE_VERSION }}-${{ github.job }}-${{ matrix.abi }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ccache-v1-${{ runner.os }}-${{ runner.arch }}-ndk-${{ env.NDK_VERSION }}-cmake-${{ env.CMAKE_VERSION }}-${{ github.job }}-${{ matrix.abi }}-
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
@@ -157,6 +203,7 @@ jobs:
           set -euo pipefail
           cmake -S . -B "$RELEASE_BUILD_DIR" -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DANDROID_ABI="$ANDROID_ABI" \
             -DANDROID_PLATFORM="$ANDROID_PLATFORM" \
             -DCMAKE_BUILD_TYPE=Release \
@@ -167,17 +214,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          ccache --zero-stats
           cmake --build "$RELEASE_BUILD_DIR" --parallel "$(nproc)"
+          ccache --show-stats
 
       - name: Package release
         shell: bash
         run: |
           set -euo pipefail
           test -x "$RELEASE_BUILD_DIR/NextDumper"
-          version="$GITHUB_REF_NAME"
           strip_tool="$(command -v llvm-strip)"
 
-          package_name="NextDumper-android-${ANDROID_ABI}-release-${version}"
+          package_name="NextDumper-android-${ANDROID_ABI}-release-${RELEASE_TAG}"
           archive_name="${package_name}.tar.gz"
           mkdir -p "dist/$package_name"
           install -m 0755 "$RELEASE_BUILD_DIR/NextDumper" "dist/$package_name/NextDumper"
@@ -210,8 +258,9 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: release-build
+    concurrency:
+      group: android-publish-${{ github.ref_type == 'branch' && github.sha || github.ref }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -232,15 +281,22 @@ jobs:
         run: |
           set -euo pipefail
 
-          tag="$GITHUB_REF_NAME"
-          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$tag" dist/*.tar.gz dist/*.sha256 \
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" dist/*.tar.gz dist/*.sha256 \
               --repo "$GITHUB_REPOSITORY" \
               --clobber
-          else
-            gh release create "$tag" dist/*.tar.gz dist/*.sha256 \
+          elif [[ "$GITHUB_REF_TYPE" == branch ]]; then
+            gh release create "$RELEASE_TAG" dist/*.tar.gz dist/*.sha256 \
               --repo "$GITHUB_REPOSITORY" \
-              --title "NextDumper $tag" \
+              --target "$GITHUB_SHA" \
+              --title "NextDumper CI ${GITHUB_SHA::12}" \
+              --notes "Automated Android build for commit $GITHUB_SHA." \
+              --prerelease \
+              --latest=false
+          else
+            gh release create "$RELEASE_TAG" dist/*.tar.gz dist/*.sha256 \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "NextDumper $RELEASE_TAG" \
               --generate-notes \
               --verify-tag
           fi
