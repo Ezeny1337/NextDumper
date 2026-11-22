@@ -48,6 +48,8 @@ namespace nextdumper::analysis
         uint64_t FunctionCount = 0;
         uint64_t ScannedInstructions = 0;
         bool CodeScanComplete = false;
+        size_t DecodedRanges = 0;
+        size_t UnknownModeRanges = 0;
         bool ObjectScanComplete = false;
         bool Complete = false;
     };

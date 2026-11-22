@@ -319,6 +319,7 @@ namespace nextdumper::analysis
         }
 
         bool objectContractsAmbiguous = false;
+        // 代码分析需要解码器与函数索引；缺失时只跳过代码证据，不影响数据阶段
         if (decoder && functions.IsValid())
         {
             NameContractScanOptions options;
@@ -327,6 +328,43 @@ namespace nextdumper::analysis
             result.Coverage.CodeScanFetchedBytes = scan.FetchedBytes;
             result.Coverage.CodeScanDecodedBytes = scan.DecodedBytes;
             result.Coverage.CodeScanComplete = scan.IsComplete();
+            result.Coverage.DecodedRanges = scan.DecodedRanges;
+            result.Coverage.UnknownModeRanges = scan.UnknownModeRanges;
+            const auto &recognition = scan.Recognition;
+            result.Diagnostics.push_back(
+                {DiagnosticSeverity::Info, "ANALYSIS_CONTRACT_RECOGNITION",
+                 "decoded_ranges=" + std::to_string(scan.DecodedRanges) +
+                     " unknown_mode_ranges=" + std::to_string(scan.UnknownModeRanges) +
+                     " base_instructions=" + std::to_string(recognition.BaseInstructions) +
+                     " block_slots=" + std::to_string(recognition.BlockSlots) +
+                     " entry_addresses=" + std::to_string(recognition.EntryAddresses) +
+                     " entry_split_mismatches=" + std::to_string(recognition.EntrySplitMismatches) +
+                     " header_loads=" + std::to_string(recognition.HeaderLoads) +
+                     " record_attempts=" + std::to_string(recognition.RecordAttempts) +
+                     " records_without_header=" + std::to_string(recognition.RecordsWithoutHeader) +
+                     " rejected_blocks_offset=" + std::to_string(recognition.RejectedBlocksOffset) +
+                     " rejected_blocks_bit=" + std::to_string(recognition.RejectedBlocksBit) +
+                     " rejected_stride=" + std::to_string(recognition.RejectedStride) +
+                     " rejected_header_offset=" + std::to_string(recognition.RejectedHeaderOffset) +
+                     " rejected_string_offset=" + std::to_string(recognition.RejectedStringOffset) +
+                     " rejected_length_shift=" + std::to_string(recognition.RejectedLengthShift) +
+                     " rejected_id_mask=" + std::to_string(recognition.RejectedIdMask) +
+                     " array_chunk_shifts=" + std::to_string(recognition.ArrayChunkShifts) +
+                     " array_chunk_slots=" + std::to_string(recognition.ArrayChunkSlots) +
+                     " array_entry_slots=" + std::to_string(recognition.ArrayEntrySlots) +
+                     " array_entry_loads=" + std::to_string(recognition.ArrayEntryLoads) +
+                     " array_index_loads=" + std::to_string(recognition.ArrayIndexLoads) +
+                     " array_text_bases=" + std::to_string(recognition.ArrayTextBases) +
+                     " array_record_attempts=" + std::to_string(recognition.ArrayRecordAttempts) +
+                     " array_records_without_index=" + std::to_string(recognition.ArrayRecordsWithoutIndex) +
+                     " array_records_without_text=" + std::to_string(recognition.ArrayRecordsWithoutText) +
+                     " rejected_array_chunks_offset=" + std::to_string(recognition.RejectedArrayChunksOffset) +
+                     " rejected_array_chunk_shift=" + std::to_string(recognition.RejectedArrayChunkShift) +
+                     " rejected_array_entry_stride=" + std::to_string(recognition.RejectedArrayEntryStride) +
+                     " rejected_array_index_offset=" + std::to_string(recognition.RejectedArrayIndexOffset) +
+                     " rejected_array_string_offset=" + std::to_string(recognition.RejectedArrayStringOffset) +
+                     " incomplete_records=" + std::to_string(recognition.IncompleteRecords) +
+                     " contract_limit_hits=" + std::to_string(recognition.ContractLimitHits)});
             if (!scan.Error.empty())
             {
                 result.Diagnostics.push_back({DiagnosticSeverity::Warning, "ANALYSIS_CONTRACT_SCAN_FAILED",
@@ -336,8 +374,6 @@ namespace nextdumper::analysis
 
             NameValidationOptions validationOptions;
             validationOptions.RootHints = options_.NameRootHints;
-            std::optional<NameStoreContract> objectScanNameContract;
-            std::optional<NameValidation> objectScanNameValidation;
             for (size_t index = 0; index < result.NameStores.size(); ++index)
             {
                 NameStoreContract &contract = result.NameStores[index];
@@ -351,11 +387,6 @@ namespace nextdumper::analysis
                 if (validated)
                     contract.Root = validation.Root;
                 result.NameValidations.push_back(validation);
-                if (validated && !objectScanNameContract && validation.Decoder && validation.Root != 0)
-                {
-                    objectScanNameContract = contract;
-                    objectScanNameValidation = validation;
-                }
 
                 const std::string root = validation.Root != 0 ? common::Hex(validation.Root)
                                          : contract.Root == 0 ? "unresolved"
@@ -486,293 +517,200 @@ namespace nextdumper::analysis
                                                   std::move(validationMessage)});
                 }
             }
+        }
+
+        // 数据阶段独立于代码分析
+        // 即使解码器或函数索引不可用，内存中的结构证据仍应产生结论，而不是被整体跳过
+        {
+            NameStoreView dataNameView;
+            NameTextCodec dataNameDecoder{};
+            if (!result.NameStores.empty())
             {
-                ObjectContractScanOptions objectOptions;
-                NameStoreView objectNameView = objectScanNameContract
-                                                   ? NameStoreView::From(*objectScanNameContract)
-                                                   : NameStoreView{};
-                if (objectScanNameValidation)
-                    objectNameView.Root = objectScanNameValidation->Root;
-                const NameTextCodec objectNameDecoder = objectScanNameValidation && objectScanNameValidation->Decoder
-                                                            ? *objectScanNameValidation->Decoder
-                                                            : NameTextCodec{};
-                const ObjectContractScanResult objectScan =
-                    ScanObjectContracts(image, objectNameView, objectNameDecoder, objectOptions);
-                objectContractsAmbiguous = objectScan.ContractsAmbiguous;
-                result.Coverage.DataScanPlannedBytes = objectScan.PlannedBytes;
-                result.Coverage.DataScanReadBytes = objectScan.ScannedBytes;
-                result.Coverage.ObjectScanComplete = objectScan.IsComplete();
-                for (const UObjectLayoutContract &contract : objectScan.UObjectLayouts)
-                    result.UObjectLayouts.push_back(contract);
-                for (const ObjectArrayContract &contract : objectScan.Contracts)
+                size_t selected = result.NameStores.size();
+                for (size_t index = 0; index < result.NameStores.size(); ++index)
                 {
-                    result.ObjectArrays.push_back(contract);
-                    const ObjectArrayFields &fields = contract.ObjectArray;
-                    const ObjectArrayObservation &observation = contract.Observation;
-                    result.Diagnostics.push_back(
-                        {DiagnosticSeverity::Info, "ANALYSIS_OBJECT_CONTRACT",
-                         "target=ObjectArray root=" + common::Hex(contract.Root) +
-                             " kind=" + std::string(fields.Fixed ? "fixed" : "chunked") +
-                             " count=" + std::to_string(observation.Count) +
-                             " max_elements=" + std::to_string(observation.MaxElements) +
-                             " chunks=" + std::to_string(observation.Chunks) +
-                             " elements_per_chunk=" + std::to_string(fields.ElementsPerChunk) +
-                             " item_stride=" + std::to_string(fields.ItemStride) +
-                             " item_index=" + std::to_string(fields.ItemIndexOffset) +
-                             " field_offsets=" + std::to_string(fields.MaxElementsOffset) + "/" +
-                             std::to_string(fields.NumElementsOffset) + "/" +
-                             std::to_string(fields.MaxChunksOffset) + "/" +
-                             std::to_string(fields.NumChunksOffset) +
-                             " objects_offset=" + std::to_string(fields.ObjectsOffset) +
-                             " state=" + ContractStateName(contract.State)});
-                }
-                for (const ObjectSeedEvidence &seed : objectScan.Seeds)
-                {
-                    std::string seedMessage = "root=" + common::Hex(seed.Root) +
-                                              " storage=" + common::Hex(seed.Storage) +
-                                              " declared=" + std::to_string(seed.DeclaredCount) +
-                                              " count_offset=" + std::to_string(seed.CountOffset) +
-                                              " item_stride=" + std::to_string(seed.ItemStride) +
-                                              " item_index=" + std::to_string(seed.ItemIndexOffset) +
-                                              " prefix=" + std::to_string(seed.PrefixValid) + "/" +
-                                              std::to_string(seed.PrefixTested) +
-                                              " chunk_table=" + std::to_string(seed.ChunkTable) +
-                                              " chunks=" + std::to_string(seed.ChunkCount) +
-                                              " chunk_size=" + std::to_string(seed.ElementsPerChunk) +
-                                              " derived_count=" + std::to_string(seed.DerivedCount);
-                    result.Diagnostics.push_back({DiagnosticSeverity::Info, "ANALYSIS_OBJECT_SEED",
-                                                  std::move(seedMessage)});
-                    if (seed.ChunkTable)
+                    if (result.NameStores[index].State == ContractState::Validated)
                     {
-                        std::string chunks = "root=" + common::Hex(seed.Root) +
-                                             " chunks=" + std::to_string(seed.ChunkCount) +
-                                             " chunk_size=" + std::to_string(seed.ElementsPerChunk) +
-                                             " derived_count=" + std::to_string(seed.DerivedCount);
-                        for (int32_t index = 0; index < seed.ChunkCount &&
-                                                index < static_cast<int32_t>(seed.ChunkValid.size());
-                             ++index)
-                        {
-                            chunks += " chunk" + std::to_string(index) + "=" +
-                                      std::to_string(seed.ChunkValid[index]) + "/" +
-                                      std::to_string(seed.ChunkEmpty[index]) + "/" +
-                                      std::to_string(seed.ChunkInvalid[index]) + "@" +
-                                      std::to_string(seed.ChunkLastValid[index]);
-                        }
-                        result.Diagnostics.push_back({DiagnosticSeverity::Info,
-                                                      "ANALYSIS_OBJECT_SEED_CHUNKS", std::move(chunks)});
-                    }
-                    if (seed.HeaderFound)
-                    {
-                        result.Diagnostics.push_back(
-                            {DiagnosticSeverity::Info, "ANALYSIS_OBJECT_SEED_HEADER",
-                             "seed_root=" + common::Hex(seed.Root) +
-                                 " header_root=" + common::Hex(seed.HeaderRoot) +
-                                 " objects_offset=" + std::to_string(seed.HeaderObjectsOffset) +
-                                 " count_offset=" + std::to_string(seed.HeaderCountOffset) +
-                                 " max_chunks_offset=" + std::to_string(seed.HeaderMaxChunksOffset) +
-                                 " num_chunks_offset=" + std::to_string(seed.HeaderNumChunksOffset) +
-                                 " max_elements_offset=" + std::to_string(seed.HeaderMaxElementsOffset) +
-                                 " count=" + std::to_string(seed.HeaderCount) +
-                                 " max_elements=" + std::to_string(seed.HeaderMaxElements) +
-                                 " chunks=" + std::to_string(seed.HeaderChunks)});
-                    }
-                    if (seed.Calibrated)
-                    {
-                        result.Diagnostics.push_back(
-                            {DiagnosticSeverity::Info, "ANALYSIS_OBJECT_SEED_CALIBRATION",
-                             "root=" + common::Hex(seed.Root) +
-                                 " name_offset=" + std::to_string(seed.NameOffset) +
-                                 " name_hits=" + std::to_string(seed.NameHits) +
-                                 " name_unique=" + std::to_string(seed.NameUnique) +
-                                 " index_offset=" + std::to_string(seed.IndexOffset) +
-                                 " index_hits=" + std::to_string(seed.IndexHits) +
-                                 " class_offset=" + std::to_string(seed.ClassOffset) +
-                                 " class_hits=" + std::to_string(seed.ClassHits) +
-                                 " outer_offset=" + std::to_string(seed.OuterOffset) +
-                                 " outer_hits=" + std::to_string(seed.OuterHits) +
-                                 " class_unique=" + std::to_string(seed.ClassUnique) +
-                                 " outer_unique=" + std::to_string(seed.OuterUnique) +
-                                 " outer_named=" + std::to_string(seed.OuterNamed) +
-                                 " detail=" + seed.CalibrationDetail});
+                        selected = index;
+                        break;
                     }
                 }
-
-                for (const ObjectStoreEvidence &storeEvidence : objectScan.StoreEvidence)
+                if (selected < result.NameStores.size())
                 {
-                    std::string refSlots;
-                    for (const uintptr_t slot : storeEvidence.ReferenceSamples)
+                    dataNameView = NameStoreView::From(result.NameStores[selected]);
+                    const auto found = std::find_if(result.NameValidations.begin(), result.NameValidations.end(),
+                                                    [&](const NameValidation &validation)
+                                                    { return validation.ContractIndex == selected && validation.Decoder.has_value(); });
+                    if (found != result.NameValidations.end())
                     {
-                        if (!refSlots.empty())
-                            refSlots += ",";
-                        refSlots += common::Hex(slot);
-                    }
-                    std::string chunkPointers;
-                    for (const uintptr_t chunk : storeEvidence.ChunkPointers)
-                    {
-                        if (!chunkPointers.empty())
-                            chunkPointers += ",";
-                        chunkPointers += common::Hex(chunk);
-                    }
-                    result.Diagnostics.push_back(
-                        {storeEvidence.Result == "contract" ? DiagnosticSeverity::Info : DiagnosticSeverity::Warning,
-                         "ANALYSIS_OBJECT_STORE",
-                         "order=" + std::to_string(storeEvidence.Order) +
-                             " root=" + common::Hex(storeEvidence.Root) +
-                             " mode=" + (storeEvidence.Fixed ? "fixed" : "chunked") +
-                             " refs=" + std::to_string(storeEvidence.ReferenceCount) +
-                             " ref_slots=" + refSlots +
-                             " item_stride=" + std::to_string(storeEvidence.ItemStride) +
-                             " item_index=" + std::to_string(storeEvidence.ItemIndexOffset) +
-                             " prefix=" + std::to_string(storeEvidence.PrefixValid) + "/" +
-                             std::to_string(storeEvidence.PrefixTested) +
-                             " chunks=" + std::to_string(storeEvidence.ChunkCount) +
-                             " chunk_ptrs=" + chunkPointers +
-                             " budget_left=" + std::to_string(storeEvidence.FullScanBudgetAtStart) +
-                             " headers=" + std::to_string(storeEvidence.HeaderCount) +
-                             " header_evidence=" + std::to_string(storeEvidence.Headers.size()) +
-                             " max_count=" + std::to_string(storeEvidence.MaxHeaderCount) +
-                             " full_scans=" + std::to_string(storeEvidence.FullScanCount) +
-                             " result=" + storeEvidence.Result});
-                    for (const ObjectFullScanEvidence &scanEvidence : storeEvidence.FullScans)
-                    {
-                        std::string scanMessage =
-                            "store=" + common::Hex(storeEvidence.Root) +
-                            " capacity=" + std::to_string(scanEvidence.Capacity) +
-                            " tested=" + std::to_string(scanEvidence.Tested) +
-                            " valid=" + std::to_string(scanEvidence.Valid) +
-                            " empty=" + std::to_string(scanEvidence.Empty) +
-                            " invalid=" + std::to_string(scanEvidence.Invalid) +
-                            " invalid_between=" + std::to_string(scanEvidence.InvalidBetweenValid) +
-                            " derived=" + std::to_string(scanEvidence.DerivedCount) +
-                            " nonempty_extent=" + std::to_string(scanEvidence.NonEmptyExtent) +
-                            " gates=" + (scanEvidence.GatesPassed ? "passed" : "failed");
-                        if (!scanEvidence.GatesPassed)
-                            scanMessage += " gate_failure=" + scanEvidence.GateFailure;
-                        result.Diagnostics.push_back(
-                            {scanEvidence.GatesPassed ? DiagnosticSeverity::Info : DiagnosticSeverity::Warning,
-                             "ANALYSIS_OBJECT_FULL_SCAN", std::move(scanMessage)});
-                    }
-                    for (const ObjectHeaderEvidence &headerEvidence : storeEvidence.Headers)
-                    {
-                        result.Diagnostics.push_back(
-                            {DiagnosticSeverity::Info, "ANALYSIS_OBJECT_HEADER",
-                             "store=" + common::Hex(storeEvidence.Root) +
-                                 " base=" + common::Hex(headerEvidence.Base) +
-                                 " objects_offset=" + std::to_string(headerEvidence.ObjectsOffset) +
-                                 " count=" + std::to_string(headerEvidence.Count) + "@" +
-                                 std::to_string(headerEvidence.CountOffset) +
-                                 " count_at_gate=" + std::to_string(headerEvidence.CountAtGate) +
-                                 " max_chunks=" + std::to_string(headerEvidence.MaxChunks) + "@" +
-                                 std::to_string(headerEvidence.MaxChunksOffset) +
-                                 " num_chunks=" + std::to_string(headerEvidence.NumChunks) + "@" +
-                                 std::to_string(headerEvidence.NumChunksOffset) +
-                                 " max_elements=" + std::to_string(headerEvidence.MaxElements) + "@" +
-                                 std::to_string(headerEvidence.MaxElementsOffset) +
-                                 " capacity=" + std::to_string(headerEvidence.Capacity) +
-                                 " budget_left=" + std::to_string(headerEvidence.FullScanBudgetLeft) +
-                                 " result=" + ObjectHeaderOutcomeName(headerEvidence.Outcome)});
+                        dataNameView.Root = found->Root;
+                        dataNameDecoder = *found->Decoder;
                     }
                 }
-                if (objectScan.SeedRootsProbed > 0)
-                {
-                    result.Diagnostics.push_back(
-                        {DiagnosticSeverity::Info, "ANALYSIS_OBJECT_PROBE",
-                         "probed=" + std::to_string(objectScan.SeedRootsProbed) +
-                             " chunk_no_storage=" + std::to_string(objectScan.ChunkNoStorage) +
-                             " chunk_layout_unresolved=" + std::to_string(objectScan.ChunkLayoutUnresolved) +
-                             " chunk_prefix_failed=" + std::to_string(objectScan.ChunkPrefixFailed) +
-                             " fixed_layout_unresolved=" + std::to_string(objectScan.FixedLayoutUnresolved) +
-                             " fixed_prefix_failed=" + std::to_string(objectScan.FixedPrefixFailed)});
-                }
-
-                std::string message = "scanned_bytes=" + std::to_string(objectScan.ScannedBytes) +
-                                      " planned_bytes=" + std::to_string(objectScan.PlannedBytes) +
-                                      " scan_read_failures=" + std::to_string(objectScan.ScanReadFailures) +
-                                      " candidates=" + std::to_string(objectScan.Candidates) +
-                                      " discovered_roots=" + std::to_string(objectScan.DiscoveredRoots) +
-                                      " storage_roots=" + std::to_string(objectScan.StorageRoots) +
-                                      " roots_skipped=" + std::to_string(objectScan.RootsSkipped) +
-                                      " seed_roots=" + std::to_string(objectScan.SeedRootsProbed) +
-                                      " chunk_stores=" + std::to_string(objectScan.ChunkStores) +
-                                      " fixed_stores=" + std::to_string(objectScan.FixedStores) +
-                                      " header_candidates=" + std::to_string(objectScan.HeaderCandidates) +
-                                      " header_validations=" + std::to_string(objectScan.HeaderValidations) +
-                                      " header_overflow_stores=" + std::to_string(objectScan.HeaderOverflowStores) +
-                                      " full_scan_budget_hits=" + std::to_string(objectScan.FullScanBudgetHits) +
-                                      " seed_candidates=" + std::to_string(objectScan.SeedCandidates) +
-                                      " seeds=" + std::to_string(objectScan.Seeds.size()) +
-                                      " contracts=" + std::to_string(objectScan.Contracts.size()) +
-                                      " contracts_omitted=" + std::to_string(objectScan.ContractsOmitted) +
-                                      " contracts_ambiguous=" + std::to_string(objectScan.ContractsAmbiguous) +
-                                      " uobject_layouts=" + std::to_string(objectScan.UObjectLayouts.size()) +
-                                      " name_evidence=" + std::to_string(objectScanNameContract ? 1 : 0) +
-                                      " store_evidence=" + std::to_string(objectScan.StoreEvidence.size()) +
-                                      " stores_unlogged=" + std::to_string(objectScan.StoresUnlogged) +
-                                      " budget_exhausted=" + std::to_string(objectScan.BudgetExhausted) +
-                                      " seed_budget_exhausted=" + std::to_string(objectScan.SeedBudgetExhausted) +
-                                      " complete=" + std::to_string(result.Coverage.ObjectScanComplete);
-                if (!objectScan.Error.empty())
-                    message += " error=" + objectScan.Error;
+            }
+            const ObjectContractScanResult objectScan =
+                ScanObjectContracts(image, dataNameView, dataNameDecoder, ObjectContractScanOptions{});
+            objectContractsAmbiguous = objectScan.ContractsAmbiguous;
+            result.Coverage.DataScanPlannedBytes = objectScan.PlannedBytes;
+            result.Coverage.DataScanReadBytes = objectScan.ScannedBytes;
+            result.Coverage.ObjectScanComplete = objectScan.IsComplete();
+            for (const UObjectLayoutContract &contract : objectScan.UObjectLayouts)
+                result.UObjectLayouts.push_back(contract);
+            for (const ObjectArrayContract &contract : objectScan.Contracts)
+            {
+                result.ObjectArrays.push_back(contract);
+                const ObjectArrayFields &fields = contract.ObjectArray;
+                const ObjectArrayObservation &observation = contract.Observation;
                 result.Diagnostics.push_back(
-                    {objectScan.Contracts.empty() || !result.Coverage.ObjectScanComplete
-                         ? DiagnosticSeverity::Warning
-                         : DiagnosticSeverity::Info,
-                     objectScan.Contracts.empty() ? "ANALYSIS_OBJECT_SCAN_EMPTY" : "ANALYSIS_OBJECT_SCAN",
-                     std::move(message)});
+                    {DiagnosticSeverity::Info, "ANALYSIS_OBJECT_CONTRACT",
+                     "target=ObjectArray root=" + common::Hex(contract.Root) +
+                         " kind=" + std::string(fields.Fixed ? "fixed" : "chunked") +
+                         " count=" + std::to_string(observation.Count) +
+                         " max_elements=" + std::to_string(observation.MaxElements) +
+                         " chunks=" + std::to_string(observation.Chunks) +
+                         " elements_per_chunk=" + std::to_string(fields.ElementsPerChunk) +
+                         " item_stride=" + std::to_string(fields.ItemStride) +
+                         " item_index=" + std::to_string(fields.ItemIndexOffset) +
+                         " field_offsets=" + std::to_string(fields.MaxElementsOffset) + "/" +
+                         std::to_string(fields.NumElementsOffset) + "/" +
+                         std::to_string(fields.MaxChunksOffset) + "/" +
+                         std::to_string(fields.NumChunksOffset) +
+                         " objects_offset=" + std::to_string(fields.ObjectsOffset) +
+                         " state=" + ContractStateName(contract.State)});
+            }
+            for (const ObjectSeedEvidence &seed : objectScan.Seeds)
+            {
+                result.Diagnostics.push_back(
+                    {DiagnosticSeverity::Info, "ANALYSIS_OBJECT_SEED",
+                     "root=" + common::Hex(seed.Root) + " storage=" + common::Hex(seed.Storage) +
+                         " declared=" + std::to_string(seed.DeclaredCount) +
+                         " stride=" + std::to_string(seed.ItemStride) +
+                         " index=" + std::to_string(seed.ItemIndexOffset) +
+                         " chunk_size=" + std::to_string(seed.ElementsPerChunk) +
+                         " header=" + std::to_string(seed.HeaderFound)});
+            }
+            for (const ObjectStoreEvidence &storeEvidence : objectScan.StoreEvidence)
+            {
+                std::string refSlots;
+                for (const uintptr_t slot : storeEvidence.ReferenceSamples)
+                {
+                    if (!refSlots.empty())
+                        refSlots += ",";
+                    refSlots += common::Hex(slot);
+                }
+                std::string chunkPointers;
+                for (const uintptr_t chunk : storeEvidence.ChunkPointers)
+                {
+                    if (!chunkPointers.empty())
+                        chunkPointers += ",";
+                    chunkPointers += common::Hex(chunk);
+                }
+                result.Diagnostics.push_back(
+                    {storeEvidence.Result == "contract" ? DiagnosticSeverity::Info : DiagnosticSeverity::Warning,
+                     "ANALYSIS_OBJECT_STORE",
+                     "order=" + std::to_string(storeEvidence.Order) +
+                         " root=" + common::Hex(storeEvidence.Root) +
+                         " mode=" + (storeEvidence.Fixed ? "fixed" : "chunked") +
+                         " refs=" + std::to_string(storeEvidence.ReferenceCount) +
+                         " ref_slots=" + refSlots +
+                         " item_stride=" + std::to_string(storeEvidence.ItemStride) +
+                         " item_index=" + std::to_string(storeEvidence.ItemIndexOffset) +
+                         " prefix=" + std::to_string(storeEvidence.PrefixValid) + "/" +
+                         std::to_string(storeEvidence.PrefixTested) +
+                         " chunks=" + std::to_string(storeEvidence.ChunkCount) +
+                         " chunk_ptrs=" + chunkPointers +
+                         " budget_left=" + std::to_string(storeEvidence.FullScanBudgetAtStart) +
+                         " headers=" + std::to_string(storeEvidence.HeaderCount) +
+                         " header_evidence=" + std::to_string(storeEvidence.Headers.size()) +
+                         " max_count=" + std::to_string(storeEvidence.MaxHeaderCount) +
+                         " full_scans=" + std::to_string(storeEvidence.FullScanCount) +
+                         " result=" + storeEvidence.Result});
+                for (const ObjectFullScanEvidence &scanEvidence : storeEvidence.FullScans)
+                {
+                    std::string scanMessage =
+                        "store=" + common::Hex(storeEvidence.Root) +
+                        " capacity=" + std::to_string(scanEvidence.Capacity) +
+                        " tested=" + std::to_string(scanEvidence.Tested) +
+                        " valid=" + std::to_string(scanEvidence.Valid) +
+                        " empty=" + std::to_string(scanEvidence.Empty) +
+                        " invalid=" + std::to_string(scanEvidence.Invalid) +
+                        " invalid_between=" + std::to_string(scanEvidence.InvalidBetweenValid) +
+                        " derived=" + std::to_string(scanEvidence.DerivedCount) +
+                        " nonempty_extent=" + std::to_string(scanEvidence.NonEmptyExtent) +
+                        " gates=" + (scanEvidence.GatesPassed ? "passed" : "failed");
+                    if (!scanEvidence.GatesPassed)
+                        scanMessage += " gate_failure=" + scanEvidence.GateFailure;
+                    result.Diagnostics.push_back(
+                        {scanEvidence.GatesPassed ? DiagnosticSeverity::Info : DiagnosticSeverity::Warning,
+                         "ANALYSIS_OBJECT_FULL_SCAN", std::move(scanMessage)});
+                }
+                for (const ObjectHeaderEvidence &headerEvidence : storeEvidence.Headers)
+                {
+                    result.Diagnostics.push_back(
+                        {DiagnosticSeverity::Info, "ANALYSIS_OBJECT_HEADER",
+                         "store=" + common::Hex(storeEvidence.Root) +
+                             " base=" + common::Hex(headerEvidence.Base) +
+                             " objects_offset=" + std::to_string(headerEvidence.ObjectsOffset) +
+                             " count=" + std::to_string(headerEvidence.Count) + "@" +
+                             std::to_string(headerEvidence.CountOffset) +
+                             " count_at_gate=" + std::to_string(headerEvidence.CountAtGate) +
+                             " max_chunks=" + std::to_string(headerEvidence.MaxChunks) + "@" +
+                             std::to_string(headerEvidence.MaxChunksOffset) +
+                             " num_chunks=" + std::to_string(headerEvidence.NumChunks) + "@" +
+                             std::to_string(headerEvidence.NumChunksOffset) +
+                             " max_elements=" + std::to_string(headerEvidence.MaxElements) + "@" +
+                             std::to_string(headerEvidence.MaxElementsOffset) +
+                             " capacity=" + std::to_string(headerEvidence.Capacity) +
+                             " budget_left=" + std::to_string(headerEvidence.FullScanBudgetLeft) +
+                             " result=" + ObjectHeaderOutcomeName(headerEvidence.Outcome)});
+                }
+            }
+            if (objectScan.SeedRootsProbed > 0)
+            {
+                result.Diagnostics.push_back(
+                    {DiagnosticSeverity::Info, "ANALYSIS_OBJECT_PROBE",
+                     "probed=" + std::to_string(objectScan.SeedRootsProbed) +
+                         " chunk_no_storage=" + std::to_string(objectScan.ChunkNoStorage) +
+                         " chunk_layout_unresolved=" + std::to_string(objectScan.ChunkLayoutUnresolved) +
+                         " chunk_prefix_failed=" + std::to_string(objectScan.ChunkPrefixFailed) +
+                         " fixed_layout_unresolved=" + std::to_string(objectScan.FixedLayoutUnresolved) +
+                         " fixed_prefix_failed=" + std::to_string(objectScan.FixedPrefixFailed)});
             }
 
+            std::string message = "scanned_bytes=" + std::to_string(objectScan.ScannedBytes) +
+                                  " planned_bytes=" + std::to_string(objectScan.PlannedBytes) +
+                                  " scan_read_failures=" + std::to_string(objectScan.ScanReadFailures) +
+                                  " candidates=" + std::to_string(objectScan.Candidates) +
+                                  " discovered_roots=" + std::to_string(objectScan.DiscoveredRoots) +
+                                  " storage_roots=" + std::to_string(objectScan.StorageRoots) +
+                                  " roots_skipped=" + std::to_string(objectScan.RootsSkipped) +
+                                  " seed_roots=" + std::to_string(objectScan.SeedRootsProbed) +
+                                  " chunk_stores=" + std::to_string(objectScan.ChunkStores) +
+                                  " fixed_stores=" + std::to_string(objectScan.FixedStores) +
+                                  " header_candidates=" + std::to_string(objectScan.HeaderCandidates) +
+                                  " header_validations=" + std::to_string(objectScan.HeaderValidations) +
+                                  " header_overflow_stores=" + std::to_string(objectScan.HeaderOverflowStores) +
+                                  " full_scan_budget_hits=" + std::to_string(objectScan.FullScanBudgetHits) +
+                                  " seed_candidates=" + std::to_string(objectScan.SeedCandidates) +
+                                  " seeds=" + std::to_string(objectScan.Seeds.size()) +
+                                  " contracts=" + std::to_string(objectScan.Contracts.size()) +
+                                  " contracts_omitted=" + std::to_string(objectScan.ContractsOmitted) +
+                                  " contracts_ambiguous=" + std::to_string(objectScan.ContractsAmbiguous) +
+                                  " uobject_layouts=" + std::to_string(objectScan.UObjectLayouts.size()) +
+                                  " name_evidence=" + std::to_string(!dataNameView.Complete() ? 0 : 1) +
+                                  " store_evidence=" + std::to_string(objectScan.StoreEvidence.size()) +
+                                  " stores_unlogged=" + std::to_string(objectScan.StoresUnlogged) +
+                                  " budget_exhausted=" + std::to_string(objectScan.BudgetExhausted) +
+                                  " seed_budget_exhausted=" + std::to_string(objectScan.SeedBudgetExhausted) +
+                                  " complete=" + std::to_string(result.Coverage.ObjectScanComplete);
+            if (!objectScan.Error.empty())
+                message += " error=" + objectScan.Error;
             result.Diagnostics.push_back(
-                {result.NameStores.empty() || !result.Coverage.CodeScanComplete ? DiagnosticSeverity::Warning : DiagnosticSeverity::Info,
-                 result.NameStores.empty() ? "ANALYSIS_CONTRACT_SCAN_EMPTY" : "ANALYSIS_CONTRACT_SCAN",
-                 "instructions=" + std::to_string(scan.Instructions) +
-                     " function_starts=" + std::to_string(scan.FunctionStarts) +
-                     " contracts=" + std::to_string(result.NameStores.size()) +
-                     " skipped_prefix_bytes=" + std::to_string(scan.SkippedPrefixBytes) +
-                     " unreadable_segments=" + std::to_string(scan.UnreadableSegments) +
-                     " segments_without_function_start=" + std::to_string(scan.SegmentsWithoutFunctionStart) +
-                     " read_truncated_segments=" + std::to_string(scan.ReadTruncatedSegments) +
-                     " decode_truncated_segments=" + std::to_string(scan.DecodeTruncatedSegments) +
-                     " extent_truncated_segments=" + std::to_string(scan.ExtentTruncatedSegments) +
-                     " budget_exhausted=" + std::to_string(scan.BudgetExhausted) +
-                     " complete=" + std::to_string(result.Coverage.CodeScanComplete)});
-            const auto &recognition = scan.Recognition;
-            result.Diagnostics.push_back(
-                {DiagnosticSeverity::Info, "ANALYSIS_CONTRACT_RECOGNITION",
-                 "base_instructions=" + std::to_string(recognition.BaseInstructions) +
-                     " block_slots=" + std::to_string(recognition.BlockSlots) +
-                     " entry_addresses=" + std::to_string(recognition.EntryAddresses) +
-                     " entry_split_mismatches=" + std::to_string(recognition.EntrySplitMismatches) +
-                     " header_loads=" + std::to_string(recognition.HeaderLoads) +
-                     " record_attempts=" + std::to_string(recognition.RecordAttempts) +
-                     " records_without_header=" + std::to_string(recognition.RecordsWithoutHeader) +
-                     " rejected_blocks_offset=" + std::to_string(recognition.RejectedBlocksOffset) +
-                     " rejected_blocks_bit=" + std::to_string(recognition.RejectedBlocksBit) +
-                     " rejected_stride=" + std::to_string(recognition.RejectedStride) +
-                     " rejected_header_offset=" + std::to_string(recognition.RejectedHeaderOffset) +
-                     " rejected_string_offset=" + std::to_string(recognition.RejectedStringOffset) +
-                     " rejected_length_shift=" + std::to_string(recognition.RejectedLengthShift) +
-                     " rejected_id_mask=" + std::to_string(recognition.RejectedIdMask) +
-                     " array_chunk_shifts=" + std::to_string(recognition.ArrayChunkShifts) +
-                     " array_chunk_slots=" + std::to_string(recognition.ArrayChunkSlots) +
-                     " array_entry_slots=" + std::to_string(recognition.ArrayEntrySlots) +
-                     " array_entry_loads=" + std::to_string(recognition.ArrayEntryLoads) +
-                     " array_index_loads=" + std::to_string(recognition.ArrayIndexLoads) +
-                     " array_text_bases=" + std::to_string(recognition.ArrayTextBases) +
-                     " array_record_attempts=" + std::to_string(recognition.ArrayRecordAttempts) +
-                     " array_records_without_index=" + std::to_string(recognition.ArrayRecordsWithoutIndex) +
-                     " array_records_without_text=" + std::to_string(recognition.ArrayRecordsWithoutText) +
-                     " rejected_array_chunks_offset=" + std::to_string(recognition.RejectedArrayChunksOffset) +
-                     " rejected_array_chunk_shift=" + std::to_string(recognition.RejectedArrayChunkShift) +
-                     " rejected_array_entry_stride=" + std::to_string(recognition.RejectedArrayEntryStride) +
-                     " rejected_array_index_offset=" + std::to_string(recognition.RejectedArrayIndexOffset) +
-                     " rejected_array_string_offset=" + std::to_string(recognition.RejectedArrayStringOffset) +
-                     " incomplete_records=" + std::to_string(recognition.IncompleteRecords) +
-                     " contract_limit_hits=" + std::to_string(recognition.ContractLimitHits)});
-            if (scan.BudgetExhausted)
-            {
-                result.Diagnostics.push_back({DiagnosticSeverity::Warning, "ANALYSIS_CONTRACT_SCAN_BUDGET",
-                                              "instruction budget exhausted before the scan completed"});
-            }
+                {objectScan.Contracts.empty() || !result.Coverage.ObjectScanComplete
+                     ? DiagnosticSeverity::Warning
+                     : DiagnosticSeverity::Info,
+                 objectScan.Contracts.empty() ? "ANALYSIS_OBJECT_SCAN_EMPTY" : "ANALYSIS_OBJECT_SCAN",
+                 std::move(message)});
         }
 
         result.NameStatus = DomainStatus(result.NameStores);
@@ -824,8 +762,9 @@ namespace nextdumper::analysis
             result.Diagnostics.push_back({DiagnosticSeverity::Warning, "ANALYSIS_ADDRESS_SPACE_CHANGED",
                                           "Address-space generation changed during analysis; proposals are invalidated."});
         }
-        result.Coverage.Complete = imageHeaderReadable && result.Coverage.CodeScanComplete &&
-                                   result.Coverage.ObjectScanComplete && !result.AddressSpaceChanged;
+
+        result.Coverage.Complete = imageHeaderReadable && result.Coverage.ObjectScanComplete &&
+                                   result.Coverage.CodeScanComplete && !result.AddressSpaceChanged;
         return result;
     }
 } // namespace nextdumper::analysis

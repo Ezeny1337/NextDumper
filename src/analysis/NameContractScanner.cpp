@@ -147,6 +147,8 @@ namespace nextdumper::analysis
                     }
                     roles_.assign(static_cast<size_t>(registerCount), Role{});
                     decoder_ = rangeDecoder.get();
+                    pointerWidth_ = image_.Module().pointerWidth;
+                    pointerShift_ = pointerWidth_ == 4 ? 2 : 3;
                     ++result.DecodedRanges;
 
                     auto startAt = std::lower_bound(starts.begin(), starts.end(), range.Start);
@@ -261,11 +263,17 @@ namespace nextdumper::analysis
 
             void ClearCallerSaved()
             {
-                const size_t callerSaved = std::min<size_t>(roles_.size(), 19);
-                for (size_t index = 0; index < callerSaved; ++index)
-                    roles_[index] = Role{};
-                if (roles_.size() > 30)
-                    roles_[30] = Role{};
+                if (!decoder_)
+                    return;
+                const size_t registers = roles_.size();
+                for (size_t index = 0; index < registers; ++index)
+                {
+                    if (decoder_->IsCallerSaved(static_cast<int>(index)))
+                        roles_[index] = Role{};
+                }
+                const int link = decoder_->LinkRegister();
+                if (link >= 0 && static_cast<size_t>(link) < registers)
+                    roles_[static_cast<size_t>(link)] = Role{};
             }
 
             void Record(const Role &role, uintptr_t site)
@@ -328,7 +336,7 @@ namespace nextdumper::analysis
                 else
                     contract.Evidence.push_back({EvidenceKind::UnresolvedRoot, functionStart_, 0});
                 contract.Evidence.push_back({EvidenceKind::Shift, role.ShiftSite, static_cast<uint64_t>(role.BlocksBit)});
-                contract.Evidence.push_back({EvidenceKind::ScaleAdd, role.BlockSlotSite, 8});
+                contract.Evidence.push_back({EvidenceKind::ScaleAdd, role.BlockSlotSite, pointerWidth_});
                 contract.Evidence.push_back({EvidenceKind::TableLoad, role.TableLoadSite, static_cast<uint64_t>(role.BlocksOffset)});
                 contract.Evidence.push_back({EvidenceKind::Mask, role.EntryIndexSite, role.IdMask});
                 contract.Evidence.push_back({EvidenceKind::EntryLoad, role.EntrySite, static_cast<uint64_t>(role.EntryStride)});
@@ -423,7 +431,7 @@ namespace nextdumper::analysis
                 else
                     contract.Evidence.push_back({EvidenceKind::UnresolvedRoot, functionStart_, 0});
                 contract.Evidence.push_back({EvidenceKind::Shift, role.ShiftSite, static_cast<uint64_t>(role.BlocksBit)});
-                contract.Evidence.push_back({EvidenceKind::ScaleAdd, role.BlockSlotSite, 8});
+                contract.Evidence.push_back({EvidenceKind::ScaleAdd, role.BlockSlotSite, pointerWidth_});
                 contract.Evidence.push_back({EvidenceKind::TableLoad, role.TableLoadSite, static_cast<uint64_t>(role.BlocksOffset)});
                 contract.Evidence.push_back({EvidenceKind::EntryLoad, role.EntrySite, static_cast<uint64_t>(role.EntryStride)});
                 contract.Evidence.push_back({EvidenceKind::EntryLoad, role.EntryIndexSite, static_cast<uint64_t>(role.EntryIndexOffset)});
@@ -528,7 +536,8 @@ namespace nextdumper::analysis
                                                  : (instruction.Extend == ExtendKind::Uxtw || instruction.Extend == ExtendKind::Uxtx ||
                                                     instruction.Extend == ExtendKind::Sxtw || instruction.Extend == ExtendKind::Sxtx);
 
-                    if (scalesIndex && instruction.Shift == 3 &&
+                    // 指针缩放由目标位宽决定：8 字节点对应 #3，4 字节点对应 #2
+                    if (scalesIndex && instruction.Shift == pointerShift_ &&
                         (base.Kind == RoleKind::Global || base.Kind == RoleKind::Input) &&
                         source.Kind == RoleKind::BlockIndex)
                     {
@@ -593,7 +602,7 @@ namespace nextdumper::analysis
                 case InstructionKind::Load:
                 {
                     const Role base = CopyRole(instruction.Base);
-                    if (base.Kind == RoleKind::BlockSlot && instruction.AccessWidth == 8)
+                    if (base.Kind == RoleKind::BlockSlot && instruction.AccessWidth == pointerWidth_)
                     {
                         Role role = base;
                         role.Kind = RoleKind::BlockPointer;
@@ -614,7 +623,8 @@ namespace nextdumper::analysis
                         Record(role, site);
                         return;
                     }
-                    if (base.Kind == RoleKind::ArrayEntrySlot && instruction.AccessWidth == 8 && instruction.Offset == 0)
+                    if (base.Kind == RoleKind::ArrayEntrySlot && instruction.AccessWidth == pointerWidth_ &&
+                        instruction.Offset == 0)
                     {
                         ++recognition_.ArrayEntryLoads;
                         Role role = base;
@@ -793,6 +803,9 @@ namespace nextdumper::analysis
             const FunctionIndex &functions_;
             const CodeRangeSet &ranges_;
             const InstructionDecoder *decoder_ = nullptr;
+            // 由模块指针宽度按范围设置，默认值只是 ARM64 的常见形态
+            uint8_t pointerWidth_ = 8;
+            uint8_t pointerShift_ = 3;
             NameContractScanOptions options_;
             std::vector<Role> roles_;
             std::vector<NameStoreContract> contracts_;
