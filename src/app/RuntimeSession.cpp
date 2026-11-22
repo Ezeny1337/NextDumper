@@ -896,7 +896,9 @@ namespace nextdumper::app
                               std::to_string(nameProposal->layout.array.chunksOffset) +
                               " elements_per_chunk=" +
                               std::to_string(nameProposal->layout.array.elementsPerChunk) +
-                              " slot_stride=8 entry_index_offset=" +
+                              " slot_stride=" +
+                              std::to_string(context_.Module().pointerWidth) +
+                              " entry_index_offset=" +
                               std::to_string(nameProposal->layout.array.entryIndexOffset) +
                               " entry_string_offset=" +
                               std::to_string(nameProposal->layout.array.entryStringOffset);
