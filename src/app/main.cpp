@@ -17,6 +17,7 @@ namespace
         std::fprintf(stderr, "  -p, --package <name>      Target package name (e.g., com.example.app)\n");
         std::fprintf(stderr, "\nOptional arguments:\n");
         std::fprintf(stderr, "      --memory-log          Write memory performance JSONL (disabled by default)\n");
+        std::fprintf(stderr, "      --force-analysis      Ignore symbol-located roots and resolve them from code analysis\n");
         std::fprintf(stderr, "  -h, --help                Show this help message\n");
         std::fprintf(stderr, "\nExample:\n");
         std::fprintf(stderr, "  %s -o ./output -p com.YS.Nicecity\n", program);
@@ -44,6 +45,12 @@ try
         if (arg == "--memory-log")
         {
             config.enableMemoryLog = true;
+            continue;
+        }
+
+        if (arg == "--force-analysis")
+        {
+            config.forceAnalysis = true;
             continue;
         }
 
@@ -90,6 +97,8 @@ try
 
     std::printf("\n=== Session Summary ===\n");
     std::printf("Status: %d\n", static_cast<int>(status));
+    if (config.forceAnalysis)
+        std::printf("Root source: forced code analysis\n");
 
     if (!session.LogPath().empty())
         std::printf("Log: %s\n", session.LogPath().c_str());

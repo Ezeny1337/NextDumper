@@ -848,10 +848,19 @@ namespace nextdumper::app
                                 " code=" + diagnostic.Code + " message=" + diagnostic.Message);
             }
         };
+        if (config_.forceAnalysis && binding)
+        {
+            Note("locator_path source=analysis reason=forced-by-option");
+            Note(RuntimeLogLevel::Warning,
+                 "force_analysis enabled=1 symbol_binding=discarded; subsequent evidence comes from code analysis");
+            binding.reset();
+            candidates = BindingCandidates{};
+        }
         if (!binding)
         {
             // 符号定位不足时改由分析契约提供根候选
-            Note("locator_path source=analysis reason=symbol-binding-incomplete");
+            if (!config_.forceAnalysis)
+                Note("locator_path source=analysis reason=symbol-binding-incomplete");
             runAnalysisProbe();
             profileExecutionState->stage = "binding";
 
