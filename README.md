@@ -21,7 +21,7 @@ It does not depend on a fixed offset table for one engine build. Candidate roots
 - **Engine globals** — locates and validates `GUObjectArray`, `ObjObjects`, and `FName` storage.
 - **Reflection layout resolution** — determines `UObject`, `UStruct`, `FField`/`FProperty`, `UFunction`, and `UEnum` offsets from runtime evidence for UE 4.23–5.6 and modified builds.
 - **Full type dump** — outputs classes, structs, properties, functions, enums, inheritance, and field offsets.
-- **Stripped binaries** — ARM64 and ARM32 (ARM mode) code analysis supplies root candidates when symbol lookup is not enough. Thumb/Thumb-2 is not supported yet.
+- **Stripped binaries** — ARM64 and ARM32 code analysis supplies root candidates when symbol lookup is not enough. On 32-bit targets both A32 and Thumb/Thumb-2 encodings are decoded.
 - **IDA integration** — imports generated types and labels validated function entries with names and comments.
 - **Sharded output** — reflection and SDK headers are split per UE package.
 - **Rejects invalid data** — candidates and layouts that fail validation are not written to the output.
