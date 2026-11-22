@@ -182,8 +182,7 @@ namespace nextdumper::analysis
     };
 
     [[nodiscard]] ObjectContractScanResult ScanObjectContracts(const ImageModel &image,
-                                                               uintptr_t nameRoot,
-                                                               const NamePoolFields &nameFields,
+                                                               const NameStoreView &names,
                                                                const NameTextCodec &nameDecoder,
                                                                const ObjectContractScanOptions &options = {});
 } // namespace nextdumper::analysis

@@ -19,6 +19,9 @@ namespace nextdumper::analysis
         MoveImmediate,
         MoveRegister,
         LogicalShiftRight,
+        // 算术右移与逻辑右移共用 Shift 字段；符号扩展用 BitWidth 表示目标位宽
+        ArithmeticShiftRight,
+        SignExtend,
         BitfieldInsert,
         BitfieldExtract,
         AndImmediate,

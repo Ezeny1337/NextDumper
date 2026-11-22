@@ -59,10 +59,10 @@ namespace nextdumper::analysis
         AnalysisStatus ObjectStatus = AnalysisStatus::Unsupported;
         AnalysisStatus UObjectStatus = AnalysisStatus::Unsupported;
         std::string Reason;
-        std::vector<NamePoolContract> NamePools;
+        std::vector<NameStoreContract> NameStores;
         std::vector<ObjectArrayContract> ObjectArrays;
         std::vector<UObjectLayoutContract> UObjectLayouts;
-        std::vector<NamePoolValidation> NameValidations;
+        std::vector<NameValidation> NameValidations;
         AnalysisCoverage Coverage;
         std::vector<Diagnostic> Diagnostics;
         bool AddressSpaceChanged = false;

@@ -34,8 +34,8 @@ namespace nextdumper::analysis
 
     namespace
     {
-        constexpr int32_t kElementsPerChunk = 64 * 1024;
         constexpr int32_t kMaxChunks = 8;
+        constexpr int32_t kMaxElements = 0x08000000;
         constexpr int32_t kHeaderWindow = 0x60;
         constexpr size_t kReadChunkBytes = 64 * 1024;
         constexpr size_t kMaxFullScanEvidence = 4;
@@ -90,16 +90,19 @@ namespace nextdumper::analysis
         class NameResolver
         {
         public:
-            NameResolver(const MemoryView &memory, uintptr_t root, const NamePoolFields &fields,
-                         const NameTextCodec &decoder)
-                : memory_(memory), root_(root), fields_(fields), decoder_(decoder)
+            NameResolver(const MemoryView &memory, const NameStoreView &view, const NameTextCodec &decoder)
+                : memory_(memory), view_(view), decoder_(decoder)
             {
             }
 
             [[nodiscard]] bool Available() const
             {
-                return root_ != 0 && fields_.Complete() && fields_.BlocksBit < 32 &&
-                       fields_.LengthShift < 16;
+                if (view_.Root == 0)
+                    return false;
+                if (view_.Family == NameStoreFamily::Array)
+                    return view_.Array.Complete();
+                return view_.Family == NameStoreFamily::Pool && view_.Pool.Complete() &&
+                       view_.Pool.BlocksBit < 32 && view_.Pool.LengthShift < 16;
             }
 
             bool Resolve(int32_t index, std::string &out)
@@ -113,43 +116,114 @@ namespace nextdumper::analysis
                     return true;
                 }
                 const uint32_t stable = static_cast<uint32_t>(index);
-                const int32_t blockIndex = static_cast<int32_t>(stable >> fields_.BlocksBit);
-                if (blockIndex < 0 || blockIndex >= 8192)
+                const bool resolved = view_.Family == NameStoreFamily::Array
+                                          ? ResolveArray(stable, out)
+                                          : ResolvePool(stable, out);
+                if (!resolved)
                     return false;
-                const uint32_t within = stable & ((1u << fields_.BlocksBit) - 1u);
-                const auto blocks = AddOffset(root_, fields_.BlocksOffset);
-                const auto slot = blocks ? AddOffset(*blocks, static_cast<int64_t>(blockIndex) * sizeof(uintptr_t))
-                                         : std::nullopt;
-                uintptr_t block = 0;
-                if (!slot || !ReadPointer(memory_, *slot, block) || block == 0 ||
-                    !memory_.IsReadable(block, sizeof(uint16_t)))
-                    return false;
-                const auto entry = AddOffset(block, static_cast<int64_t>(within) * fields_.EntryStride);
-                const auto headerAddress = entry ? AddOffset(*entry, fields_.HeaderOffset) : std::nullopt;
-                uint16_t header = 0;
-                if (!headerAddress || !ReadExact(memory_, *headerAddress, &header, sizeof(header)))
-                    return false;
-                const int32_t length = static_cast<int32_t>(header >> fields_.LengthShift);
-                const bool wide = (header & fields_.WideMask) != 0;
-                if (length <= 0 || length > 1024 || wide)
-                    return false;
-                std::vector<uint8_t> text(static_cast<size_t>(length));
-                const auto textAddress = entry ? AddOffset(*entry, fields_.StringOffset) : std::nullopt;
-                if (!textAddress || !ReadExact(memory_, *textAddress, text.data(), text.size()) ||
-                    !decoder_.Apply(text.data(), text.size(), text.size(), false) ||
-                    !std::all_of(text.begin(), text.end(), [](uint8_t value)
-                                 { return value >= 0x20 && value <= 0x7E; }))
-                    return false;
-                out.assign(reinterpret_cast<const char *>(text.data()), text.size());
                 if (cache_.size() < 4096)
                     cache_.emplace(index, out);
                 return true;
             }
 
         private:
+            bool ResolvePool(uint32_t stable, std::string &out) const
+            {
+                const NamePoolFields &fields = view_.Pool;
+                const int32_t blockIndex = static_cast<int32_t>(stable >> fields.BlocksBit);
+                if (blockIndex < 0 || blockIndex >= 8192)
+                    return false;
+                const uint32_t within = stable & ((1u << fields.BlocksBit) - 1u);
+                const auto blocks = AddOffset(view_.Root, fields.BlocksOffset);
+                const auto slot = blocks ? AddOffset(*blocks, static_cast<int64_t>(blockIndex) * sizeof(uintptr_t))
+                                         : std::nullopt;
+                uintptr_t block = 0;
+                if (!slot || !ReadPointer(memory_, *slot, block) || block == 0 ||
+                    !memory_.IsReadable(block, sizeof(uint16_t)))
+                    return false;
+                const auto entry = AddOffset(block, static_cast<int64_t>(within) * fields.EntryStride);
+                const auto headerAddress = entry ? AddOffset(*entry, fields.HeaderOffset) : std::nullopt;
+                uint16_t header = 0;
+                if (!headerAddress || !ReadExact(memory_, *headerAddress, &header, sizeof(header)))
+                    return false;
+                const int32_t length = static_cast<int32_t>(header >> fields.LengthShift);
+                const bool wide = (header & fields.WideMask) != 0;
+                if (length <= 0 || length > 1024 || wide)
+                    return false;
+                std::vector<uint8_t> text(static_cast<size_t>(length));
+                const auto textAddress = entry ? AddOffset(*entry, fields.StringOffset) : std::nullopt;
+                if (!textAddress || !ReadExact(memory_, *textAddress, text.data(), text.size()) ||
+                    !decoder_.Apply(text.data(), text.size(), text.size(), false) ||
+                    !std::all_of(text.begin(), text.end(), [](uint8_t value)
+                                 { return value >= 0x20 && value <= 0x7E; }))
+                    return false;
+                out.assign(reinterpret_cast<const char *>(text.data()), text.size());
+                return true;
+            }
+
+            bool ResolveArray(uint32_t index, std::string &out) const
+            {
+                const NameArrayFields &fields = view_.Array;
+                const uint32_t chunkIndex = index >> fields.ChunkShift;
+                if (chunkIndex >= 8192)
+                    return false;
+                const uint32_t within = index & ((1u << fields.ChunkShift) - 1u);
+                const int64_t chunkOffset = fields.ChunksOffset +
+                                            static_cast<int64_t>(chunkIndex) * static_cast<int64_t>(sizeof(uintptr_t));
+                const auto chunkSlot = AddOffset(view_.Root, chunkOffset);
+                uintptr_t chunk = 0;
+                if (!chunkSlot || !ReadPointer(memory_, *chunkSlot, chunk) || chunk == 0 ||
+                    !memory_.IsReadable(chunk, sizeof(uintptr_t)) || memory_.IsExecutable(chunk, sizeof(uintptr_t)))
+                    return false;
+                const auto entrySlot = AddOffset(chunk, static_cast<int64_t>(within) * fields.SlotStride);
+                uintptr_t entry = 0;
+                if (!entrySlot || !ReadPointer(memory_, *entrySlot, entry) || entry == 0 ||
+                    !memory_.IsReadable(entry, sizeof(uint32_t)) || memory_.IsExecutable(entry, sizeof(uint32_t)))
+                    return false;
+                const auto indexAddress = AddOffset(entry, fields.EntryIndexOffset);
+                uint32_t entryIndex = 0;
+                if (!indexAddress || !ReadExact(memory_, *indexAddress, &entryIndex, sizeof(entryIndex)) ||
+                    (entryIndex & 1u) != 0)
+                    return false;
+                const auto textAddress = AddOffset(entry, fields.StringOffset);
+                if (!textAddress)
+                    return false;
+                const auto printable = [](uint8_t value)
+                { return value >= 0x20 && value <= 0x7E; };
+                // 按窗口读取并在本地找结尾零：逐字节读会把一次名称解析放大成上千次远程读取
+                constexpr size_t kTextWindow = 64;
+                std::array<uint8_t, 1024> text{};
+                size_t length = 0;
+                bool terminated = false;
+                while (!terminated && length < text.size())
+                {
+                    const size_t want = std::min(kTextWindow, text.size() - length);
+                    if (!ReadExact(memory_, *textAddress + length, text.data() + length, want))
+                        return false;
+                    for (size_t position = length; position < length + want; ++position)
+                    {
+                        if (text[position] == 0)
+                        {
+                            length = position;
+                            terminated = true;
+                            break;
+                        }
+                        if (!printable(text[position]))
+                            return false;
+                    }
+                    if (!terminated)
+                        length += want;
+                }
+                if (!terminated || length == 0)
+                    return false;
+                if (!decoder_.Apply(text.data(), length, length, false))
+                    return false;
+                out.assign(reinterpret_cast<const char *>(text.data()), length);
+                return true;
+            }
+
             const MemoryView &memory_;
-            uintptr_t root_ = 0;
-            NamePoolFields fields_;
+            NameStoreView view_;
             NameTextCodec decoder_;
             std::unordered_map<int32_t, std::string> cache_;
         };
@@ -268,6 +342,29 @@ namespace nextdumper::analysis
             return stats;
         }
 
+        // 块长度由块内首个自洽项的 InternalIndex 与其槽位差推得，不依赖全局块长常量
+        std::optional<int32_t> MeasureChunkBase(const MemoryView &memory, uintptr_t chunk,
+                                                const ItemLayout &layout, size_t sampleCount)
+        {
+            for (size_t within = 0; within < sampleCount; ++within)
+            {
+                const auto item = AddOffset(chunk, static_cast<int64_t>(within) * layout.Stride);
+                uintptr_t object = 0;
+                if (!item || !ReadPointer(memory, *item, object) || object == 0 ||
+                    !IsLikelyObject(memory, object))
+                    continue;
+                const auto indexAddress = AddOffset(object, layout.IndexOffset);
+                int32_t reported = -1;
+                if (!indexAddress || !ReadInt32(memory, *indexAddress, reported))
+                    continue;
+                const int64_t base = static_cast<int64_t>(reported) - static_cast<int64_t>(within);
+                if (base < 0 || base > INT32_MAX)
+                    return std::nullopt;
+                return static_cast<int32_t>(base);
+            }
+            return std::nullopt;
+        }
+
         std::vector<ItemLayout> RecoverLayouts(const MemoryView &memory, uintptr_t storage,
                                                size_t sampleCount)
         {
@@ -324,6 +421,8 @@ namespace nextdumper::analysis
             std::vector<uintptr_t> Chunks;
             std::vector<uintptr_t> References;
             ScanStats Prefix;
+            // 由块内实测推得的块长，0 表示尚未测出（仅单块或 fixed 容器）
+            int32_t ElementsPerChunk = 0;
         };
 
         enum class StoreProbeRejection
@@ -342,6 +441,8 @@ namespace nextdumper::analysis
             StoreObservation store;
             store.Root = root;
             store.References = references;
+            // 块 0 的首项索引为 0，因此块 N 的基准索引必须是 N 与块长的整数倍
+            int32_t elementsPerChunk = 0;
             for (int32_t chunkIndex = 0; chunkIndex < kMaxChunks; ++chunkIndex)
             {
                 const auto slot = AddOffset(root, static_cast<int64_t>(chunkIndex) * sizeof(uintptr_t));
@@ -373,13 +474,21 @@ namespace nextdumper::analysis
                 }
                 else
                 {
-                    auto prefix = ValidateLayout(memory, chunk, store.Layout,
-                                                 chunkIndex * kElementsPerChunk, sampleCount);
-                    if (!prefix)
+                    // 块长由块内实测的基准索引反推，不依赖任何固定块长常量
+                    // 后续块必须以该基准按绝对 InternalIndex 通过同一前缀门禁
+                    const auto base = MeasureChunkBase(memory, chunk, store.Layout, sampleCount);
+                    if (!base || static_cast<int64_t>(*base) % chunkIndex != 0)
+                        break;
+                    const int32_t measured = *base / chunkIndex;
+                    if (elementsPerChunk == 0)
+                        elementsPerChunk = measured;
+                    else if (elementsPerChunk != measured)
+                        break;
+                    if (!ValidateLayout(memory, chunk, store.Layout, *base, sampleCount))
                     {
                         ScanStats sparse;
-                        ScanItems(memory, chunk, store.Layout, chunkIndex * kElementsPerChunk,
-                                  static_cast<int32_t>(sampleCount), 0, sampleCount, sparse);
+                        ScanItems(memory, chunk, store.Layout, *base, static_cast<int32_t>(sampleCount),
+                                  0, sampleCount, sparse);
                         if (sparse.Valid == 0 || sparse.Invalid != 0)
                             break;
                     }
@@ -388,6 +497,7 @@ namespace nextdumper::analysis
             }
             if (store.Chunks.empty())
                 return std::nullopt;
+            store.ElementsPerChunk = !store.Fixed && elementsPerChunk > 0 ? elementsPerChunk : 0;
             return store;
         }
 
@@ -435,6 +545,7 @@ namespace nextdumper::analysis
             int32_t MaxChunks = 0;
             int32_t NumChunks = 0;
             int32_t MaxElements = 0;
+            int32_t ElementsPerChunk = -1;
         };
 
         bool SameHeader(const HeaderCandidate &left, const HeaderCandidate &right)
@@ -469,6 +580,14 @@ namespace nextdumper::analysis
             return true;
         }
 
+        int32_t DeriveElementsPerChunk(int32_t maxElements, int32_t maxChunks)
+        {
+            if (maxChunks <= 0 || maxElements % maxChunks != 0)
+                return -1;
+            const int32_t elementsPerChunk = maxElements / maxChunks;
+            return elementsPerChunk >= 0x1000 && elementsPerChunk <= 0x200000 ? elementsPerChunk : -1;
+        }
+
         std::vector<HeaderCandidate> RecoverHeaders(const MemoryView &memory,
                                                     const StoreObservation &store,
                                                     uint64_t &remainingSteps,
@@ -484,11 +603,61 @@ namespace nextdumper::analysis
                     if (reference < static_cast<uintptr_t>(objectsOffset))
                         continue;
                     const uintptr_t base = reference - static_cast<uintptr_t>(objectsOffset);
-                    if ((base & 3u) != 0 || !memory.IsReadable(base, kHeaderWindow))
+                    if ((base & 3u) != 0 || base > UINTPTR_MAX - kHeaderWindow ||
+                        !memory.IsReadable(base, kHeaderWindow))
                         continue;
                     std::array<int32_t, kHeaderWindow / 4> values{};
                     if (!ReadExact(memory, base, values.data(), sizeof(values)))
                         continue;
+                    const int32_t pointerSize = static_cast<int32_t>(sizeof(uintptr_t));
+                    if (store.Fixed)
+                    {
+                        for (int32_t maxElementsOffset = 0; maxElementsOffset < kHeaderWindow;
+                             maxElementsOffset += 4)
+                        {
+                            if (remainingSteps == 0)
+                            {
+                                stepBudgetExhausted = true;
+                                return headers;
+                            }
+                            --remainingSteps;
+                            const int32_t maxElements = values[maxElementsOffset / 4];
+                            if (maxElements <= 0 || maxElements > kMaxElements ||
+                                Overlaps(maxElementsOffset, 4, objectsOffset, pointerSize))
+                                continue;
+                            for (int32_t countOffset = 0; countOffset < kHeaderWindow; countOffset += 4)
+                            {
+                                if (remainingSteps == 0)
+                                {
+                                    stepBudgetExhausted = true;
+                                    return headers;
+                                }
+                                --remainingSteps;
+                                const int32_t count = values[countOffset / 4];
+                                if (count <= 0 || count > maxElements ||
+                                    static_cast<uint64_t>(count) < store.Prefix.Tested ||
+                                    countOffset == maxElementsOffset ||
+                                    Overlaps(countOffset, 4, objectsOffset, pointerSize))
+                                    continue;
+                                HeaderCandidate candidate;
+                                candidate.Root = base;
+                                candidate.ObjectsAddress = reference;
+                                candidate.CountAddress = base + static_cast<uintptr_t>(countOffset);
+                                candidate.MaxElementsAddress = base + static_cast<uintptr_t>(maxElementsOffset);
+                                candidate.ObjectsOffset = objectsOffset;
+                                candidate.CountOffset = countOffset;
+                                candidate.MaxElementsOffset = maxElementsOffset;
+                                candidate.Count = count;
+                                candidate.MaxElements = maxElements;
+                                if (!AddHeader(headers, candidate, maxCandidates))
+                                {
+                                    candidateOverflow = true;
+                                    return headers;
+                                }
+                            }
+                        }
+                        continue;
+                    }
                     for (int32_t numChunksOffset = 0; numChunksOffset < kHeaderWindow; numChunksOffset += 4)
                     {
                         if (remainingSteps == 0)
@@ -498,8 +667,7 @@ namespace nextdumper::analysis
                         }
                         --remainingSteps;
                         const int32_t numChunks = values[numChunksOffset / 4];
-                        if ((!store.Fixed && numChunks != static_cast<int32_t>(store.Chunks.size())) ||
-                            (store.Fixed && (numChunks < 0 || numChunks > 1)))
+                        if (numChunks != static_cast<int32_t>(store.Chunks.size()))
                             continue;
                         for (int32_t maxChunksOffset = 0; maxChunksOffset < kHeaderWindow; maxChunksOffset += 4)
                         {
@@ -510,8 +678,7 @@ namespace nextdumper::analysis
                             }
                             --remainingSteps;
                             const int32_t maxChunks = values[maxChunksOffset / 4];
-                            if (maxChunks <= numChunks || maxChunks > 64 ||
-                                (store.Fixed && maxChunks > 1))
+                            if (maxChunks <= numChunks || maxChunks > 64)
                                 continue;
                             for (int32_t maxElementsOffset = 0; maxElementsOffset < kHeaderWindow;
                                  maxElementsOffset += 4)
@@ -523,9 +690,13 @@ namespace nextdumper::analysis
                                 }
                                 --remainingSteps;
                                 const int32_t maxElements = values[maxElementsOffset / 4];
-                                const int64_t expectedMax = static_cast<int64_t>(maxChunks) * kElementsPerChunk;
-                                if (maxElements <= 0 || maxElements > 0x08000000 ||
-                                    (!store.Fixed && maxElements != expectedMax))
+                                if (maxElements <= 0 || maxElements > kMaxElements)
+                                    continue;
+                                const int32_t elementsPerChunk = DeriveElementsPerChunk(maxElements, maxChunks);
+                                if (elementsPerChunk < 0)
+                                    continue;
+                                // 块内实测的基准索引已排除块长之外的可能，两者必须一致
+                                if (store.ElementsPerChunk > 0 && store.ElementsPerChunk != elementsPerChunk)
                                     continue;
                                 for (int32_t countOffset = 0; countOffset < kHeaderWindow; countOffset += 4)
                                 {
@@ -537,8 +708,7 @@ namespace nextdumper::analysis
                                     --remainingSteps;
                                     const int32_t count = values[countOffset / 4];
                                     if (count <= 0 || count >= maxElements ||
-                                        (!store.Fixed && static_cast<int64_t>(count) >
-                                                             static_cast<int64_t>(numChunks) * kElementsPerChunk))
+                                        static_cast<int64_t>(count) > static_cast<int64_t>(numChunks) * elementsPerChunk)
                                         continue;
                                     const std::array<int32_t, 4> offsets = {
                                         countOffset, maxChunksOffset, numChunksOffset, maxElementsOffset};
@@ -569,6 +739,7 @@ namespace nextdumper::analysis
                                     candidate.MaxChunks = maxChunks;
                                     candidate.NumChunks = numChunks;
                                     candidate.MaxElements = maxElements;
+                                    candidate.ElementsPerChunk = elementsPerChunk;
                                     if (!AddHeader(headers, candidate, maxCandidates))
                                     {
                                         candidateOverflow = true;
@@ -583,10 +754,10 @@ namespace nextdumper::analysis
             return headers;
         }
 
-        uint64_t RequiredScanItems(const StoreObservation &store, int32_t capacity)
+        uint64_t RequiredScanItems(const StoreObservation &store, int32_t capacity, int32_t elementsPerChunk)
         {
             return store.Fixed ? static_cast<uint64_t>(capacity)
-                               : store.Chunks.size() * static_cast<uint64_t>(kElementsPerChunk);
+                               : store.Chunks.size() * static_cast<uint64_t>(elementsPerChunk);
         }
 
         struct FullScanOutcome
@@ -615,9 +786,10 @@ namespace nextdumper::analysis
         }
 
         FullScanOutcome ScanFullStore(const MemoryView &memory, const StoreObservation &store,
-                                      int32_t capacity, size_t maxSamples, uint64_t &remainingBudget)
+                                      int32_t capacity, int32_t elementsPerChunk, size_t maxSamples,
+                                      uint64_t &remainingBudget)
         {
-            remainingBudget -= RequiredScanItems(store, capacity);
+            remainingBudget -= RequiredScanItems(store, capacity, elementsPerChunk);
             FullScanOutcome outcome;
             if (store.Fixed)
             {
@@ -628,8 +800,8 @@ namespace nextdumper::analysis
                 for (size_t chunkIndex = 0; chunkIndex < store.Chunks.size(); ++chunkIndex)
                 {
                     ScanItems(memory, store.Chunks[chunkIndex], store.Layout,
-                              static_cast<int32_t>(chunkIndex) * kElementsPerChunk,
-                              kElementsPerChunk, chunkIndex, maxSamples, outcome.Stats);
+                              static_cast<int32_t>(chunkIndex) * elementsPerChunk,
+                              elementsPerChunk, chunkIndex, maxSamples, outcome.Stats);
                 }
             }
             outcome.Passed = !(outcome.Stats.Valid < 8 || outcome.Stats.InvalidBetweenValid > outcome.Stats.Valid ||
@@ -868,7 +1040,7 @@ namespace nextdumper::analysis
             seed.PrefixTested = static_cast<uint32_t>(store.Prefix.Tested);
             seed.ChunkTable = !store.Fixed;
             seed.ChunkCount = static_cast<int32_t>(store.Chunks.size());
-            seed.ElementsPerChunk = store.Fixed ? 0 : kElementsPerChunk;
+            seed.ElementsPerChunk = store.Fixed ? 0 : header.ElementsPerChunk;
             seed.ChunkValid = full.ChunkValid;
             seed.ChunkEmpty = full.ChunkEmpty;
             seed.ChunkInvalid = full.ChunkInvalid;
@@ -947,8 +1119,7 @@ namespace nextdumper::analysis
         }
     } // namespace
 
-    ObjectContractScanResult ScanObjectContracts(const ImageModel &image, uintptr_t nameRoot,
-                                                 const NamePoolFields &nameFields,
+    ObjectContractScanResult ScanObjectContracts(const ImageModel &image, const NameStoreView &nameStore,
                                                  const NameTextCodec &nameDecoder,
                                                  const ObjectContractScanOptions &options)
     {
@@ -959,7 +1130,7 @@ namespace nextdumper::analysis
             return result;
         }
         const MemoryView &memory = image.Memory();
-        NameResolver names(memory, nameRoot, nameFields, nameDecoder);
+        NameResolver names(memory, nameStore, nameDecoder);
         std::vector<DiscoveredRoot> roots;
         std::unordered_map<uintptr_t, size_t> rootIndices;
         std::unordered_set<uintptr_t> rejectedRoots;
@@ -1195,9 +1366,13 @@ namespace nextdumper::analysis
                 bool fullScanExhausted = false;
                 for (const HeaderCandidate &header : headers)
                 {
-                    const int32_t scanCapacity = store.Fixed
-                                                     ? header.MaxElements
-                                                     : static_cast<int32_t>(store.Chunks.size()) * kElementsPerChunk;
+                    // fixed 容器的 MaxElements 是预分配上限，实际槽位由计数决定，按上限扫描会耗尽预算
+                    const int32_t capacity =
+                        store.Fixed ? header.Count
+                                    : static_cast<int32_t>(store.Chunks.size()) *
+                                          std::max(1, header.ElementsPerChunk);
+                    const uint64_t required = RequiredScanItems(store, capacity, header.ElementsPerChunk);
+                    const int32_t scanCapacity = static_cast<int32_t>(required);
                     if (scanCapacity == failedCapacity)
                     {
                         if (failedCapacityOutcome == ObjectHeaderOutcome::BudgetStarved)
@@ -1207,7 +1382,6 @@ namespace nextdumper::analysis
                     }
                     if (!fullStats || scannedCapacity != scanCapacity)
                     {
-                        const uint64_t required = RequiredScanItems(store, scanCapacity);
                         if (required > fullScanBudget)
                         {
                             ++result.FullScanBudgetHits;
@@ -1222,8 +1396,8 @@ namespace nextdumper::analysis
                                 {ObjectHeaderOutcome::BudgetStarved, fullScanBudget, scanCapacity});
                             continue;
                         }
-                        const FullScanOutcome scan =
-                            ScanFullStore(memory, store, scanCapacity, options.MaxSamples, fullScanBudget);
+                        const FullScanOutcome scan = ScanFullStore(memory, store, scanCapacity, header.ElementsPerChunk,
+                                                                   options.MaxSamples, fullScanBudget);
                         fullStats = scan;
                         scannedCapacity = scanCapacity;
                         {
@@ -1253,7 +1427,7 @@ namespace nextdumper::analysis
                             continue;
                         }
                     }
-                    // 在判定时刻重读同一地址，使 DerivedCount 与 Count 属于同一时刻。
+                    // 在判定时刻重读同一地址，使 DerivedCount 与 Count 属于同一时刻
                     int32_t countAtGate = -1;
                     if (!ReadInt32(memory, header.CountAddress, countAtGate))
                     {
@@ -1313,7 +1487,7 @@ namespace nextdumper::analysis
                 fields.NumElementsOffset = selected.Header.CountOffset;
                 fields.MaxChunksOffset = selected.Header.MaxChunksOffset;
                 fields.NumChunksOffset = selected.Header.NumChunksOffset;
-                fields.ElementsPerChunk = store.Fixed ? 0 : kElementsPerChunk;
+                fields.ElementsPerChunk = store.Fixed ? 0 : selected.Header.ElementsPerChunk;
                 fields.ItemStride = store.Layout.Stride;
                 fields.ItemObjectOffset = 0;
                 fields.ItemIndexOffset = store.Layout.IndexOffset;

@@ -24,6 +24,11 @@ namespace nextdumper::analysis
             Header,
             Length,
             Text,
+            ArrayWithin,
+            ArrayEntrySlot,
+            ArrayEntryPointer,
+            ArrayIndexField,
+            ArrayText,
         };
 
         struct Role
@@ -35,6 +40,7 @@ namespace nextdumper::analysis
             int32_t BlocksOffset = -1;
             int32_t BlocksBit = -1;
             int32_t EntryStride = 0;
+            int64_t EntryIndexOffset = -1;
             int32_t HeaderOffset = 0;
             int32_t StringOffset = 2;
             int32_t LengthShift = 0;
@@ -71,14 +77,18 @@ namespace nextdumper::analysis
             return width >= 64 ? ~uint64_t{0} : (uint64_t{1} << width) - 1;
         }
 
-        bool SameChain(const NamePoolContract &contract, const Role &role)
+        bool SameChain(const NameStoreContract &left, const NameStoreContract &right)
         {
-            return contract.Root == role.Global &&
-                   contract.NamePool.BlocksOffset == role.BlocksOffset &&
-                   contract.NamePool.BlocksBit == role.BlocksBit &&
-                   contract.NamePool.EntryStride == role.EntryStride &&
-                   contract.NamePool.HeaderOffset == role.HeaderOffset &&
-                   contract.NamePool.StringOffset == role.StringOffset;
+            if (left.Root != right.Root || left.Family != right.Family)
+                return false;
+            if (left.Family == NameStoreFamily::Array)
+                return left.NameArray == right.NameArray;
+
+            return left.NamePool.BlocksOffset == right.NamePool.BlocksOffset &&
+                   left.NamePool.BlocksBit == right.NamePool.BlocksBit &&
+                   left.NamePool.EntryStride == right.NamePool.EntryStride &&
+                   left.NamePool.HeaderOffset == right.NamePool.HeaderOffset &&
+                   left.NamePool.StringOffset == right.NamePool.StringOffset;
         }
 
         class Scanner
@@ -211,6 +221,15 @@ namespace nextdumper::analysis
                     roles_[static_cast<size_t>(reg)] = role;
             }
 
+            void UpdateArrayEntryAliases(const Role &entry)
+            {
+                for (auto &role : roles_)
+                {
+                    if (role.Kind == RoleKind::ArrayEntryPointer && role.EntrySite == entry.EntrySite)
+                        role = entry;
+                }
+            }
+
             void ClearRoles()
             {
                 for (auto &role : roles_)
@@ -269,9 +288,10 @@ namespace nextdumper::analysis
                     return;
                 }
 
-                NamePoolContract contract;
+                NameStoreContract contract;
                 contract.Root = role.Global;
                 contract.State = ContractState::Observed;
+                contract.Family = NameStoreFamily::Pool;
                 contract.NamePool.BlocksOffset = role.BlocksOffset;
                 contract.NamePool.BlocksBit = role.BlocksBit;
                 contract.NamePool.EntryStride = role.EntryStride;
@@ -302,9 +322,9 @@ namespace nextdumper::analysis
                     ++recognition_.IncompleteRecords;
                 for (auto &existing : contracts_)
                 {
-                    if (SameChain(existing, role))
+                    if (SameChain(existing, contract))
                     {
-                        if (complete && !existing.NamePool.Complete())
+                        if (complete && !existing.Complete())
                             existing = std::move(contract);
                         return;
                     }
@@ -320,12 +340,94 @@ namespace nextdumper::analysis
                     return;
                 for (auto &existing : contracts_)
                 {
-                    if (!existing.NamePool.Complete())
+                    if (!existing.Complete())
                     {
                         existing = std::move(contract);
                         return;
                     }
                 }
+            }
+
+            void RecordArray(const Role &role, uintptr_t site)
+            {
+                (void)site;
+                ++recognition_.ArrayRecordAttempts;
+                if (role.EntryIndexOffset < 0)
+                {
+                    ++recognition_.ArrayRecordsWithoutIndex;
+                    return;
+                }
+                if (role.StringOffset < 0)
+                {
+                    ++recognition_.ArrayRecordsWithoutText;
+                    return;
+                }
+                if (role.BlocksOffset < 0)
+                {
+                    ++recognition_.RejectedArrayChunksOffset;
+                    return;
+                }
+                if (role.BlocksBit < 8 || role.BlocksBit > 24)
+                {
+                    ++recognition_.RejectedArrayChunkShift;
+                    return;
+                }
+                if (role.EntryStride < 4 || role.EntryStride > 64 || role.EntryStride % 4 != 0)
+                {
+                    ++recognition_.RejectedArrayEntryStride;
+                    return;
+                }
+                if (role.EntryIndexOffset > 64)
+                {
+                    ++recognition_.RejectedArrayIndexOffset;
+                    return;
+                }
+                if (role.StringOffset < role.EntryIndexOffset + 4 || role.StringOffset > 128)
+                {
+                    ++recognition_.RejectedArrayStringOffset;
+                    return;
+                }
+
+                NameStoreContract contract;
+                contract.Root = role.Global;
+                contract.State = ContractState::Observed;
+                contract.Family = NameStoreFamily::Array;
+                contract.NameArray = {role.BlocksOffset, role.BlocksBit, role.EntryStride,
+                                      static_cast<int32_t>(role.EntryIndexOffset), role.StringOffset};
+
+                if (role.Global != 0)
+                    contract.Evidence.push_back({EvidenceKind::GlobalBase, role.GlobalSite, role.Global});
+                else
+                    contract.Evidence.push_back({EvidenceKind::UnresolvedRoot, functionStart_, 0});
+                contract.Evidence.push_back({EvidenceKind::Shift, role.ShiftSite, static_cast<uint64_t>(role.BlocksBit)});
+                contract.Evidence.push_back({EvidenceKind::ScaleAdd, role.BlockSlotSite, 8});
+                contract.Evidence.push_back({EvidenceKind::TableLoad, role.TableLoadSite, static_cast<uint64_t>(role.BlocksOffset)});
+                contract.Evidence.push_back({EvidenceKind::EntryLoad, role.EntrySite, static_cast<uint64_t>(role.EntryStride)});
+                contract.Evidence.push_back({EvidenceKind::EntryLoad, role.EntryIndexSite, static_cast<uint64_t>(role.EntryIndexOffset)});
+                contract.Evidence.push_back({EvidenceKind::TextOffset, role.TextSite, static_cast<uint64_t>(role.StringOffset)});
+
+                for (const auto &existing : contracts_)
+                {
+                    if (SameChain(existing, contract))
+                        return;
+                }
+                if (contracts_.size() < options_.MaxContracts)
+                {
+                    contracts_.push_back(std::move(contract));
+                    return;
+                }
+                if (contract.Complete())
+                {
+                    for (auto &existing : contracts_)
+                    {
+                        if (!existing.Complete())
+                        {
+                            existing = std::move(contract);
+                            return;
+                        }
+                    }
+                }
+                ++recognition_.ContractLimitHits;
             }
 
             void Process(const Instruction &instruction, uintptr_t site)
@@ -378,6 +480,18 @@ namespace nextdumper::analysis
                         Record(role, site);
                         return;
                     }
+                    if (base.Kind == RoleKind::ArrayEntryPointer)
+                    {
+                        ++recognition_.ArrayTextBases;
+                        Role role = base;
+                        role.StringOffset = static_cast<int32_t>(std::min<uint64_t>(instruction.Value, 0x7FFFFFFF));
+                        role.TextSite = site;
+                        UpdateArrayEntryAliases(role);
+                        role.Kind = RoleKind::ArrayText;
+                        Assign(instruction.Dest, role);
+                        RecordArray(role, site);
+                        return;
+                    }
                     Assign(instruction.Dest, InputRole());
                     return;
                 }
@@ -386,15 +500,17 @@ namespace nextdumper::analysis
                 {
                     const Role base = CopyRole(instruction.Base);
                     const Role source = CopyRole(instruction.Source);
-                    const bool scaled = instruction.Shift == 3 &&
-                                        (instruction.Kind == InstructionKind::AddShiftedRegister
-                                             ? instruction.ShiftType == ShiftKind::Lsl
-                                             : (instruction.Extend == ExtendKind::Uxtw || instruction.Extend == ExtendKind::Uxtx));
+                    const bool scalesIndex = instruction.Kind == InstructionKind::AddShiftedRegister
+                                                 ? instruction.ShiftType == ShiftKind::Lsl
+                                                 : (instruction.Extend == ExtendKind::Uxtw || instruction.Extend == ExtendKind::Uxtx ||
+                                                    instruction.Extend == ExtendKind::Sxtw || instruction.Extend == ExtendKind::Sxtx);
 
-                    if (scaled && (base.Kind == RoleKind::Global || base.Kind == RoleKind::Input) &&
+                    if (scalesIndex && instruction.Shift == 3 &&
+                        (base.Kind == RoleKind::Global || base.Kind == RoleKind::Input) &&
                         source.Kind == RoleKind::BlockIndex)
                     {
                         ++recognition_.BlockSlots;
+                        ++recognition_.ArrayChunkSlots;
                         Role role;
                         role.Kind = RoleKind::BlockSlot;
                         role.Global = base.Kind == RoleKind::Global ? base.Global : 0;
@@ -430,6 +546,24 @@ namespace nextdumper::analysis
                         return;
                     }
 
+                    if (scalesIndex && instruction.Shift >= 2 && instruction.Shift <= 3 &&
+                        base.Kind == RoleKind::BlockPointer && source.Kind == RoleKind::ArrayWithin)
+                    {
+                        if (base.BlocksBit > 0 && source.BlocksBit > 0 && base.BlocksBit != source.BlocksBit)
+                        {
+                            ++recognition_.EntrySplitMismatches;
+                            Assign(instruction.Dest, InputRole());
+                            return;
+                        }
+                        ++recognition_.ArrayEntrySlots;
+                        Role role = base;
+                        role.Kind = RoleKind::ArrayEntrySlot;
+                        role.Shift = instruction.Shift;
+                        role.EntryStride = static_cast<int32_t>(uint32_t{1} << role.Shift);
+                        Assign(instruction.Dest, role);
+                        return;
+                    }
+
                     Assign(instruction.Dest, InputRole());
                     return;
                 }
@@ -457,6 +591,28 @@ namespace nextdumper::analysis
                         Record(role, site);
                         return;
                     }
+                    if (base.Kind == RoleKind::ArrayEntrySlot && instruction.AccessWidth == 8 && instruction.Offset == 0)
+                    {
+                        ++recognition_.ArrayEntryLoads;
+                        Role role = base;
+                        role.Kind = RoleKind::ArrayEntryPointer;
+                        role.StringOffset = -1;
+                        role.EntrySite = site;
+                        Assign(instruction.Dest, role);
+                        return;
+                    }
+                    if (base.Kind == RoleKind::ArrayEntryPointer && instruction.AccessWidth == 4)
+                    {
+                        ++recognition_.ArrayIndexLoads;
+                        Role role = base;
+                        role.EntryIndexOffset = instruction.Offset;
+                        role.EntryIndexSite = site;
+                        UpdateArrayEntryAliases(role);
+                        role.Kind = RoleKind::ArrayIndexField;
+                        Assign(instruction.Dest, role);
+                        RecordArray(role, site);
+                        return;
+                    }
                     Assign(instruction.Dest, InputRole());
                     return;
                 }
@@ -465,9 +621,11 @@ namespace nextdumper::analysis
                     Assign(instruction.Dest, InputRole());
                     return;
                 case InstructionKind::MoveRegister:
+                case InstructionKind::SignExtend:
                     Assign(instruction.Dest, CopyRole(instruction.Base));
                     return;
                 case InstructionKind::LogicalShiftRight:
+                case InstructionKind::ArithmeticShiftRight:
                 {
                     const Role base = CopyRole(instruction.Base);
                     if (base.Kind == RoleKind::Header)
@@ -489,6 +647,7 @@ namespace nextdumper::analysis
                     }
                     if (base.Kind == RoleKind::Input && instruction.Shift >= 8 && instruction.Shift <= 24)
                     {
+                        ++recognition_.ArrayChunkShifts;
                         Role role;
                         role.Kind = RoleKind::BlockIndex;
                         role.BlocksBit = instruction.Shift;
@@ -505,6 +664,7 @@ namespace nextdumper::analysis
                     const Role base = CopyRole(instruction.Base);
                     if (base.Kind == RoleKind::Input && instruction.Shift >= 8 && instruction.Shift <= 24)
                     {
+                        ++recognition_.ArrayChunkShifts;
                         Role role;
                         role.Kind = RoleKind::BlockIndex;
                         role.BlocksBit = instruction.Shift;
@@ -548,6 +708,19 @@ namespace nextdumper::analysis
                         role.EntryIndexSite = site;
                         Assign(instruction.Dest, role);
                         return;
+                    }
+                    if (base.Kind == RoleKind::Input && std::has_single_bit(instruction.Mask + 1))
+                    {
+                        const auto bits = std::bit_width(instruction.Mask);
+                        if (bits >= 8 && bits <= 24)
+                        {
+                            Role role;
+                            role.Kind = RoleKind::ArrayWithin;
+                            role.BlocksBit = static_cast<int32_t>(bits);
+                            role.Shift = 0;
+                            Assign(instruction.Dest, role);
+                            return;
+                        }
                     }
                     Assign(instruction.Dest, InputRole());
                     return;
@@ -598,7 +771,7 @@ namespace nextdumper::analysis
             const InstructionDecoder &decoder_;
             NameContractScanOptions options_;
             std::vector<Role> roles_;
-            std::vector<NamePoolContract> contracts_;
+            std::vector<NameStoreContract> contracts_;
             NameContractRecognitionStats recognition_;
             uintptr_t functionStart_ = 0;
         };

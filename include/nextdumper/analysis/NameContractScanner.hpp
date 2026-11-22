@@ -36,11 +36,27 @@ namespace nextdumper::analysis
         uint64_t RejectedIdMask = 0;
         uint64_t IncompleteRecords = 0;
         uint64_t ContractLimitHits = 0;
+
+        // 数组族（无长度头的间接数组）识别链的独立计数
+        uint64_t ArrayChunkShifts = 0;
+        uint64_t ArrayChunkSlots = 0;
+        uint64_t ArrayEntrySlots = 0;
+        uint64_t ArrayEntryLoads = 0;
+        uint64_t ArrayIndexLoads = 0;
+        uint64_t ArrayTextBases = 0;
+        uint64_t ArrayRecordAttempts = 0;
+        uint64_t ArrayRecordsWithoutIndex = 0;
+        uint64_t ArrayRecordsWithoutText = 0;
+        uint64_t RejectedArrayChunksOffset = 0;
+        uint64_t RejectedArrayChunkShift = 0;
+        uint64_t RejectedArrayEntryStride = 0;
+        uint64_t RejectedArrayIndexOffset = 0;
+        uint64_t RejectedArrayStringOffset = 0;
     };
 
     struct NameContractScanResult
     {
-        std::vector<NamePoolContract> Contracts;
+        std::vector<NameStoreContract> Contracts;
         NameContractRecognitionStats Recognition;
         uint64_t Instructions = 0;
         uint64_t FunctionStarts = 0;

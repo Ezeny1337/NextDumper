@@ -234,38 +234,49 @@ namespace nextdumper::analysis
                     out.Shift = static_cast<uint8_t>(shift);
                     return true;
                 }
-                if ((word & 0x7f800000) == 0x53000000)
+                // UBFM 与 SBFM 共用编码骨架，opc 区分两者；BFM 与保留值按未知处理
+                if ((word & 0x1f800000) == 0x13000000)
                 {
-                    const uint32_t n = (word >> 22) & 1;
-                    const uint32_t immr = (word >> 16) & 0x3f;
-                    const uint32_t imms = (word >> 10) & 0x3f;
-                    if (n != static_cast<uint32_t>(sf))
+                    const uint32_t opc = (word >> 29) & 3;
+                    if (opc != 0 && opc != 2)
                     {
                         out.Dest = rd;
                         out.bClobbersAll = true;
                         return true;
                     }
-                    if (imms == (sf ? 63u : 31u))
+                    const uint32_t n = (word >> 22) & 1;
+                    const uint32_t immr = (word >> 16) & 0x3f;
+                    const uint32_t imms = (word >> 10) & 0x3f;
+                    const uint32_t size = sf ? 64u : 32u;
+                    out.Dest = rd;
+                    out.Base = rn;
+                    if (n != static_cast<uint32_t>(sf) || immr >= size || imms >= size)
                     {
-                        out.Kind = InstructionKind::LogicalShiftRight;
-                        out.Dest = rd;
-                        out.Base = rn;
+                        out.bClobbersAll = true;
+                        return true;
+                    }
+                    if (opc == 0 && immr == 0)
+                    {
+                        // SBFM 自 bit 0 起的有符号扩展，非负值位模式不变，角色可原样继承
+                        out.Kind = InstructionKind::SignExtend;
+                        out.BitWidth = static_cast<uint8_t>(imms + 1);
+                        return true;
+                    }
+                    if (imms == size - 1)
+                    {
+                        out.Kind = opc == 0 ? InstructionKind::ArithmeticShiftRight
+                                            : InstructionKind::LogicalShiftRight;
                         out.Shift = static_cast<uint8_t>(immr);
                         return true;
                     }
                     if (immr <= imms)
                     {
                         out.Kind = InstructionKind::BitfieldExtract;
-                        out.Dest = rd;
-                        out.Base = rn;
                         out.Shift = static_cast<uint8_t>(immr);
                         out.BitWidth = static_cast<uint8_t>(imms + 1);
                         return true;
                     }
-                    const uint32_t size = sf ? 64u : 32u;
                     out.Kind = InstructionKind::BitfieldInsert;
-                    out.Dest = rd;
-                    out.Base = rn;
                     out.Shift = static_cast<uint8_t>((size - immr) & (size - 1));
                     out.BitWidth = static_cast<uint8_t>(imms + 1);
                     return true;

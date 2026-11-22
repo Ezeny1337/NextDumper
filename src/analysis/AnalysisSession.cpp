@@ -48,9 +48,9 @@ namespace nextdumper::analysis
             return "unknown";
         }
 
-        bool SameDomainContract(const NamePoolContract &left, const NamePoolContract &right)
+        bool SameDomainContract(const NameStoreContract &left, const NameStoreContract &right)
         {
-            return left.Root == right.Root && left.NamePool == right.NamePool;
+            return left.Root == right.Root && left.SameShape(right);
         }
 
         bool SameDomainContract(const ObjectArrayContract &left, const ObjectArrayContract &right)
@@ -91,6 +91,18 @@ namespace nextdumper::analysis
             return AnalysisStatus::Unsupported;
         }
     } // namespace
+
+    const char *NameStoreFamilyName(NameStoreFamily family)
+    {
+        switch (family)
+        {
+        case NameStoreFamily::Pool:
+            return "pool";
+        case NameStoreFamily::Array:
+            return "array";
+        }
+        return "unknown";
+    }
 
     const char *AnalysisStatusName(AnalysisStatus status)
     {
@@ -302,26 +314,26 @@ namespace nextdumper::analysis
                 result.Diagnostics.push_back({DiagnosticSeverity::Warning, "ANALYSIS_CONTRACT_SCAN_FAILED",
                                               "reason=" + scan.Error});
             }
-            for (const NamePoolContract &contract : scan.Contracts)
-                result.NamePools.push_back(contract);
+            result.NameStores = scan.Contracts;
 
-            NamePoolValidationOptions validationOptions;
+            NameValidationOptions validationOptions;
             validationOptions.RootHints = options_.NameRootHints;
-            std::optional<NamePoolContract> objectScanNameContract;
-            std::optional<NamePoolValidation> objectScanNameValidation;
-            for (size_t index = 0; index < result.NamePools.size(); ++index)
+            std::optional<NameStoreContract> objectScanNameContract;
+            std::optional<NameValidation> objectScanNameValidation;
+            for (size_t index = 0; index < result.NameStores.size(); ++index)
             {
-                NamePoolContract &contract = result.NamePools[index];
-                const NamePoolFields &fields = contract.NamePool;
-                NamePoolValidation validation = ValidateNamePool(memory_, contract, index, validationOptions);
+                NameStoreContract &contract = result.NameStores[index];
+                const NameValidation validation = ValidateNameStore(memory_, contract, index, validationOptions);
+                const bool validated = validation.IsValidated();
+                const bool isPool = contract.Family == NameStoreFamily::Pool;
 
-                contract.State = validation.IsValidated() ? ContractState::Validated
-                                 : validation.RootUsable  ? ContractState::Unsupported
-                                                          : ContractState::Observed;
-                if (validation.IsValidated())
+                contract.State = validated               ? ContractState::Validated
+                                 : validation.RootUsable ? ContractState::Unsupported
+                                                         : ContractState::Observed;
+                if (validated)
                     contract.Root = validation.Root;
                 result.NameValidations.push_back(validation);
-                if (validation.IsValidated() && !objectScanNameContract && validation.Decoder && validation.Root != 0)
+                if (validated && !objectScanNameContract && validation.Decoder && validation.Root != 0)
                 {
                     objectScanNameContract = contract;
                     objectScanNameValidation = validation;
@@ -330,19 +342,33 @@ namespace nextdumper::analysis
                 const std::string root = validation.Root != 0 ? common::Hex(validation.Root)
                                          : contract.Root == 0 ? "unresolved"
                                                               : common::Hex(contract.Root);
-                result.Diagnostics.push_back(
-                    {DiagnosticSeverity::Info, "ANALYSIS_CONTRACT",
-                     "target=NamePool root=" + root +
-                         " blocks_offset=" + std::to_string(fields.BlocksOffset) +
-                         " blocks_bit=" + std::to_string(fields.BlocksBit) +
-                         " entry_stride=" + std::to_string(fields.EntryStride) +
-                         " header_offset=" + std::to_string(fields.HeaderOffset) +
-                         " string_offset=" + std::to_string(fields.StringOffset) +
-                         " length_shift=" + std::to_string(fields.LengthShift) +
-                         " wide_mask=" + std::to_string(fields.WideMask) +
-                         " complete=" + std::to_string(fields.Complete()) +
-                         " state=" + ContractStateName(contract.State) +
-                         " evidence_sites=" + std::to_string(contract.Evidence.size())});
+                const std::string target = "target=NameStore family=" + std::string(NameStoreFamilyName(contract.Family)) +
+                                           " root=" + root;
+                std::string contractMessage = target;
+                if (isPool)
+                {
+                    const NamePoolFields &fields = contract.NamePool;
+                    contractMessage += " blocks_offset=" + std::to_string(fields.BlocksOffset) +
+                                       " blocks_bit=" + std::to_string(fields.BlocksBit) +
+                                       " entry_stride=" + std::to_string(fields.EntryStride) +
+                                       " header_offset=" + std::to_string(fields.HeaderOffset) +
+                                       " string_offset=" + std::to_string(fields.StringOffset) +
+                                       " length_shift=" + std::to_string(fields.LengthShift) +
+                                       " wide_mask=" + std::to_string(fields.WideMask);
+                }
+                else
+                {
+                    const NameArrayFields &fields = contract.NameArray;
+                    contractMessage += " chunks_offset=" + std::to_string(fields.ChunksOffset) +
+                                       " chunk_shift=" + std::to_string(fields.ChunkShift) +
+                                       " slot_stride=" + std::to_string(fields.SlotStride) +
+                                       " entry_index_offset=" + std::to_string(fields.EntryIndexOffset) +
+                                       " string_offset=" + std::to_string(fields.StringOffset);
+                }
+                contractMessage += " complete=" + std::to_string(contract.Complete()) +
+                                   " state=" + ContractStateName(contract.State) +
+                                   " evidence_sites=" + std::to_string(contract.Evidence.size());
+                result.Diagnostics.push_back({DiagnosticSeverity::Info, "ANALYSIS_CONTRACT", std::move(contractMessage)});
 
                 if (validation.Decoder)
                 {
@@ -365,72 +391,95 @@ namespace nextdumper::analysis
                              " status=" + (validation.DecoderValidated ? "validated" : "observed")});
                     result.Diagnostics.push_back(
                         {DiagnosticSeverity::Info, "ANALYSIS_KNOWN_NAMES",
-                         "target=NamePool family=" + std::string(NameTextFamilyName(decoderValue.Family)) +
+                         "target=" + std::string(isPool ? "NamePool" : "NameArray") +
+                             " family=" + NameTextFamilyName(decoderValue.Family) +
                              " matched=" + std::to_string(validation.KnownMatched) +
                              " plausible=" + std::to_string(validation.KnownPlausible) + "/" +
                              std::to_string(validation.KnownWalked) +
                              " names=" + validation.KnownNamesPreview});
                 }
 
-                if (validation.IsValidated())
+                std::string validationMessage = target;
+                if (!validated)
+                    validationMessage += " reason=" + validation.Failure;
+
+                if (!isPool)
+                {
+                    validationMessage += " chunks=" + common::Hex(validation.BlocksAddress) +
+                                         " chunk0=" + common::Hex(validation.Block0) +
+                                         " block_size=" + std::to_string(validation.BlockSize);
+                }
+                else if (validated)
                 {
                     if (!validation.BoundaryReadable)
                     {
                         result.Diagnostics.push_back({DiagnosticSeverity::Warning, "ANALYSIS_BOUNDARY_UNAVAILABLE",
-                                                      "target=NamePool root=" + root + " " + validation.BoundaryDetail});
+                                                      target + " " + validation.BoundaryDetail});
                     }
-                    result.Diagnostics.push_back(
-                        {DiagnosticSeverity::Info, "ANALYSIS_VALIDATION",
-                         "target=NamePool root=" + root +
-                             " blocks=" + common::Hex(validation.BlocksAddress) +
-                             " block0=" + common::Hex(validation.Block0) +
-                             " current_block=" + std::to_string(validation.CurrentBlock) +
-                             " byte_cursor=" + std::to_string(validation.ByteCursor) +
-                             " block_size=" + std::to_string(validation.BlockSize) +
-                             " allocated_blocks=" + std::to_string(validation.AllocatedBlocks) +
-                             " boundary=" + (validation.BoundaryReadable ? validation.BoundaryDetail : "unavailable") +
-                             " current_offset=" + std::to_string(validation.CurrentBlockOffset) +
-                             " cursor_offset=" + std::to_string(validation.ByteCursorOffset) +
-                             " known_names=" + std::to_string(validation.KnownMatched) +
-                             " known_plausible=" + std::to_string(validation.KnownPlausible) + "/" +
-                             std::to_string(validation.KnownWalked) +
-                             " block0_samples=" + std::to_string(validation.Block0Valid) + "/" +
-                             std::to_string(validation.Block0Samples) +
-                             " high_block_samples=" + std::to_string(validation.HighBlockValid) + "/" +
-                             std::to_string(validation.HighBlockSamples) +
-                             " attempts=" + std::to_string(validation.AttemptedRoots) + " state=validated"});
+                    validationMessage += " blocks=" + common::Hex(validation.BlocksAddress) +
+                                         " block0=" + common::Hex(validation.Block0) +
+                                         " current_block=" + std::to_string(validation.CurrentBlock) +
+                                         " byte_cursor=" + std::to_string(validation.ByteCursor) +
+                                         " block_size=" + std::to_string(validation.BlockSize) +
+                                         " allocated_blocks=" + std::to_string(validation.AllocatedBlocks) +
+                                         " boundary=" + (validation.BoundaryReadable ? validation.BoundaryDetail : "unavailable") +
+                                         " current_offset=" + std::to_string(validation.CurrentBlockOffset) +
+                                         " cursor_offset=" + std::to_string(validation.ByteCursorOffset);
+                }
+                if (validated || !isPool)
+                {
+                    validationMessage += " known_names=" + std::to_string(validation.KnownMatched) +
+                                         " known_plausible=" + std::to_string(validation.KnownPlausible) + "/" +
+                                         std::to_string(validation.KnownWalked);
+                    if (!isPool)
+                        validationMessage += " element_index=" + std::to_string(validation.ElementIndexMatched) + "/" +
+                                             std::to_string(validation.ElementIndexTested);
+                    validationMessage += " block0_samples=" + std::to_string(validation.Block0Valid) + "/" +
+                                         std::to_string(validation.Block0Samples) +
+                                         " high_block_samples=" + std::to_string(validation.HighBlockValid) + "/" +
+                                         std::to_string(validation.HighBlockSamples);
+                }
+                validationMessage += " attempts=" + std::to_string(validation.AttemptedRoots);
+                if (validated)
+                {
+                    validationMessage += " state=validated";
+                    result.Diagnostics.push_back({DiagnosticSeverity::Info, "ANALYSIS_VALIDATION",
+                                                  std::move(validationMessage)});
                 }
                 else
                 {
-                    std::string message = "target=NamePool root=" + root +
-                                          " reason=" + validation.Failure +
-                                          " attempts=" + std::to_string(validation.AttemptedRoots);
                     if (!validation.FailureDetail.empty())
-                        message += " detail=" + validation.FailureDetail;
-                    if (validation.AllocatedBlocks != 0)
-                        message += " allocated_blocks=" + std::to_string(validation.AllocatedBlocks);
-                    if (!validation.BoundaryDetail.empty())
-                        message += " boundary=" + validation.BoundaryDetail;
-                    if (validation.CurrentBlockOffset >= 0)
-                        message += " current_offset=" + std::to_string(validation.CurrentBlockOffset) +
-                                   " cursor_offset=" + std::to_string(validation.ByteCursorOffset);
+                        validationMessage += " detail=" + validation.FailureDetail;
+                    if (!validation.LayoutDetail.empty())
+                        validationMessage += " layout_detail=" + validation.LayoutDetail;
+                    if (isPool)
+                    {
+                        if (validation.AllocatedBlocks != 0)
+                            validationMessage += " allocated_blocks=" + std::to_string(validation.AllocatedBlocks);
+                        if (!validation.BoundaryDetail.empty())
+                            validationMessage += " boundary=" + validation.BoundaryDetail;
+                        if (validation.CurrentBlockOffset >= 0)
+                            validationMessage += " current_offset=" + std::to_string(validation.CurrentBlockOffset) +
+                                                 " cursor_offset=" + std::to_string(validation.ByteCursorOffset);
+                    }
                     if (!validation.FirstEntryHex.empty())
-                        message += " raw_entry0=" + validation.FirstEntryHex;
+                        validationMessage += " raw_entry0=" + validation.FirstEntryHex;
                     result.Diagnostics.push_back({DiagnosticSeverity::Warning, "ANALYSIS_VALIDATION_FAILED",
-                                                  std::move(message)});
+                                                  std::move(validationMessage)});
                 }
             }
             {
                 ObjectContractScanOptions objectOptions;
-                const uintptr_t objectNameRoot = objectScanNameValidation ? objectScanNameValidation->Root : 0;
-                const NamePoolFields objectNameFields = objectScanNameContract
-                                                            ? objectScanNameContract->NamePool
-                                                            : NamePoolFields{};
+                NameStoreView objectNameView = objectScanNameContract
+                                                   ? NameStoreView::From(*objectScanNameContract)
+                                                   : NameStoreView{};
+                if (objectScanNameValidation)
+                    objectNameView.Root = objectScanNameValidation->Root;
                 const NameTextCodec objectNameDecoder = objectScanNameValidation && objectScanNameValidation->Decoder
                                                             ? *objectScanNameValidation->Decoder
                                                             : NameTextCodec{};
                 const ObjectContractScanResult objectScan =
-                    ScanObjectContracts(image, objectNameRoot, objectNameFields, objectNameDecoder, objectOptions);
+                    ScanObjectContracts(image, objectNameView, objectNameDecoder, objectOptions);
                 objectContractsAmbiguous = objectScan.ContractsAmbiguous;
                 result.Coverage.DataScanPlannedBytes = objectScan.PlannedBytes;
                 result.Coverage.DataScanReadBytes = objectScan.ScannedBytes;
@@ -655,11 +704,11 @@ namespace nextdumper::analysis
             }
 
             result.Diagnostics.push_back(
-                {scan.Contracts.empty() || !result.Coverage.CodeScanComplete ? DiagnosticSeverity::Warning : DiagnosticSeverity::Info,
-                 scan.Contracts.empty() ? "ANALYSIS_CONTRACT_SCAN_EMPTY" : "ANALYSIS_CONTRACT_SCAN",
+                {result.NameStores.empty() || !result.Coverage.CodeScanComplete ? DiagnosticSeverity::Warning : DiagnosticSeverity::Info,
+                 result.NameStores.empty() ? "ANALYSIS_CONTRACT_SCAN_EMPTY" : "ANALYSIS_CONTRACT_SCAN",
                  "instructions=" + std::to_string(scan.Instructions) +
                      " function_starts=" + std::to_string(scan.FunctionStarts) +
-                     " contracts=" + std::to_string(scan.Contracts.size()) +
+                     " contracts=" + std::to_string(result.NameStores.size()) +
                      " skipped_prefix_bytes=" + std::to_string(scan.SkippedPrefixBytes) +
                      " unreadable_segments=" + std::to_string(scan.UnreadableSegments) +
                      " segments_without_function_start=" + std::to_string(scan.SegmentsWithoutFunctionStart) +
@@ -685,6 +734,20 @@ namespace nextdumper::analysis
                      " rejected_string_offset=" + std::to_string(recognition.RejectedStringOffset) +
                      " rejected_length_shift=" + std::to_string(recognition.RejectedLengthShift) +
                      " rejected_id_mask=" + std::to_string(recognition.RejectedIdMask) +
+                     " array_chunk_shifts=" + std::to_string(recognition.ArrayChunkShifts) +
+                     " array_chunk_slots=" + std::to_string(recognition.ArrayChunkSlots) +
+                     " array_entry_slots=" + std::to_string(recognition.ArrayEntrySlots) +
+                     " array_entry_loads=" + std::to_string(recognition.ArrayEntryLoads) +
+                     " array_index_loads=" + std::to_string(recognition.ArrayIndexLoads) +
+                     " array_text_bases=" + std::to_string(recognition.ArrayTextBases) +
+                     " array_record_attempts=" + std::to_string(recognition.ArrayRecordAttempts) +
+                     " array_records_without_index=" + std::to_string(recognition.ArrayRecordsWithoutIndex) +
+                     " array_records_without_text=" + std::to_string(recognition.ArrayRecordsWithoutText) +
+                     " rejected_array_chunks_offset=" + std::to_string(recognition.RejectedArrayChunksOffset) +
+                     " rejected_array_chunk_shift=" + std::to_string(recognition.RejectedArrayChunkShift) +
+                     " rejected_array_entry_stride=" + std::to_string(recognition.RejectedArrayEntryStride) +
+                     " rejected_array_index_offset=" + std::to_string(recognition.RejectedArrayIndexOffset) +
+                     " rejected_array_string_offset=" + std::to_string(recognition.RejectedArrayStringOffset) +
                      " incomplete_records=" + std::to_string(recognition.IncompleteRecords) +
                      " contract_limit_hits=" + std::to_string(recognition.ContractLimitHits)});
             if (scan.BudgetExhausted)
@@ -694,7 +757,7 @@ namespace nextdumper::analysis
             }
         }
 
-        result.NameStatus = DomainStatus(result.NamePools);
+        result.NameStatus = DomainStatus(result.NameStores);
         result.ObjectStatus = objectContractsAmbiguous ? AnalysisStatus::Ambiguous : DomainStatus(result.ObjectArrays);
         result.UObjectStatus = DomainStatus(result.UObjectLayouts);
         const bool anyValidated = result.NameStatus == AnalysisStatus::Validated ||

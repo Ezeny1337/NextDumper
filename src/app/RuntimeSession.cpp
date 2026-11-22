@@ -818,7 +818,7 @@ namespace nextdumper::app
             Note(RuntimeLogLevel::Info,
                  std::string("analysis_probe status=") + ::nextdumper::analysis::AnalysisStatusName(result.Status) +
                      " reason=" + result.Reason +
-                     " contracts=" + std::to_string(result.NamePools.size() + result.ObjectArrays.size() + result.UObjectLayouts.size()) +
+                     " contracts=" + std::to_string(result.NameStores.size() + result.ObjectArrays.size() + result.UObjectLayouts.size()) +
                      " validated=" + std::to_string(validated) +
                      " name_status=" + ::nextdumper::analysis::AnalysisStatusName(result.NameStatus) +
                      " object_status=" + ::nextdumper::analysis::AnalysisStatusName(result.ObjectStatus) +
@@ -882,9 +882,26 @@ namespace nextdumper::app
             };
             if (nameProposal)
             {
-                Note("analysis_binding_proposal status=available selected=name-pool root=" + Hex(nameProposal->root) +
-                     " blocks_offset=" + std::to_string(nameProposal->layout.pool.blocksOffset) +
-                     " blocks_bit=" + std::to_string(nameProposal->layout.pool.blocksBit) +
+                const bool namePoolProposal = nameProposal->layout.kind == binding::NameContainerKind::Pool;
+                std::string details;
+                if (namePoolProposal)
+                {
+                    details = " selected=name-pool blocks_offset=" +
+                              std::to_string(nameProposal->layout.pool.blocksOffset) +
+                              " blocks_bit=" + std::to_string(nameProposal->layout.pool.blocksBit);
+                }
+                else
+                {
+                    details = " selected=name-array chunks_offset=" +
+                              std::to_string(nameProposal->layout.array.chunksOffset) +
+                              " elements_per_chunk=" +
+                              std::to_string(nameProposal->layout.array.elementsPerChunk) +
+                              " slot_stride=8 entry_index_offset=" +
+                              std::to_string(nameProposal->layout.array.entryIndexOffset) +
+                              " entry_string_offset=" +
+                              std::to_string(nameProposal->layout.array.entryStringOffset);
+                }
+                Note("analysis_binding_proposal status=available root=" + Hex(nameProposal->root) + details +
                      " evidence=" + nameProposal->evidence);
                 if (nameProposal->fullBlockBound)
                 {
@@ -896,7 +913,8 @@ namespace nextdumper::app
                                                    { return candidate.address == nameProposal->root &&
                                                             candidate.meaning != AddressMeaning::PointerSlot; });
                 if (!duplicate)
-                    candidates.nameRoots.push_back({nameProposal->root, AddressMeaning::ResolvedValue, 100, "analysis:NamePool"});
+                    candidates.nameRoots.push_back({nameProposal->root, AddressMeaning::ResolvedValue, 100,
+                                                    namePoolProposal ? "analysis:NamePool" : "analysis:NameArray"});
             }
             if (objectProposal)
             {

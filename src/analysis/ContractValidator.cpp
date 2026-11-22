@@ -514,14 +514,14 @@ namespace nextdumper::analysis
             return best.size() == 1 ? std::optional<BoundaryCandidate>(best.front()) : std::nullopt;
         }
 
-        void Fail(NamePoolValidation &validation, std::string code, std::string detail = {})
+        void Fail(NameValidation &validation, std::string code, std::string detail = {})
         {
             validation.Failure = std::move(code);
             validation.FailureDetail = std::move(detail);
         }
 
-        bool ValidateAt(const MemoryView &memory, const NamePoolContract &contract, uintptr_t root,
-                        const NamePoolValidationOptions &options, NamePoolValidation &validation)
+        bool ValidatePoolAt(const MemoryView &memory, const NameStoreContract &contract, uintptr_t root,
+                            const NameValidationOptions &options, NameValidation &validation)
         {
             const NamePoolFields &fields = contract.NamePool;
             validation.Root = root;
@@ -745,13 +745,249 @@ namespace nextdumper::analysis
             validation.DecoderValidated = true;
             return true;
         }
+
+        bool ReadArrayBytes(const MemoryView &memory, uintptr_t base, uint64_t offset, void *buffer, size_t size)
+        {
+            if (size == 0 || offset > std::min<uint64_t>(UINTPTR_MAX, INT64_MAX))
+                return false;
+            const auto address = AddOffset(base, static_cast<int64_t>(offset));
+            return address && *address <= UINTPTR_MAX - (size - 1) && ReadExact(memory, *address, buffer, size);
+        }
+
+        bool ArrayChunkReadable(const MemoryView &memory, uintptr_t chunk, size_t stride)
+        {
+            return chunk != 0 && stride != 0 && chunk <= UINTPTR_MAX - (stride - 1) &&
+                   memory.IsReadable(chunk, stride);
+        }
+
+        std::optional<WalkedEntry> ReadArrayEntry(const MemoryView &memory, const NameArrayFields &fields,
+                                                  uintptr_t chunk, uint64_t chunkIndex, uint64_t withinChunk,
+                                                  NameValidation &validation)
+        {
+            const uint64_t slotOffset = withinChunk * static_cast<uint64_t>(fields.SlotStride);
+            uintptr_t address = 0;
+            if (!ReadArrayBytes(memory, chunk, slotOffset, &address, sizeof(address)) || address == 0)
+                return std::nullopt;
+
+            uint32_t raw = 0;
+            if (!ReadArrayBytes(memory, address, static_cast<uint64_t>(fields.EntryIndexOffset), &raw, sizeof(raw)))
+                return std::nullopt;
+            ++validation.ElementIndexTested;
+            const uint64_t expected = (chunkIndex << fields.ChunkShift) + withinChunk;
+            if ((raw >> 1) != expected)
+                return std::nullopt;
+            ++validation.ElementIndexMatched;
+
+            WalkedEntry walked;
+            walked.Address = address;
+            walked.ConsumedBefore = slotOffset;
+            EntryRead &entry = walked.Entry;
+            entry.Wide = (raw & 1u) != 0;
+            const size_t width = entry.Wide ? sizeof(uint16_t) : sizeof(uint8_t);
+            const size_t stringOffset = static_cast<size_t>(fields.StringOffset);
+            const size_t textCapacity = kMaxTextLength * width;
+            std::array<uint8_t, kMaxTextLength * sizeof(uint16_t)> text{};
+            // 按窗口读取文本并在本地找结尾零：逐字符读会放大远程读取次数，整块读会越过不可读页尾
+            constexpr size_t kTextWindow = 64;
+            size_t read = 0;
+            size_t length = 0;
+            bool terminated = false;
+            while (!terminated && read < textCapacity)
+            {
+                const size_t want = std::min(kTextWindow, textCapacity - read);
+                if (!ReadArrayBytes(memory, address, stringOffset + read, text.data() + read, want))
+                    return std::nullopt;
+                for (size_t position = read; position < read + want; position += width)
+                {
+                    if (text[position] == 0 && (!entry.Wide || text[position + 1] == 0))
+                    {
+                        length = position / width;
+                        terminated = true;
+                        break;
+                    }
+                }
+                read += want;
+            }
+            if (!terminated)
+                return std::nullopt;
+            entry.Length = length;
+            entry.Text.assign(text.data(), text.data() + length * width);
+            entry.Size = stringOffset + length * width;
+            return walked;
+        }
+
+        bool DecodeArraySample(const EntryRead &entry, const NameTextCodec &decoder, NameValidation &validation)
+        {
+            std::vector<uint8_t> text = entry.Text;
+            if (!decoder.Apply(text.data(), text.size(), entry.Length, entry.Wide) || !PlausibleText(text, entry.Wide))
+                return false;
+            if (entry.Wide)
+                ++validation.WideSamples;
+            else
+                ++validation.NarrowSamples;
+            return true;
+        }
+
+        bool ValidateArrayAt(const MemoryView &memory, const NameArrayFields &fields, uintptr_t root,
+                             const NameValidationOptions &options, NameValidation &validation)
+        {
+            validation.Root = root;
+            const auto chunksAddress = AddOffset(root, fields.ChunksOffset);
+            uintptr_t chunk0 = 0;
+            if (fields.ChunksOffset < 0 || fields.ChunksOffset > 4096 || !chunksAddress ||
+                !ReadArrayBytes(memory, *chunksAddress, 0, &chunk0, sizeof(chunk0)))
+            {
+                Fail(validation, "array-chunks-unreadable");
+                return false;
+            }
+            if (fields.SlotStride <= 0 || !ArrayChunkReadable(memory, chunk0, static_cast<size_t>(fields.SlotStride)))
+            {
+                Fail(validation, "array-chunk0-unreadable");
+                return false;
+            }
+            validation.BlocksAddress = *chunksAddress;
+            validation.Block0 = chunk0;
+            validation.RootUsable = true;
+
+            if (fields.SlotStride < static_cast<int32_t>(sizeof(uintptr_t)) || fields.SlotStride > 64 ||
+                fields.SlotStride % 4 != 0 || fields.ChunkShift < 8 || fields.ChunkShift > 24 ||
+                fields.EntryIndexOffset < 0 || fields.EntryIndexOffset > 64 ||
+                fields.StringOffset < fields.EntryIndexOffset + static_cast<int32_t>(sizeof(uint32_t)) ||
+                fields.StringOffset > 128)
+            {
+                Fail(validation, "layout-fields-invalid");
+                return false;
+            }
+            const size_t stride = static_cast<size_t>(fields.SlotStride);
+            const uint64_t slotCount = uint64_t{1} << fields.ChunkShift;
+            validation.BlockSize = static_cast<uint32_t>(std::min<uint64_t>(slotCount * stride, UINT32_MAX));
+            validation.LayoutConsistent = true;
+
+            std::vector<WalkedEntry> walked;
+            const uint64_t knownLimit = std::min<uint64_t>({slotCount, kMaxKnownWalk, 2048});
+            for (uint64_t slot = 0; slot < knownLimit; ++slot)
+            {
+                auto entry = ReadArrayEntry(memory, fields, chunk0, 0, slot, validation);
+                if (!entry)
+                    break;
+                walked.push_back(std::move(*entry));
+            }
+            if (walked.empty())
+            {
+                Fail(validation, "array-entry0-unreadable");
+                return false;
+            }
+            validation.FirstEntryHex = HexBytes(walked.front().Entry.Text);
+
+            std::vector<std::string> anchor;
+            const std::optional<SequenceMatch> match = MatchKnownNames(walked, anchor);
+            if (!match || !match->Strong)
+            {
+                std::string detail = "anchor=";
+                if (anchor.empty())
+                    detail += "(none)";
+                for (size_t index = 0; index < anchor.size(); ++index)
+                {
+                    if (index != 0)
+                        detail += ",";
+                    detail += anchor[index];
+                }
+                if (match)
+                {
+                    detail += " family=" + std::string(NameTextFamilyName(match->Decoder.Family)) +
+                              " matched=" + std::to_string(match->Matched) +
+                              " plausible=" + std::to_string(match->Plausible) + "/" +
+                              std::to_string(match->Walked) +
+                              " names=" + match->NamesPreview;
+                }
+                detail += " prefix=" +
+                          DescribePrefix(walked, match ? match->Decoder : NameTextCodec{}, 6);
+                if (!match || match->Decoder.Family != NameTextFamily::LengthSchedule)
+                    detail += " schedule_prefix=" +
+                              DescribePrefix(walked, NameTextCodec{NameTextFamily::LengthSchedule, 0}, 6);
+                Fail(validation, "known-names", std::move(detail));
+                return false;
+            }
+            if (match->Walked != 0 && match->Plausible * 4 < match->Walked * 3)
+            {
+                Fail(validation, "known-plausible-ratio",
+                     "plausible=" + std::to_string(match->Plausible) + "/" +
+                         std::to_string(match->Walked) +
+                         " names=" + match->NamesPreview);
+                return false;
+            }
+            validation.Decoder = match->Decoder;
+            validation.KnownMatched = match->Matched;
+            validation.KnownPlausible = match->Plausible;
+            validation.KnownWalked = match->Walked;
+            validation.KnownNamesPreview = match->NamesPreview;
+            const NameTextCodec &decoder = *validation.Decoder;
+
+            size_t remainingSamples = options.MaxSampledEntries;
+            const size_t perChunk = std::min(static_cast<size_t>(slotCount), std::max<size_t>(1, options.SamplesPerBlock));
+            // 首块样本沿用前缀数据，通过条件仍由已知名比例决定
+            validation.Block0Samples = std::min({walked.size(), perChunk, remainingSamples});
+            for (size_t slot = 0; slot < validation.Block0Samples; ++slot)
+            {
+                if (DecodeArraySample(walked[slot].Entry, decoder, validation))
+                    ++validation.Block0Valid;
+            }
+            remainingSamples -= validation.Block0Samples;
+
+            validation.AllocatedBlocks = 1;
+            const uint64_t lastChunk = std::min<uint64_t>(options.MaxSampledBlocks, (UINT32_MAX >> 1) / slotCount);
+            for (uint64_t chunkIndex = 1; chunkIndex <= lastChunk; ++chunkIndex)
+            {
+                uintptr_t chunk = 0;
+                if (!ReadArrayBytes(memory, *chunksAddress, chunkIndex * sizeof(uintptr_t), &chunk, sizeof(chunk)) ||
+                    !ArrayChunkReadable(memory, chunk, stride))
+                    break;
+                ++validation.AllocatedBlocks;
+                const size_t sampleCount = std::min(perChunk, remainingSamples);
+                for (size_t slot = 0; slot < sampleCount; ++slot)
+                {
+                    uintptr_t entryAddress = 0;
+                    if (!ReadArrayBytes(memory, chunk, slot * stride, &entryAddress, sizeof(entryAddress)) ||
+                        entryAddress == 0)
+                    {
+                        // 末尾块只填满一部分，空槽是合法状态而非布局失败
+                        break;
+                    }
+                    ++validation.HighBlockSamples;
+                    const auto entry = ReadArrayEntry(memory, fields, chunk, chunkIndex, slot, validation);
+                    if (!entry || !DecodeArraySample(entry->Entry, decoder, validation))
+                    {
+                        Fail(validation, "sample-consistency",
+                             "chunk=" + std::to_string(chunkIndex) + " site=" + common::Hex(chunk) +
+                                 " slot=" + std::to_string(slot));
+                        return false;
+                    }
+                    ++validation.HighBlockValid;
+                }
+                remainingSamples -= sampleCount;
+            }
+            validation.DecoderValidated = true;
+            validation.LayoutDetail = "family=array chunks=" + std::to_string(validation.AllocatedBlocks) +
+                                      " slots=" + std::to_string(slotCount) + " stride=" + std::to_string(stride);
+            return true;
+        }
+
+        bool ValidateAt(const MemoryView &memory, const NameStoreContract &contract, uintptr_t root,
+                        const NameValidationOptions &options, NameValidation &validation)
+        {
+            validation.Family = contract.Family;
+            return contract.Family == NameStoreFamily::Pool
+                       ? ValidatePoolAt(memory, contract, root, options, validation)
+                       : ValidateArrayAt(memory, contract.NameArray, root, options, validation);
+        }
     } // namespace
 
-    NamePoolValidation ValidateNamePool(const MemoryView &memory, const NamePoolContract &contract,
-                                        size_t contractIndex, const NamePoolValidationOptions &options)
+    NameValidation ValidateNameStore(const MemoryView &memory, const NameStoreContract &contract,
+                                     size_t contractIndex, const NameValidationOptions &options)
     {
-        NamePoolValidation result;
+        NameValidation result;
         result.ContractIndex = contractIndex;
+        result.Family = contract.Family;
 
         std::vector<uintptr_t> roots;
         const auto addRoot = [&roots](uintptr_t value)
@@ -763,10 +999,16 @@ namespace nextdumper::analysis
         for (const uintptr_t hint : options.RootHints)
             addRoot(hint);
         const size_t directRoots = roots.size();
-        for (size_t index = 0; index < directRoots; ++index)
+        const int32_t tableOffset = contract.Family == NameStoreFamily::Pool ? contract.NamePool.BlocksOffset
+                                                                             : contract.NameArray.ChunksOffset;
+        if (tableOffset > 0)
         {
-            if (contract.NamePool.BlocksOffset > 0 && roots[index] > static_cast<uintptr_t>(contract.NamePool.BlocksOffset))
-                addRoot(roots[index] - static_cast<uintptr_t>(contract.NamePool.BlocksOffset));
+            for (size_t index = 0; index < directRoots; ++index)
+            {
+                const auto root = AddOffset(roots[index], -static_cast<int64_t>(tableOffset));
+                if (root)
+                    addRoot(*root);
+            }
         }
         if (roots.empty())
         {
@@ -777,7 +1019,7 @@ namespace nextdumper::analysis
         int bestScore = -1;
         for (const uintptr_t root : roots)
         {
-            NamePoolValidation attempt;
+            NameValidation attempt;
             attempt.ContractIndex = contractIndex;
             if (ValidateAt(memory, contract, root, options, attempt))
             {
