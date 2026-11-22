@@ -85,5 +85,7 @@ namespace nextdumper::analysis
         bool bExactAddress = false;
         bool bComposes = false;
         bool bAddressLike = false;
+        bool bConditional = false;
+        bool bSwitchesMode = false;
     };
 } // namespace nextdumper::analysis

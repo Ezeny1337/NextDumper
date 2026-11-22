@@ -2,6 +2,8 @@
 
 #include <cstring>
 
+#include "DecoderFactory.hpp"
+
 namespace nextdumper::analysis
 {
     namespace
@@ -109,6 +111,15 @@ namespace nextdumper::analysis
         public:
             [[nodiscard]] uint32_t Stride() const override { return 4; }
             [[nodiscard]] int RegisterCount() const override { return 31; }
+
+            // AAPCS64：x0-x7 传参，x0-x18 为调用方保存，x30 为链接寄存器
+            [[nodiscard]] size_t ArgumentRegisterCount() const override { return 8; }
+            [[nodiscard]] bool IsCallerSaved(int reg) const override
+            {
+                return (reg >= 0 && reg < 19) || reg == 30;
+            }
+            [[nodiscard]] int ProgramCounter() const override { return -1; }
+            [[nodiscard]] int LinkRegister() const override { return 30; }
 
             [[nodiscard]] bool Decode(const uint8_t *bytes, size_t available,
                                       uintptr_t address, Instruction &out) const override
@@ -398,10 +409,18 @@ namespace nextdumper::analysis
         };
     } // namespace
 
-    std::unique_ptr<InstructionDecoder> CreateInstructionDecoder(module::ModuleArchitecture architecture)
+    std::unique_ptr<InstructionDecoder> CreateInstructionDecoder(module::ModuleArchitecture architecture,
+                                                                 CodeMode mode)
     {
-        if (architecture == module::ModuleArchitecture::Arm64)
+        switch (architecture)
+        {
+        case module::ModuleArchitecture::Arm64:
             return std::make_unique<Arm64InstructionDecoder>();
+        case module::ModuleArchitecture::Arm32:
+            return CreateArm32Decoder(mode);
+        case module::ModuleArchitecture::Unknown:
+            break;
+        }
         return nullptr;
     }
 } // namespace nextdumper::analysis
