@@ -6,6 +6,7 @@
 #include <string>
 #include <utility>
 
+#include "nextdumper/analysis/CodeRanges.hpp"
 #include "nextdumper/analysis/CodeWindow.hpp"
 #include "nextdumper/analysis/FunctionIndex.hpp"
 #include "nextdumper/analysis/ImageModel.hpp"
@@ -253,16 +254,33 @@ namespace nextdumper::analysis
                                           "reason=" + functionError});
         }
 
-        const auto decoder = CreateInstructionDecoder(module_.architecture);
+        std::string rangeError;
+        const CodeRangeSet codeRanges = RecoverCodeRanges(memory_, module_, rangeError);
+        if (codeRanges.Ranges.empty())
+        {
+            result.Diagnostics.push_back({DiagnosticSeverity::Warning, "ANALYSIS_CODE_RANGE_UNAVAILABLE",
+                                          "reason=" + rangeError});
+        }
+        else
+        {
+            result.Diagnostics.push_back({DiagnosticSeverity::Info, "ANALYSIS_CODE_RANGE_READY",
+                                          "ranges=" + std::to_string(codeRanges.Ranges.size()) +
+                                              " source=" + codeRanges.Source +
+                                              " unknown_mode=" + std::to_string(codeRanges.UnknownModeRanges)});
+        }
+        const CodeMode primaryMode = codeRanges.Ranges.empty() ? CodeMode::Unknown : codeRanges.Ranges.front().Mode;
+        const auto decoder = CreateInstructionDecoder(module_.architecture, primaryMode);
         if (!decoder)
         {
             result.Diagnostics.push_back({DiagnosticSeverity::Warning, "ANALYSIS_DECODER_UNSUPPORTED",
-                                          "architecture=" + std::string(module::ModuleArchitectureName(module_.architecture))});
+                                          "architecture=" + std::string(module::ModuleArchitectureName(module_.architecture)) +
+                                              " mode=" + CodeModeName(primaryMode)});
         }
         else
         {
             result.Diagnostics.push_back({DiagnosticSeverity::Info, "ANALYSIS_DECODER_READY",
-                                          "architecture=" + std::string(module::ModuleArchitectureName(module_.architecture))});
+                                          "architecture=" + std::string(module::ModuleArchitectureName(module_.architecture)) +
+                                              " mode=" + CodeModeName(primaryMode)});
             if (functions.IsValid())
             {
                 FunctionRange firstRange;
@@ -304,7 +322,7 @@ namespace nextdumper::analysis
         if (decoder && functions.IsValid())
         {
             NameContractScanOptions options;
-            const NameContractScanResult scan = ScanNameContracts(image, functions, *decoder, options);
+            const NameContractScanResult scan = ScanNameContracts(image, functions, codeRanges, options);
             result.Coverage.ScannedInstructions = scan.Instructions;
             result.Coverage.CodeScanFetchedBytes = scan.FetchedBytes;
             result.Coverage.CodeScanDecodedBytes = scan.DecodedBytes;

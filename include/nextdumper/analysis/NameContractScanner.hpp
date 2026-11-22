@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "nextdumper/analysis/CodeRanges.hpp"
 #include "nextdumper/analysis/Contract.hpp"
 #include "nextdumper/analysis/FunctionIndex.hpp"
 #include "nextdumper/analysis/ImageModel.hpp"
@@ -63,6 +64,8 @@ namespace nextdumper::analysis
         uint64_t FetchedBytes = 0;
         uint64_t DecodedBytes = 0;
         uint64_t SkippedPrefixBytes = 0;
+        size_t DecodedRanges = 0;
+        size_t UnknownModeRanges = 0;
         size_t UnreadableSegments = 0;
         size_t SegmentsWithoutFunctionStart = 0;
         size_t ReadTruncatedSegments = 0;
@@ -81,6 +84,6 @@ namespace nextdumper::analysis
 
     [[nodiscard]] NameContractScanResult ScanNameContracts(const ImageModel &image,
                                                            const FunctionIndex &functions,
-                                                           const InstructionDecoder &decoder,
+                                                           const CodeRangeSet &ranges,
                                                            const NameContractScanOptions &options = {});
 } // namespace nextdumper::analysis

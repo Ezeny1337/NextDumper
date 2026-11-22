@@ -5,12 +5,16 @@
 #include <cstdint>
 #include <vector>
 
+#include "nextdumper/analysis/CodeRanges.hpp"
 #include "nextdumper/analysis/CodeWindow.hpp"
 
 namespace nextdumper::analysis
 {
     namespace
     {
+        // 分析层按寄存器编号保存角色，上限覆盖 ARM32 的 16 个与 ARM64 的 31 个通用寄存器
+        constexpr int kMaxTrackedRegisters = 32;
+
         enum class RoleKind : uint8_t
         {
             None,
@@ -94,9 +98,9 @@ namespace nextdumper::analysis
         class Scanner
         {
         public:
-            Scanner(const ImageModel &image, const FunctionIndex &functions,
-                    const InstructionDecoder &decoder, const NameContractScanOptions &options)
-                : image_(image), functions_(functions), decoder_(decoder), options_(options)
+            Scanner(const ImageModel &image, const FunctionIndex &functions, const CodeRangeSet &ranges,
+                    const NameContractScanOptions &options)
+                : image_(image), functions_(functions), ranges_(ranges), options_(options)
             {
             }
 
@@ -114,35 +118,54 @@ namespace nextdumper::analysis
                     return result;
                 std::sort(starts.begin(), starts.end());
 
-                roles_.resize(static_cast<size_t>(std::max(1, decoder_.RegisterCount())));
                 CodeWindow window(image_.Memory());
 
-                for (const auto &segment : image_.Module().segments)
+                for (const CodeRange &range : ranges_.Ranges)
                 {
-                    if (!segment.executable || segment.end <= segment.start)
+                    if (range.End <= range.Start || range.End > image_.Module().end)
                         continue;
-                    if (!segment.readable)
+                    if (!image_.Module().IsReadable(static_cast<uintptr_t>(range.Start),
+                                                    static_cast<size_t>(range.End - range.Start)))
                     {
                         ++result.UnreadableSegments;
                         continue;
                     }
 
-                    auto startAt = std::lower_bound(starts.begin(), starts.end(),
-                                                    static_cast<uint64_t>(segment.start));
+                    const auto rangeDecoder = CreateInstructionDecoder(image_.Module().architecture, range.Mode);
+                    if (!rangeDecoder)
+                    {
+                        ++result.UnknownModeRanges;
+                        continue;
+                    }
+                    const uint32_t stride = rangeDecoder->Stride();
+                    const uint32_t maxBytes = rangeDecoder->MaxInstructionBytes();
+                    const int registerCount = rangeDecoder->RegisterCount();
+                    if (registerCount <= 0 || registerCount > kMaxTrackedRegisters)
+                    {
+                        ++result.UnreadableSegments;
+                        continue;
+                    }
+                    roles_.assign(static_cast<size_t>(registerCount), Role{});
+                    decoder_ = rangeDecoder.get();
+                    ++result.DecodedRanges;
+
+                    auto startAt = std::lower_bound(starts.begin(), starts.end(), range.Start);
                     size_t startIndex = static_cast<size_t>(startAt - starts.begin());
-                    if (startIndex >= starts.size() || starts[startIndex] >= segment.end)
+                    if (startIndex >= starts.size() || starts[startIndex] >= range.End)
                     {
                         ++result.SegmentsWithoutFunctionStart;
                         continue;
                     }
 
-                    uintptr_t address = static_cast<uintptr_t>(std::max<uint64_t>(segment.start, starts[startIndex])) & ~uintptr_t{3};
-                    const uintptr_t coveredStart = std::max(address, segment.start);
-                    result.SkippedPrefixBytes += coveredStart - segment.start;
+                    uintptr_t address = static_cast<uintptr_t>(std::max<uint64_t>(range.Start, starts[startIndex]));
+                    if (stride > 1)
+                        address &= ~static_cast<uintptr_t>(stride - 1);
+                    const uintptr_t coveredStart = address;
+                    result.SkippedPrefixBytes += address - range.Start;
                     ResetRoles();
                     functionStart_ = address;
 
-                    while (address < segment.end)
+                    while (address < range.End)
                     {
                         while (startIndex < starts.size() && starts[startIndex] < address)
                             ++startIndex;
@@ -154,7 +177,7 @@ namespace nextdumper::analysis
                             ++startIndex;
                         }
 
-                        const uint8_t *bytes = window.At(address, 4);
+                        const uint8_t *bytes = window.At(address, maxBytes);
                         if (!bytes)
                         {
                             ++result.ReadTruncatedSegments;
@@ -162,7 +185,7 @@ namespace nextdumper::analysis
                         }
 
                         Instruction instruction;
-                        if (!decoder_.Decode(bytes, 4, address, instruction))
+                        if (!decoder_->Decode(bytes, maxBytes, address, instruction))
                         {
                             ++result.DecodeTruncatedSegments;
                             break;
@@ -173,8 +196,8 @@ namespace nextdumper::analysis
                         if (result.Instructions >= options_.MaxInstructions)
                             result.BudgetExhausted = true;
 
-                        const uint32_t length = instruction.Length ? instruction.Length : 4;
-                        if (length > segment.end - address)
+                        const uint32_t length = instruction.Length ? instruction.Length : stride;
+                        if (length > range.End - address || length < stride)
                         {
                             ++result.ExtentTruncatedSegments;
                             break;
@@ -768,7 +791,8 @@ namespace nextdumper::analysis
 
             const ImageModel &image_;
             const FunctionIndex &functions_;
-            const InstructionDecoder &decoder_;
+            const CodeRangeSet &ranges_;
+            const InstructionDecoder *decoder_ = nullptr;
             NameContractScanOptions options_;
             std::vector<Role> roles_;
             std::vector<NameStoreContract> contracts_;
@@ -779,10 +803,10 @@ namespace nextdumper::analysis
 
     NameContractScanResult ScanNameContracts(const ImageModel &image,
                                              const FunctionIndex &functions,
-                                             const InstructionDecoder &decoder,
+                                             const CodeRangeSet &ranges,
                                              const NameContractScanOptions &options)
     {
-        Scanner scanner(image, functions, decoder, options);
+        Scanner scanner(image, functions, ranges, options);
         return scanner.Run();
     }
 } // namespace nextdumper::analysis
