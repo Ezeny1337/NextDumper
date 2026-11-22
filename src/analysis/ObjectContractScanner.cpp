@@ -26,6 +26,8 @@ namespace nextdumper::analysis
             return "full-scan-rejected";
         case ObjectHeaderOutcome::BudgetStarved:
             return "budget-starved";
+        case ObjectHeaderOutcome::NotEvaluated:
+            return "not-evaluated";
         }
         return "unknown";
     }
@@ -890,7 +892,7 @@ namespace nextdumper::analysis
             ObjectHeaderOutcome Outcome = ObjectHeaderOutcome::DerivedExceedsCount;
             uint64_t BudgetLeft = 0;
             int64_t Capacity = 0;
-            // 门禁时刻对 header.CountAddress 的重读值，-1 表示读失败，仅作证据
+            // 门禁时刻重读的计数，-1 表示未取得该值
             int32_t CountAtGate = -1;
         };
 
@@ -962,14 +964,13 @@ namespace nextdumper::analysis
         std::unordered_map<uintptr_t, size_t> rootIndices;
         std::unordered_set<uintptr_t> rejectedRoots;
         std::vector<uint8_t> buffer(kReadChunkBytes);
-        uint64_t writableBytes = 0;
         bool processingBudgetExhausted = false;
         for (const auto &segment : image.Module().segments)
         {
             if (!segment.readable || !segment.writable || segment.end <= segment.start)
                 continue;
             const uint64_t bytes = segment.end - segment.start;
-            writableBytes = bytes > UINT64_MAX - writableBytes ? UINT64_MAX : writableBytes + bytes;
+            result.PlannedBytes += std::min(bytes, UINT64_MAX - result.PlannedBytes);
         }
         for (const auto &segment : image.Module().segments)
         {
@@ -985,6 +986,7 @@ namespace nextdumper::analysis
                 const auto address = AddOffset(segment.start, static_cast<int64_t>(offset));
                 if (!address || !memory.ReadBytes(*address, buffer.data(), wanted).Ok())
                 {
+                    ++result.ScanReadFailures;
                     offset += wanted;
                     continue;
                 }
@@ -1030,7 +1032,7 @@ namespace nextdumper::analysis
                 offset += wanted;
             }
         }
-        result.BudgetExhausted = writableBytes > options.MaxScanBytes &&
+        result.BudgetExhausted = result.PlannedBytes > options.MaxScanBytes &&
                                  result.ScannedBytes >= options.MaxScanBytes;
         std::sort(roots.begin(), roots.end(), [](const DiscoveredRoot &left, const DiscoveredRoot &right)
                   { return left.Target < right.Target; });
@@ -1133,13 +1135,45 @@ namespace nextdumper::analysis
                 storeEvidence.HeaderCount = headers.size();
                 for (const HeaderCandidate &header : headers)
                     storeEvidence.MaxHeaderCount = std::max(storeEvidence.MaxHeaderCount, header.Count);
+                const auto captureHeaderEvidence = [&](const std::vector<HeaderOutcomeRecord> &outcomes)
+                {
+                    if (result.StoreEvidence.size() >= options.MaxStoreEvidence)
+                        return;
+                    const size_t count = std::min(headers.size(), options.MaxHeaderEvidencePerStore);
+                    for (size_t index = 0; index < count; ++index)
+                    {
+                        const HeaderCandidate &header = headers[index];
+                        const HeaderOutcomeRecord outcome =
+                            index < outcomes.size() ? outcomes[index]
+                                                    : HeaderOutcomeRecord{ObjectHeaderOutcome::NotEvaluated, fullScanBudget, -1};
+                        ObjectHeaderEvidence evidence;
+                        evidence.Base = header.Root;
+                        evidence.ObjectsOffset = header.ObjectsOffset;
+                        evidence.CountOffset = header.CountOffset;
+                        evidence.Count = header.Count;
+                        evidence.CountAtGate = outcome.CountAtGate;
+                        evidence.MaxChunksOffset = header.MaxChunksOffset;
+                        evidence.MaxChunks = header.MaxChunks;
+                        evidence.NumChunksOffset = header.NumChunksOffset;
+                        evidence.NumChunks = header.NumChunks;
+                        evidence.MaxElementsOffset = header.MaxElementsOffset;
+                        evidence.MaxElements = header.MaxElements;
+                        evidence.Capacity = outcome.Capacity;
+                        evidence.FullScanBudgetLeft = outcome.BudgetLeft;
+                        evidence.Outcome = outcome.Outcome;
+                        storeEvidence.Headers.push_back(std::move(evidence));
+                    }
+                };
                 if (headerOverflow)
                 {
+                    ++result.HeaderOverflowStores;
+                    captureHeaderEvidence({});
                     finishStoreEvidence("candidate-overflow");
                     continue;
                 }
                 if (headerStepExhausted)
                 {
+                    captureHeaderEvidence({});
                     finishStoreEvidence("header-budget-exhausted");
                     result.SeedBudgetExhausted = true;
                     processingBudgetExhausted = true;
@@ -1166,6 +1200,8 @@ namespace nextdumper::analysis
                                                      : static_cast<int32_t>(store.Chunks.size()) * kElementsPerChunk;
                     if (scanCapacity == failedCapacity)
                     {
+                        if (failedCapacityOutcome == ObjectHeaderOutcome::BudgetStarved)
+                            ++result.FullScanBudgetHits;
                         headerOutcomes.push_back({failedCapacityOutcome, fullScanBudget, scanCapacity});
                         continue;
                     }
@@ -1174,6 +1210,7 @@ namespace nextdumper::analysis
                         const uint64_t required = RequiredScanItems(store, scanCapacity);
                         if (required > fullScanBudget)
                         {
+                            ++result.FullScanBudgetHits;
                             if (fullScanBudget == 0)
                             {
                                 fullScanExhausted = true;
@@ -1234,28 +1271,7 @@ namespace nextdumper::analysis
                     headerOutcomes.push_back(
                         {ObjectHeaderOutcome::Validated, fullScanBudget, scanCapacity, countAtGate});
                 }
-                for (size_t index = 0; index < headers.size() && index < headerOutcomes.size() &&
-                                       index < options.MaxHeaderEvidencePerStore;
-                     ++index)
-                {
-                    const HeaderCandidate &header = headers[index];
-                    ObjectHeaderEvidence headerEvidence;
-                    headerEvidence.Base = header.Root;
-                    headerEvidence.ObjectsOffset = header.ObjectsOffset;
-                    headerEvidence.CountOffset = header.CountOffset;
-                    headerEvidence.Count = header.Count;
-                    headerEvidence.CountAtGate = headerOutcomes[index].CountAtGate;
-                    headerEvidence.MaxChunksOffset = header.MaxChunksOffset;
-                    headerEvidence.MaxChunks = header.MaxChunks;
-                    headerEvidence.NumChunksOffset = header.NumChunksOffset;
-                    headerEvidence.NumChunks = header.NumChunks;
-                    headerEvidence.MaxElementsOffset = header.MaxElementsOffset;
-                    headerEvidence.MaxElements = header.MaxElements;
-                    headerEvidence.Capacity = headerOutcomes[index].Capacity;
-                    headerEvidence.FullScanBudgetLeft = headerOutcomes[index].BudgetLeft;
-                    headerEvidence.Outcome = headerOutcomes[index].Outcome;
-                    storeEvidence.Headers.push_back(std::move(headerEvidence));
-                }
+                captureHeaderEvidence(headerOutcomes);
                 result.HeaderValidations += validated.size();
                 if (fullScanExhausted)
                 {
@@ -1342,7 +1358,10 @@ namespace nextdumper::analysis
             }
         }
         if (result.Contracts.size() > options.MaxCandidates)
+        {
+            result.ContractsOmitted = result.Contracts.size() - options.MaxCandidates;
             result.Contracts.resize(options.MaxCandidates);
+        }
         return result;
     }
 } // namespace nextdumper::analysis

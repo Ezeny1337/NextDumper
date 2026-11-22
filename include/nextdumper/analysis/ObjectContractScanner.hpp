@@ -81,6 +81,7 @@ namespace nextdumper::analysis
         FullScanRejected,
         BudgetStarved,
         CountUnreadable,
+        NotEvaluated,
     };
 
     [[nodiscard]] const char *ObjectHeaderOutcomeName(ObjectHeaderOutcome outcome);
@@ -100,7 +101,7 @@ namespace nextdumper::analysis
         int32_t MaxElements = 0;
         int64_t Capacity = 0;
         uint64_t FullScanBudgetLeft = 0;
-        ObjectHeaderOutcome Outcome = ObjectHeaderOutcome::DerivedExceedsCount;
+        ObjectHeaderOutcome Outcome = ObjectHeaderOutcome::NotEvaluated;
     };
 
     struct ObjectFullScanEvidence
@@ -146,7 +147,9 @@ namespace nextdumper::analysis
         std::vector<UObjectLayoutContract> UObjectLayouts;
         std::vector<ObjectSeedEvidence> Seeds;
         std::vector<ObjectStoreEvidence> StoreEvidence;
+        uint64_t PlannedBytes = 0;
         uint64_t ScannedBytes = 0;
+        uint64_t ScanReadFailures = 0;
         uint64_t Candidates = 0;
         uint64_t DiscoveredRoots = 0;
         uint64_t StorageRoots = 0;
@@ -162,11 +165,20 @@ namespace nextdumper::analysis
         uint64_t FixedPrefixFailed = 0;
         uint64_t HeaderCandidates = 0;
         uint64_t HeaderValidations = 0;
+        uint64_t HeaderOverflowStores = 0;
+        uint64_t FullScanBudgetHits = 0;
+        size_t ContractsOmitted = 0;
         uint64_t StoresUnlogged = 0;
         bool BudgetExhausted = false;
         bool SeedBudgetExhausted = false;
         bool ContractsAmbiguous = false;
         std::string Error;
+
+        [[nodiscard]] bool IsComplete() const
+        {
+            return Error.empty() && ScannedBytes != 0 && ScannedBytes == PlannedBytes && !BudgetExhausted &&
+                   !SeedBudgetExhausted && HeaderOverflowStores == 0 && FullScanBudgetHits == 0 && ContractsOmitted == 0;
+        }
     };
 
     [[nodiscard]] ObjectContractScanResult ScanObjectContracts(const ImageModel &image,

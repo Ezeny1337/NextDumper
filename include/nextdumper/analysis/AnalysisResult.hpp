@@ -40,11 +40,15 @@ namespace nextdumper::analysis
     {
         size_t ModuleSegments = 0;
         size_t ExecutableSegments = 0;
-        uint64_t PlannedBytes = 0;
-        uint64_t ReadBytes = 0;
-        uint64_t ReadFailures = 0;
+        uint64_t ExecutableBytes = 0;
+        uint64_t CodeScanFetchedBytes = 0;
+        uint64_t CodeScanDecodedBytes = 0;
+        uint64_t DataScanPlannedBytes = 0;
+        uint64_t DataScanReadBytes = 0;
         uint64_t FunctionCount = 0;
         uint64_t ScannedInstructions = 0;
+        bool CodeScanComplete = false;
+        bool ObjectScanComplete = false;
         bool Complete = false;
     };
 

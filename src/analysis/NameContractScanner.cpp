@@ -109,16 +109,26 @@ namespace nextdumper::analysis
 
                 for (const auto &segment : image_.Module().segments)
                 {
-                    if (!segment.executable || !segment.readable || segment.end <= segment.start)
+                    if (!segment.executable || segment.end <= segment.start)
                         continue;
+                    if (!segment.readable)
+                    {
+                        ++result.UnreadableSegments;
+                        continue;
+                    }
 
                     auto startAt = std::lower_bound(starts.begin(), starts.end(),
                                                     static_cast<uint64_t>(segment.start));
                     size_t startIndex = static_cast<size_t>(startAt - starts.begin());
                     if (startIndex >= starts.size() || starts[startIndex] >= segment.end)
+                    {
+                        ++result.SegmentsWithoutFunctionStart;
                         continue;
+                    }
 
                     uintptr_t address = static_cast<uintptr_t>(std::max<uint64_t>(segment.start, starts[startIndex])) & ~uintptr_t{3};
+                    const uintptr_t coveredStart = std::max(address, segment.start);
+                    result.SkippedPrefixBytes += coveredStart - segment.start;
                     ResetRoles();
                     functionStart_ = address;
 
@@ -136,31 +146,42 @@ namespace nextdumper::analysis
 
                         const uint8_t *bytes = window.At(address, 4);
                         if (!bytes)
-                            break;
-
-                        Instruction instruction;
-                        if (!decoder_.Decode(bytes, 4, address, instruction))
-                            break;
-
-                        ++result.Instructions;
-                        Process(instruction, address);
-
-                        if (result.Instructions >= options_.MaxInstructions)
                         {
-                            result.BudgetExhausted = true;
+                            ++result.ReadTruncatedSegments;
                             break;
                         }
 
-                        const uint32_t length = instruction.Length ? instruction.Length : 4;
-                        if (length > UINTPTR_MAX - address || address + length > segment.end)
+                        Instruction instruction;
+                        if (!decoder_.Decode(bytes, 4, address, instruction))
+                        {
+                            ++result.DecodeTruncatedSegments;
                             break;
+                        }
+
+                        ++result.Instructions;
+                        Process(instruction, address);
+                        if (result.Instructions >= options_.MaxInstructions)
+                            result.BudgetExhausted = true;
+
+                        const uint32_t length = instruction.Length ? instruction.Length : 4;
+                        if (length > segment.end - address)
+                        {
+                            ++result.ExtentTruncatedSegments;
+                            break;
+                        }
                         address += length;
+                        if (result.BudgetExhausted)
+                            break;
                     }
+                    if (address > coveredStart)
+                        result.DecodedBytes += address - coveredStart;
 
                     if (result.BudgetExhausted)
                         break;
                 }
 
+                result.FetchedBytes = window.BytesFetched();
+                result.Recognition = recognition_;
                 result.Contracts = std::move(contracts_);
                 return result;
             }
@@ -208,15 +229,45 @@ namespace nextdumper::analysis
             void Record(const Role &role, uintptr_t site)
             {
                 (void)site;
-                if (role.BlocksOffset < 0 || role.BlocksBit < 8 || role.BlocksBit > 24 ||
-                    (role.EntryStride != 2 && role.EntryStride != 4) ||
-                    role.HeaderOffset < 0 || role.HeaderOffset > 64 ||
-                    role.StringOffset < role.HeaderOffset + 2 || role.StringOffset > 64 ||
-                    (role.LengthShift != 0 && (role.LengthShift < 1 || role.LengthShift > 15)))
-                    return;
+                ++recognition_.RecordAttempts;
+                if (role.HeaderSite == 0)
+                    ++recognition_.RecordsWithoutHeader;
 
-                if (role.IdMask != 0 && static_cast<int32_t>(std::bit_width(role.IdMask)) != role.BlocksBit)
+                if (role.BlocksOffset < 0)
+                {
+                    ++recognition_.RejectedBlocksOffset;
                     return;
+                }
+                if (role.BlocksBit < 8 || role.BlocksBit > 24)
+                {
+                    ++recognition_.RejectedBlocksBit;
+                    return;
+                }
+                if (role.EntryStride != 2 && role.EntryStride != 4)
+                {
+                    ++recognition_.RejectedStride;
+                    return;
+                }
+                if (role.HeaderOffset < 0 || role.HeaderOffset > 64)
+                {
+                    ++recognition_.RejectedHeaderOffset;
+                    return;
+                }
+                if (role.StringOffset < role.HeaderOffset + 2 || role.StringOffset > 64)
+                {
+                    ++recognition_.RejectedStringOffset;
+                    return;
+                }
+                if (role.LengthShift != 0 && (role.LengthShift < 1 || role.LengthShift > 15))
+                {
+                    ++recognition_.RejectedLengthShift;
+                    return;
+                }
+                if (role.IdMask != 0 && static_cast<int32_t>(std::bit_width(role.IdMask)) != role.BlocksBit)
+                {
+                    ++recognition_.RejectedIdMask;
+                    return;
+                }
 
                 NamePoolContract contract;
                 contract.Root = role.Global;
@@ -247,6 +298,8 @@ namespace nextdumper::analysis
                     contract.Evidence.push_back({EvidenceKind::TextOffset, role.TextSite, static_cast<uint64_t>(role.StringOffset)});
 
                 const bool complete = contract.NamePool.Complete();
+                if (!complete)
+                    ++recognition_.IncompleteRecords;
                 for (auto &existing : contracts_)
                 {
                     if (SameChain(existing, role))
@@ -262,6 +315,7 @@ namespace nextdumper::analysis
                     contracts_.push_back(std::move(contract));
                     return;
                 }
+                ++recognition_.ContractLimitHits;
                 if (!complete)
                     return;
                 for (auto &existing : contracts_)
@@ -286,6 +340,7 @@ namespace nextdumper::analysis
                 {
                 case InstructionKind::SetBase:
                 {
+                    ++recognition_.BaseInstructions;
                     Role role;
                     role.Kind = RoleKind::Global;
                     role.Global = static_cast<uintptr_t>(instruction.Value);
@@ -339,6 +394,7 @@ namespace nextdumper::analysis
                     if (scaled && (base.Kind == RoleKind::Global || base.Kind == RoleKind::Input) &&
                         source.Kind == RoleKind::BlockIndex)
                     {
+                        ++recognition_.BlockSlots;
                         Role role;
                         role.Kind = RoleKind::BlockSlot;
                         role.Global = base.Kind == RoleKind::Global ? base.Global : 0;
@@ -355,9 +411,11 @@ namespace nextdumper::analysis
                     {
                         if (base.BlocksBit > 0 && source.BlocksBit > 0 && base.BlocksBit != source.BlocksBit)
                         {
+                            ++recognition_.EntrySplitMismatches;
                             Assign(instruction.Dest, InputRole());
                             return;
                         }
+                        ++recognition_.EntryAddresses;
                         Role role = base;
                         role.Kind = RoleKind::Entry;
                         role.BlocksBit = source.BlocksBit;
@@ -389,6 +447,7 @@ namespace nextdumper::analysis
                     }
                     if (base.Kind == RoleKind::Entry && instruction.AccessWidth == 2)
                     {
+                        ++recognition_.HeaderLoads;
                         Role role = base;
                         role.Kind = RoleKind::Header;
                         role.HeaderOffset = static_cast<int32_t>(instruction.Offset);
@@ -540,6 +599,7 @@ namespace nextdumper::analysis
             NameContractScanOptions options_;
             std::vector<Role> roles_;
             std::vector<NamePoolContract> contracts_;
+            NameContractRecognitionStats recognition_;
             uintptr_t functionStart_ = 0;
         };
     } // namespace

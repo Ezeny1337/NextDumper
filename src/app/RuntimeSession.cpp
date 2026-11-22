@@ -814,6 +814,7 @@ namespace nextdumper::app
                                                  [](const auto &validation)
                                                  { return validation.IsValidated(); });
 
+            const auto &coverage = result.Coverage;
             Note(RuntimeLogLevel::Info,
                  std::string("analysis_probe status=") + ::nextdumper::analysis::AnalysisStatusName(result.Status) +
                      " reason=" + result.Reason +
@@ -823,14 +824,18 @@ namespace nextdumper::app
                      " object_status=" + ::nextdumper::analysis::AnalysisStatusName(result.ObjectStatus) +
                      " uobject_status=" + ::nextdumper::analysis::AnalysisStatusName(result.UObjectStatus) +
                      " address_space_changed=" + std::to_string(result.AddressSpaceChanged) +
-                     " segments=" + std::to_string(result.Coverage.ModuleSegments) +
-                     " executable_segments=" + std::to_string(result.Coverage.ExecutableSegments) +
-                     " planned_bytes=" + std::to_string(result.Coverage.PlannedBytes) +
-                     " read_bytes=" + std::to_string(result.Coverage.ReadBytes) +
-                     " read_failures=" + std::to_string(result.Coverage.ReadFailures) +
-                     " functions=" + std::to_string(result.Coverage.FunctionCount) +
-                     " scanned_instructions=" + std::to_string(result.Coverage.ScannedInstructions) +
-                     " complete=" + std::to_string(result.Coverage.Complete));
+                     " segments=" + std::to_string(coverage.ModuleSegments) +
+                     " executable_segments=" + std::to_string(coverage.ExecutableSegments) +
+                     " executable_bytes=" + std::to_string(coverage.ExecutableBytes) +
+                     " code_fetched_bytes=" + std::to_string(coverage.CodeScanFetchedBytes) +
+                     " code_decoded_bytes=" + std::to_string(coverage.CodeScanDecodedBytes) +
+                     " data_planned_bytes=" + std::to_string(coverage.DataScanPlannedBytes) +
+                     " data_read_bytes=" + std::to_string(coverage.DataScanReadBytes) +
+                     " functions=" + std::to_string(coverage.FunctionCount) +
+                     " scanned_instructions=" + std::to_string(coverage.ScannedInstructions) +
+                     " code_scan_complete=" + std::to_string(coverage.CodeScanComplete) +
+                     " object_scan_complete=" + std::to_string(coverage.ObjectScanComplete) +
+                     " complete=" + std::to_string(coverage.Complete));
             for (const auto &diagnostic : result.Diagnostics)
             {
                 RuntimeLogLevel level = RuntimeLogLevel::Info;

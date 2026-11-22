@@ -18,13 +18,49 @@ namespace nextdumper::analysis
         size_t MaxContracts = 16;
     };
 
+    struct NameContractRecognitionStats
+    {
+        uint64_t BaseInstructions = 0;
+        uint64_t BlockSlots = 0;
+        uint64_t EntryAddresses = 0;
+        uint64_t EntrySplitMismatches = 0;
+        uint64_t HeaderLoads = 0;
+        uint64_t RecordAttempts = 0;
+        uint64_t RecordsWithoutHeader = 0;
+        uint64_t RejectedBlocksOffset = 0;
+        uint64_t RejectedBlocksBit = 0;
+        uint64_t RejectedStride = 0;
+        uint64_t RejectedHeaderOffset = 0;
+        uint64_t RejectedStringOffset = 0;
+        uint64_t RejectedLengthShift = 0;
+        uint64_t RejectedIdMask = 0;
+        uint64_t IncompleteRecords = 0;
+        uint64_t ContractLimitHits = 0;
+    };
+
     struct NameContractScanResult
     {
         std::vector<NamePoolContract> Contracts;
+        NameContractRecognitionStats Recognition;
         uint64_t Instructions = 0;
         uint64_t FunctionStarts = 0;
+        uint64_t FetchedBytes = 0;
+        uint64_t DecodedBytes = 0;
+        uint64_t SkippedPrefixBytes = 0;
+        size_t UnreadableSegments = 0;
+        size_t SegmentsWithoutFunctionStart = 0;
+        size_t ReadTruncatedSegments = 0;
+        size_t DecodeTruncatedSegments = 0;
+        size_t ExtentTruncatedSegments = 0;
         bool BudgetExhausted = false;
         std::string Error;
+
+        [[nodiscard]] bool IsComplete() const
+        {
+            return Error.empty() && !BudgetExhausted && DecodedBytes != 0 && UnreadableSegments == 0 &&
+                   SegmentsWithoutFunctionStart == 0 && ReadTruncatedSegments == 0 &&
+                   DecodeTruncatedSegments == 0 && ExtentTruncatedSegments == 0 && Recognition.ContractLimitHits == 0;
+        }
     };
 
     [[nodiscard]] NameContractScanResult ScanNameContracts(const ImageModel &image,

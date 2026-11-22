@@ -162,13 +162,12 @@ namespace nextdumper::analysis
         const ImageModel image(memory_, module_);
         result.Coverage.ModuleSegments = image.ModuleSegmentCount();
         result.Coverage.ExecutableSegments = image.ExecutableSegmentCount();
-        result.Coverage.PlannedBytes = image.ExecutableBytes();
+        result.Coverage.ExecutableBytes = image.ExecutableBytes();
 
         bool imageHeaderReadable = false;
         std::array<uint8_t, 16> header{};
         if (!memory_.IsReadable(module_.base, header.size()))
         {
-            ++result.Coverage.ReadFailures;
             result.Status = AnalysisStatus::Partial;
             result.Reason = "image-header-unreadable";
             result.Diagnostics.push_back({DiagnosticSeverity::Warning, "ANALYSIS_IMAGE_HEADER_UNREADABLE",
@@ -177,14 +176,12 @@ namespace nextdumper::analysis
         else
         {
             const auto read = memory_.ReadBytes(module_.base, header.data(), header.size());
-            result.Coverage.ReadBytes += read.transferred;
             if (!read.Ok())
             {
-                ++result.Coverage.ReadFailures;
                 result.Status = AnalysisStatus::Partial;
                 result.Reason = "image-header-short-read";
                 result.Diagnostics.push_back({DiagnosticSeverity::Warning, "ANALYSIS_IMAGE_HEADER_SHORT_READ",
-                                              "The module header read was incomplete."});
+                                              "The module header read was incomplete; bytes=" + std::to_string(read.transferred)});
             }
             else if (header[0] != 0x7F || header[1] != 'E' || header[2] != 'L' || header[3] != 'F')
             {
@@ -197,7 +194,7 @@ namespace nextdumper::analysis
             {
                 imageHeaderReadable = true;
                 result.Diagnostics.push_back({DiagnosticSeverity::Info, "ANALYSIS_IMAGE_HEADER_READ",
-                                              "ELF header readable; executable_bytes=" + std::to_string(result.Coverage.PlannedBytes) +
+                                              "ELF header readable; executable_bytes=" + std::to_string(result.Coverage.ExecutableBytes) +
                                                   " executable_segments=" + std::to_string(result.Coverage.ExecutableSegments)});
             }
         }
@@ -282,7 +279,6 @@ namespace nextdumper::analysis
                             break;
                         at += length;
                     }
-                    result.Coverage.ReadBytes += window.BytesFetched();
                     result.Diagnostics.push_back({DiagnosticSeverity::Info, "ANALYSIS_DECODER_SAMPLE",
                                                   "decoded=" + std::to_string(decoded) +
                                                       " other=" + std::to_string(other) +
@@ -298,7 +294,9 @@ namespace nextdumper::analysis
             NameContractScanOptions options;
             const NameContractScanResult scan = ScanNameContracts(image, functions, *decoder, options);
             result.Coverage.ScannedInstructions = scan.Instructions;
-            result.Coverage.Complete = scan.Error.empty() && !scan.BudgetExhausted;
+            result.Coverage.CodeScanFetchedBytes = scan.FetchedBytes;
+            result.Coverage.CodeScanDecodedBytes = scan.DecodedBytes;
+            result.Coverage.CodeScanComplete = scan.IsComplete();
             if (!scan.Error.empty())
             {
                 result.Diagnostics.push_back({DiagnosticSeverity::Warning, "ANALYSIS_CONTRACT_SCAN_FAILED",
@@ -434,7 +432,9 @@ namespace nextdumper::analysis
                 const ObjectContractScanResult objectScan =
                     ScanObjectContracts(image, objectNameRoot, objectNameFields, objectNameDecoder, objectOptions);
                 objectContractsAmbiguous = objectScan.ContractsAmbiguous;
-                result.Coverage.ReadBytes += objectScan.ScannedBytes;
+                result.Coverage.DataScanPlannedBytes = objectScan.PlannedBytes;
+                result.Coverage.DataScanReadBytes = objectScan.ScannedBytes;
+                result.Coverage.ObjectScanComplete = objectScan.IsComplete();
                 for (const UObjectLayoutContract &contract : objectScan.UObjectLayouts)
                     result.UObjectLayouts.push_back(contract);
                 for (const ObjectArrayContract &contract : objectScan.Contracts)
@@ -562,6 +562,7 @@ namespace nextdumper::analysis
                              " chunk_ptrs=" + chunkPointers +
                              " budget_left=" + std::to_string(storeEvidence.FullScanBudgetAtStart) +
                              " headers=" + std::to_string(storeEvidence.HeaderCount) +
+                             " header_evidence=" + std::to_string(storeEvidence.Headers.size()) +
                              " max_count=" + std::to_string(storeEvidence.MaxHeaderCount) +
                              " full_scans=" + std::to_string(storeEvidence.FullScanCount) +
                              " result=" + storeEvidence.Result});
@@ -618,6 +619,8 @@ namespace nextdumper::analysis
                 }
 
                 std::string message = "scanned_bytes=" + std::to_string(objectScan.ScannedBytes) +
+                                      " planned_bytes=" + std::to_string(objectScan.PlannedBytes) +
+                                      " scan_read_failures=" + std::to_string(objectScan.ScanReadFailures) +
                                       " candidates=" + std::to_string(objectScan.Candidates) +
                                       " discovered_roots=" + std::to_string(objectScan.DiscoveredRoots) +
                                       " storage_roots=" + std::to_string(objectScan.StorageRoots) +
@@ -627,31 +630,63 @@ namespace nextdumper::analysis
                                       " fixed_stores=" + std::to_string(objectScan.FixedStores) +
                                       " header_candidates=" + std::to_string(objectScan.HeaderCandidates) +
                                       " header_validations=" + std::to_string(objectScan.HeaderValidations) +
+                                      " header_overflow_stores=" + std::to_string(objectScan.HeaderOverflowStores) +
+                                      " full_scan_budget_hits=" + std::to_string(objectScan.FullScanBudgetHits) +
                                       " seed_candidates=" + std::to_string(objectScan.SeedCandidates) +
                                       " seeds=" + std::to_string(objectScan.Seeds.size()) +
                                       " contracts=" + std::to_string(objectScan.Contracts.size()) +
+                                      " contracts_omitted=" + std::to_string(objectScan.ContractsOmitted) +
                                       " contracts_ambiguous=" + std::to_string(objectScan.ContractsAmbiguous) +
                                       " uobject_layouts=" + std::to_string(objectScan.UObjectLayouts.size()) +
                                       " name_evidence=" + std::to_string(objectScanNameContract ? 1 : 0) +
                                       " store_evidence=" + std::to_string(objectScan.StoreEvidence.size()) +
                                       " stores_unlogged=" + std::to_string(objectScan.StoresUnlogged) +
                                       " budget_exhausted=" + std::to_string(objectScan.BudgetExhausted) +
-                                      " seed_budget_exhausted=" + std::to_string(objectScan.SeedBudgetExhausted);
+                                      " seed_budget_exhausted=" + std::to_string(objectScan.SeedBudgetExhausted) +
+                                      " complete=" + std::to_string(result.Coverage.ObjectScanComplete);
                 if (!objectScan.Error.empty())
                     message += " error=" + objectScan.Error;
                 result.Diagnostics.push_back(
-                    {objectScan.Contracts.empty() ? DiagnosticSeverity::Warning : DiagnosticSeverity::Info,
+                    {objectScan.Contracts.empty() || !result.Coverage.ObjectScanComplete
+                         ? DiagnosticSeverity::Warning
+                         : DiagnosticSeverity::Info,
                      objectScan.Contracts.empty() ? "ANALYSIS_OBJECT_SCAN_EMPTY" : "ANALYSIS_OBJECT_SCAN",
                      std::move(message)});
             }
 
             result.Diagnostics.push_back(
-                {scan.Contracts.empty() ? DiagnosticSeverity::Warning : DiagnosticSeverity::Info,
+                {scan.Contracts.empty() || !result.Coverage.CodeScanComplete ? DiagnosticSeverity::Warning : DiagnosticSeverity::Info,
                  scan.Contracts.empty() ? "ANALYSIS_CONTRACT_SCAN_EMPTY" : "ANALYSIS_CONTRACT_SCAN",
                  "instructions=" + std::to_string(scan.Instructions) +
                      " function_starts=" + std::to_string(scan.FunctionStarts) +
                      " contracts=" + std::to_string(scan.Contracts.size()) +
-                     " budget_exhausted=" + std::to_string(scan.BudgetExhausted)});
+                     " skipped_prefix_bytes=" + std::to_string(scan.SkippedPrefixBytes) +
+                     " unreadable_segments=" + std::to_string(scan.UnreadableSegments) +
+                     " segments_without_function_start=" + std::to_string(scan.SegmentsWithoutFunctionStart) +
+                     " read_truncated_segments=" + std::to_string(scan.ReadTruncatedSegments) +
+                     " decode_truncated_segments=" + std::to_string(scan.DecodeTruncatedSegments) +
+                     " extent_truncated_segments=" + std::to_string(scan.ExtentTruncatedSegments) +
+                     " budget_exhausted=" + std::to_string(scan.BudgetExhausted) +
+                     " complete=" + std::to_string(result.Coverage.CodeScanComplete)});
+            const auto &recognition = scan.Recognition;
+            result.Diagnostics.push_back(
+                {DiagnosticSeverity::Info, "ANALYSIS_CONTRACT_RECOGNITION",
+                 "base_instructions=" + std::to_string(recognition.BaseInstructions) +
+                     " block_slots=" + std::to_string(recognition.BlockSlots) +
+                     " entry_addresses=" + std::to_string(recognition.EntryAddresses) +
+                     " entry_split_mismatches=" + std::to_string(recognition.EntrySplitMismatches) +
+                     " header_loads=" + std::to_string(recognition.HeaderLoads) +
+                     " record_attempts=" + std::to_string(recognition.RecordAttempts) +
+                     " records_without_header=" + std::to_string(recognition.RecordsWithoutHeader) +
+                     " rejected_blocks_offset=" + std::to_string(recognition.RejectedBlocksOffset) +
+                     " rejected_blocks_bit=" + std::to_string(recognition.RejectedBlocksBit) +
+                     " rejected_stride=" + std::to_string(recognition.RejectedStride) +
+                     " rejected_header_offset=" + std::to_string(recognition.RejectedHeaderOffset) +
+                     " rejected_string_offset=" + std::to_string(recognition.RejectedStringOffset) +
+                     " rejected_length_shift=" + std::to_string(recognition.RejectedLengthShift) +
+                     " rejected_id_mask=" + std::to_string(recognition.RejectedIdMask) +
+                     " incomplete_records=" + std::to_string(recognition.IncompleteRecords) +
+                     " contract_limit_hits=" + std::to_string(recognition.ContractLimitHits)});
             if (scan.BudgetExhausted)
             {
                 result.Diagnostics.push_back({DiagnosticSeverity::Warning, "ANALYSIS_CONTRACT_SCAN_BUDGET",
@@ -708,6 +743,8 @@ namespace nextdumper::analysis
             result.Diagnostics.push_back({DiagnosticSeverity::Warning, "ANALYSIS_ADDRESS_SPACE_CHANGED",
                                           "Address-space generation changed during analysis; proposals are invalidated."});
         }
+        result.Coverage.Complete = imageHeaderReadable && result.Coverage.CodeScanComplete &&
+                                   result.Coverage.ObjectScanComplete && !result.AddressSpaceChanged;
         return result;
     }
 } // namespace nextdumper::analysis
