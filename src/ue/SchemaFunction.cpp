@@ -1404,7 +1404,16 @@ namespace nextdumper::ue::schema_probe
             if (owner && std::find(owners.begin(), owners.end(), *owner) == owners.end())
                 owners.push_back(*owner);
         }
-        std::vector<int32_t> childrenCandidates;
+        // 链中出现的非函数 UField 节点数
+        // Children 链在 UProperty 布局下同时串起属性与函数
+        // 而 DestructorLink / PostConstructLink 只串函数
+        struct ChildrenCandidate
+        {
+            int32_t offset = -1;
+            size_t nonFunctionNodes = 0;
+            size_t nodes = 0;
+        };
+        std::vector<ChildrenCandidate> childrenCandidates;
         size_t rejectedPointers = 0;
         const size_t objectExtent = static_cast<size_t>(std::max({schema.uobject.classPointer + static_cast<int32_t>(sizeof(uintptr_t)),
                                                                   schema.uobject.outer + static_cast<int32_t>(sizeof(uintptr_t)),
@@ -1414,6 +1423,8 @@ namespace nextdumper::ue::schema_probe
         {
             size_t matches = 0;
             bool mismatch = false;
+            size_t candidateNonFunction = 0;
+            size_t candidateNodes = 0;
             for (const uintptr_t owner : owners)
             {
                 uintptr_t child = 0;
@@ -1455,6 +1466,8 @@ namespace nextdumper::ue::schema_probe
                     break;
                 }
                 bool sawFunction = false;
+                size_t ownerNonFunction = 0;
+                size_t ownerNodes = 0;
                 std::unordered_set<uintptr_t> visited;
                 for (uintptr_t node = child; node != 0;)
                 {
@@ -1484,6 +1497,9 @@ namespace nextdumper::ue::schema_probe
                         break;
                     }
                     sawFunction = sawFunction || IsFunctionFieldKind(field->kind);
+                    if (!IsFunctionFieldKind(field->kind))
+                        ++ownerNonFunction;
+                    ++ownerNodes;
                     node = field->nextAddress;
                 }
                 if (mismatch || !sawFunction)
@@ -1491,22 +1507,43 @@ namespace nextdumper::ue::schema_probe
                     mismatch = true;
                     break;
                 }
+                candidateNonFunction += ownerNonFunction;
+                candidateNodes += ownerNodes;
                 ++matches;
             }
             if (!mismatch && matches >= 2)
-                childrenCandidates.push_back(offset);
+                childrenCandidates.push_back({offset, candidateNonFunction, candidateNodes});
         }
         report.evidence.push_back("UFunction children validation owners=" + std::to_string(owners.size()) +
                                   " candidates=" + std::to_string(childrenCandidates.size()) +
                                   " rejected_pointers=" + std::to_string(rejectedPointers));
+        for (const ChildrenCandidate &candidate : childrenCandidates)
+        {
+            report.evidence.push_back("UFunction children candidate offset=" + std::to_string(candidate.offset) +
+                                      " nodes=" + std::to_string(candidate.nodes) +
+                                      " non_function_nodes=" + std::to_string(candidate.nonFunctionNodes));
+        }
         report.rejectedCandidates += rejectedPointers;
+
+        if (!schema.features.useFProperty)
+        {
+            std::vector<ChildrenCandidate> withProperties;
+            for (const ChildrenCandidate &candidate : childrenCandidates)
+            {
+                if (candidate.nonFunctionNodes > 0)
+                    withProperties.push_back(candidate);
+            }
+            if (!withProperties.empty())
+                childrenCandidates = std::move(withProperties);
+        }
+
         if (childrenCandidates.size() != 1)
         {
             report.ambiguous = childrenCandidates.size() > 1;
             report.failures.push_back("UStruct::Children requires one candidate validated by multiple class-owned function chains");
             return false;
         }
-        schema.ustruct.children = childrenCandidates.front();
+        schema.ustruct.children = childrenCandidates.front().offset;
 
         schema.validation.functions = true;
         report.evidence.push_back("resolved UField::Next and UStruct::Children for UFunction reflection; next=" +
