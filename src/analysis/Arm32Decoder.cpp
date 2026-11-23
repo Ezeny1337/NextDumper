@@ -529,83 +529,131 @@ namespace nextdumper::analysis
             static uintptr_t ThumbPc(uintptr_t address) { return address + 4; }
 
             // T16 依据编码高位的格式编号分派，判定顺序由格式本身决定
+            // 16 位 Thumb 按首半字高 4 位分组
             static bool Decode16(uint16_t half, uintptr_t address, Instruction &out)
             {
-                const uint32_t top3 = half >> 13;
-
-                // 格式 1：移位立即数与加减寄存器
-                if (top3 == 0x0u)
+                switch (half >> 12)
+                {
+                case 0x0u:
+                case 0x1u: // 移位立即数与加减寄存器
                     return Decode16ShiftAdd(half, out);
-                // 格式 2/3：立即数运算、数据处理寄存器、特殊寄存器与分支交换
-                if (top3 == 0x1u || top3 == 0x2u)
-                    return Decode16DataProcessing(half, out);
-                // 格式 4/5：PC 相对字面量与寄存器偏移访存
-                if (top3 == 0x4u)
+                case 0x2u:
+                case 0x3u: // MOV/CMP/ADD/SUB 立即数
+                    return Decode16ImmediateDataProcessing(half, out);
+                case 0x4u: // 数据处理寄存器与特殊寄存器，0x4800 起是 PC 相对字面量
+                    if ((half & 0x0800u) == 0)
+                        return Decode16DataProcessing(half, out);
                     return Decode16LiteralAndRegisterTransfer(half, address, out);
-                // 格式 6/7/8：立即数偏移访存与半字访存
-                if (top3 == 0x5u || top3 == 0x6u || top3 == 0x7u)
+                case 0x5u: // 寄存器偏移访存
+                    return Decode16LiteralAndRegisterTransfer(half, address, out);
+                case 0x6u:
+                case 0x7u: // 立即数偏移的字与字节访存
+                case 0x8u: // 立即数偏移的半字访存
                     return Decode16ImmediateTransfer(half, out);
-
-                // 0b100：SP 相对访存；0b101：ADR 与 SP 加立即数
-                const uint32_t top4 = half >> 12;
-                if (top4 == 0x9u)
-                {
-                    const bool load = (half & 0x0800u) != 0;
-                    const int dest = static_cast<int>((half >> 8) & 0x7u);
-                    out.Kind = load ? InstructionKind::Load : InstructionKind::Store;
-                    out.Base = 13;
-                    out.Dest = load ? dest : -1;
-                    out.Offset = static_cast<int64_t>(half & 0xFFu) * 4u;
-                    out.AccessWidth = 4;
-                    return true;
-                }
-                if (top4 == 0xAu)
-                {
-                    const bool spBased = (half & 0x0800u) != 0;
-                    const int dest = static_cast<int>((half >> 8) & 0x7u);
-                    const uint32_t offset = (half & 0xFFu) * 4u;
-                    if (spBased)
-                    {
-                        out.Kind = InstructionKind::AddImmediate;
-                        out.Dest = dest;
-                        out.Base = 13;
-                        out.Value = offset;
-                    }
-                    else
-                    {
-                        out.Kind = InstructionKind::SetBase;
-                        out.Dest = dest;
-                        out.Value = (ThumbPc(address) & ~uintptr_t{3}) + offset;
-                        out.bExactAddress = true;
-                    }
-                    return true;
-                }
-                if (top4 == 0xBu)
+                case 0x9u: // SP 相对访存
+                    return Decode16StackRelative(half, out);
+                case 0xAu: // ADR 与 SP 加立即数
+                    return Decode16Adr(half, address, out);
+                case 0xBu: // 压栈弹栈、扩展与条件跳转
                     return Decode16Misc(half, address, out);
-                if (top4 == 0xCu)
+                case 0xCu: // 块传送
                     return Decode16BlockTransfer(half, out);
-                if (top4 == 0xDu)
+                case 0xDu: // 条件分支
+                    return Decode16ConditionalBranch(half, address, out);
+                default: // 无条件分支
+                    return Decode16UnconditionalBranch(half, address, out);
+                }
+            }
+
+            // MOV/CMP/ADD/SUB 立即数：操作码在 bit12..11，目标与源同为 bit10..8
+            static bool Decode16ImmediateDataProcessing(uint16_t half, Instruction &out)
+            {
+                const uint32_t opcode = (half >> 11) & 0x3u;
+                const int dest = static_cast<int>((half >> 8) & 0x7u);
+                const uint32_t immediate = half & 0xFFu;
+                switch (opcode)
                 {
-                    // 条件分支；0b1111 进入 SVC 等系统编码
-                    const uint32_t condition = (half >> 8) & 0xFu;
-                    if (condition < 0xEu)
-                    {
-                        out.Kind = InstructionKind::ConditionalBranch;
-                        out.Value = address + 4 + static_cast<uint32_t>(SignedBits(half & 0xFFu, 8) * 2);
-                        return true;
-                    }
+                case 0x0u:
+                    out.Kind = InstructionKind::MoveImmediate;
+                    out.Dest = dest;
+                    out.Value = immediate;
+                    return true;
+                case 0x2u:
+                    out.Kind = InstructionKind::AddImmediate;
+                    out.Dest = dest;
+                    out.Base = dest;
+                    out.Value = immediate;
+                    return true;
+                case 0x1u: // CMP 只写标志位
                     out.Kind = InstructionKind::Other;
-                    out.bClobbersAll = true;
+                    out.Dest = -1;
+                    return true;
+                default: // SUB 写目标寄存器，必须让既有角色失效
+                    out.Kind = InstructionKind::Other;
+                    out.Dest = dest;
                     return true;
                 }
-                // 0b11100：无条件分支
-                if (top3 == 0x7u && (half & 0x1000u) == 0)
+            }
+
+            // SP 相对访存：偏移以 4 字节为单位
+            static bool Decode16StackRelative(uint16_t half, Instruction &out)
+            {
+                const bool load = (half & 0x0800u) != 0;
+                const int dest = static_cast<int>((half >> 8) & 0x7u);
+                out.Kind = load ? InstructionKind::Load : InstructionKind::Store;
+                out.Base = 13;
+                out.Dest = load ? dest : -1;
+                out.Offset = static_cast<int64_t>(half & 0xFFu) * 4u;
+                out.AccessWidth = 4;
+                return true;
+            }
+
+            // ADR 取得 PC 相对地址；bit11 置位时是 SP 加立即数
+            static bool Decode16Adr(uint16_t half, uintptr_t address, Instruction &out)
+            {
+                const bool spBased = (half & 0x0800u) != 0;
+                const int dest = static_cast<int>((half >> 8) & 0x7u);
+                const uint32_t offset = (half & 0xFFu) * 4u;
+                if (spBased)
                 {
-                    out.Kind = InstructionKind::Branch;
-                    out.Value = address + 4 + static_cast<uint32_t>(SignedBits(half & 0x7FFu, 11) * 2);
+                    out.Kind = InstructionKind::AddImmediate;
+                    out.Dest = dest;
+                    out.Base = 13;
+                    out.Value = offset;
                     return true;
                 }
-                Unknown(out);
+                out.Kind = InstructionKind::SetBase;
+                out.Dest = dest;
+                out.Value = (ThumbPc(address) & ~uintptr_t{3}) + offset;
+                out.bExactAddress = true;
+                return true;
+            }
+
+            static bool Decode16ConditionalBranch(uint16_t half, uintptr_t address, Instruction &out)
+            {
+                const uint32_t condition = (half >> 8) & 0xFu;
+                if (condition < 0xEu)
+                {
+                    out.Kind = InstructionKind::ConditionalBranch;
+                    out.Value = address + 4 + static_cast<uint32_t>(SignedBits(half & 0xFFu, 8) * 2);
+                    return true;
+                }
+                // 0xDE00 起为 SVC 等系统编码
+                out.Kind = InstructionKind::Other;
+                out.bClobbersAll = true;
+                return true;
+            }
+
+            static bool Decode16UnconditionalBranch(uint16_t half, uintptr_t address, Instruction &out)
+            {
+                if ((half & 0x1000u) != 0)
+                {
+                    // 0xF000 起是 32 位编码前缀，不构成独立指令
+                    Unknown(out);
+                    return true;
+                }
+                out.Kind = InstructionKind::Branch;
+                out.Value = address + 4 + static_cast<uint32_t>(SignedBits(half & 0x7FFu, 11) * 2);
                 return true;
             }
 
@@ -864,84 +912,23 @@ namespace nextdumper::analysis
                 return true;
             }
 
+            // 32 位 Thumb 按首半字 bit12..11 分组
+            // 11101 块传送/双字访存/数据处理寄存器，11110 立即数处理与分支，11111 单寄存器访存
             static bool Decode32(uint16_t first, uint16_t second, uintptr_t address, Instruction &out)
             {
-                const uint32_t op1 = (first >> 11) & 0x3u;
-                const uint32_t op2 = (second >> 12) & 0x7u;
-
-                // 分支与杂项
-                if (op1 == 0x2u && (second & 0x8000u) != 0)
-                    return DecodeBranchMisc(first, second, address, out);
-
-                // 加载/存储单寄存器
-                if (op1 == 0x1u)
+                switch ((first >> 11) & 0x3u)
                 {
-                    const int base = static_cast<int>(first & 0xFu);
-                    switch (op2)
-                    {
-                    case 0x0u:
-                    {
-                        // 多寄存器传送
-                        const bool load = (second & 0x0010u) != 0;
-                        if (load)
-                        {
-                            out.Kind = InstructionKind::Other;
-                            out.bClobbersAll = true;
-                        }
-                        else
-                        {
-                            out.Kind = InstructionKind::Store;
-                            out.Base = base;
-                        }
-                        return true;
-                    }
-                    case 0x1u:
-                    {
-                        // 寄存器偏移
-                        const bool load = (second & 0x0400u) != 0;
-                        out.Kind = InstructionKind::Other;
-                        out.Dest = load ? static_cast<int>((second >> 12) & 0xFu) : -1;
-                        return true;
-                    }
-                    case 0x3u:
-                    {
-                        // LDR 字面量：PC 相对，按 4 字节对齐
-                        const bool load = (second & 0x0040u) != 0;
-                        if (!load)
-                        {
-                            out.Kind = InstructionKind::Other;
-                            out.Dest = -1;
-                            return true;
-                        }
-                        out.Kind = InstructionKind::LoadLiteral;
-                        out.Dest = static_cast<int>((second >> 12) & 0xFu);
-                        out.Value = (ThumbPc(address) & ~uintptr_t{3}) + (second & 0xFFFu);
-                        out.bExactAddress = true;
-                        out.AccessWidth = 4;
-                        return true;
-                    }
-                    default:
-                    {
-                        // 12 位立即数偏移的字/字节访存
-                        const bool load = (second & 0x0100u) != 0;
-                        const bool byteAccess = (second & 0x0040u) != 0;
-                        out.Kind = load ? InstructionKind::Load : InstructionKind::Store;
-                        out.Base = base;
-                        out.Dest = load ? static_cast<int>((second >> 12) & 0xFu) : -1;
-                        out.Offset = static_cast<int64_t>(second & 0xFFFu);
-                        out.AccessWidth = byteAccess ? 1 : 4;
-                        return true;
-                    }
-                    }
+                case 0x1u:
+                    return Decode32RegisterGroup(first, second, out);
+                case 0x2u:
+                    if ((second & 0x8000u) != 0)
+                        return DecodeBranchMisc(first, second, address, out);
+                    if ((first & 0x0200u) == 0)
+                        return Decode32ImmediateGroup(first, second, out);
+                    return Decode32PlainImmediateGroup(first, second, out);
+                default:
+                    return Decode32SingleTransfer(first, second, address, out);
                 }
-
-                // 数据处理（寄存器与立即数）
-                if (op1 == 0x0u)
-                    return DecodeDataProcessing32(first, second, out);
-
-                // 协处理器与未分配空间
-                Unknown(out);
-                return true;
             }
 
             // 32 位分支编码：S/J2/J1/imm10/imm11 组合成 25 位有符号位移
@@ -965,111 +952,247 @@ namespace nextdumper::analysis
                 return true;
             }
 
+            // 分支与杂项控制：第二个半字 bit15..12 决定具体编码，
+            // 0xC 为 BLX 立即数，0xB 为 B.W，0xF 为 BL，0xA 为条件分支
             static bool DecodeBranchMisc(uint16_t first, uint16_t second, uintptr_t address, Instruction &out)
             {
-                // 条件分支 CBZ / CBNZ
-                const uint32_t op = (second >> 12) & 0x7u;
-                if (op == 0x1u || op == 0x3u)
-                {
-                    // imm32 = i:imm5:0
-                    const uint32_t imm = (((second >> 9) & 0x1u) << 6) | (((second >> 3) & 0x1Fu) << 1);
-                    out.Kind = InstructionKind::ConditionalBranch;
-                    out.Base = static_cast<int>(first & 0xFu);
-                    out.Value = address + 4 + imm;
-                    return true;
-                }
-                // BLX 立即数：单条 32 位编码，imm32 = S:J2:J1:imm10:imm11:0
-                if (op == 0x5u)
+                const uint32_t opcode = (second >> 12) & 0xFu;
+                if (opcode == 0xBu)
+                    return EmitBranchImmediate(first, second, address, InstructionKind::Branch, false, out);
+                if (opcode == 0xFu)
+                    return EmitBranchImmediate(first, second, address, InstructionKind::Call, false, out);
+                if (opcode == 0xCu)
                     return EmitBranchImmediate(first, second, address, InstructionKind::Call, true, out);
-                if (op == 0x6u)
+                if ((opcode & 0xEu) == 0xAu)
                 {
-                    // MSR / MRS 与提示指令不改变通用寄存器
-                    out.Kind = InstructionKind::Other;
-                    out.Dest = -1;
+                    // 条件分支的条件码在首个半字 bit9..6
+                    out.Kind = InstructionKind::ConditionalBranch;
+                    out.Value = address + 4;
+                    out.bConditional = true;
                     return true;
                 }
-                if (op == 0x7u)
+                // MSR/MRS 与提示指令不改变通用寄存器数据流
+                out.Kind = InstructionKind::Other;
+                out.Dest = -1;
+                return true;
+            }
+
+            // Thumb 12 位立即数展开：imm12 = i:imm3:imm8
+            static uint32_t ExpandThumbImmediate(uint32_t imm12)
+            {
+                if ((imm12 & 0xC00u) == 0)
+                {
+                    const uint32_t imm8 = imm12 & 0xFFu;
+                    switch ((imm12 >> 8) & 0x3u)
+                    {
+                    case 0x0u:
+                        return imm8;
+                    case 0x1u:
+                        return imm8 << 16;
+                    case 0x2u:
+                        return imm8 << 24;
+                    default:
+                        return imm8 * 0x01010101u;
+                    }
+                }
+                const uint32_t unrotated = 0x80u | (imm12 & 0x7Fu);
+                const uint32_t rotation = (imm12 >> 7) & 0x1Fu;
+                if (rotation == 0)
+                    return unrotated;
+                return (unrotated >> rotation) | (unrotated << (32u - rotation));
+            }
+
+            // 数据处理寄存器的移位量由 imm3:imm2 组成
+            static uint32_t ThumbShiftAmount(uint16_t second)
+            {
+                return (((second >> 12) & 0x7u) << 2) | ((second >> 6) & 0x3u);
+            }
+
+            // 块传送与双字访存会写回多个寄存器，无法静态跟踪其数据流
+            static bool Decode32RegisterGroup(uint16_t first, uint16_t second, Instruction &out)
+            {
+                const uint32_t group = (first >> 7) & 0x7u;
+                if (group == 0x1u || group == 0x3u)
+                {
+                    out.Kind = InstructionKind::Other;
+                    out.bClobbersAll = true;
+                    return true;
+                }
+                if (group < 0x4u)
                 {
                     Unknown(out);
                     return true;
                 }
-                // B / BL 立即数
-                return EmitBranchImmediate(first, second, address,
-                                           (second & 0x1000u) != 0 ? InstructionKind::Call : InstructionKind::Branch,
-                                           false, out);
-            }
 
-            static bool DecodeDataProcessing32(uint16_t first, uint16_t second, Instruction &out)
-            {
-                const uint32_t dest = (second >> 8) & 0xFu;
-                const uint32_t firstSource = first & 0xFu;
-                const int destRegister = static_cast<int>(dest);
-                const int baseRegister = static_cast<int>(firstSource);
-
-                // MOVW / MOVT：imm16 由四个不连续字段组成
-                const uint32_t movForm = first & 0xFB70u;
-                if (movForm == 0xF240u)
-                {
-                    const uint32_t immediate = (((first >> 10) & 0x1u) << 11) | (((second >> 12) & 0x7u) << 8) |
-                                               (((first >> 12) & 0x7u) << 4) | (second & 0xFFu);
-                    out.Kind = InstructionKind::MoveImmediate;
-                    out.Dest = destRegister;
-                    out.Value = immediate;
-                    out.ValueMask = 0xFFFFu;
-                    // MOVT 依赖同寄存器的低位半字，由分析层按组合写入处理
-                    out.bComposes = (first & 0x0080u) != 0;
-                    return true;
-                }
-
-                const bool immediateForm = (first & 0x8000u) == 0 && (second & 0x8000u) == 0 &&
-                                           (first & 0x2000u) == 0;
-                if (!immediateForm)
-                {
-                    // 寄存器形式的数据处理与移位：目标写入可用，但不参与地址合成
-                    out.Kind = InstructionKind::Other;
-                    out.Dest = destRegister;
-                    (void)baseRegister;
-                    return true;
-                }
-
-                // op 位于 first 的 bit 8..5；i/imm3/imm8 组成 12 位立即数
                 const uint32_t opcode = (first >> 5) & 0xFu;
-                const uint32_t imm8 = (second & 0xFFu) | (((first >> 12) & 0x7u) << 8);
-                const uint32_t imm12 = (((first >> 10) & 0x1u) << 11) | imm8;
-
-                if (opcode == 0x0u) // AND
+                const int base = static_cast<int>(first & 0xFu);
+                const int dest = static_cast<int>((second >> 8) & 0xFu);
+                const int source = static_cast<int>(second & 0xFu);
+                const ShiftKind type = ArmShiftKind((second >> 4) & 0x3u);
+                const uint32_t amount = ThumbShiftAmount(second);
+                if (opcode == 0x2u && base == kArm32ProgramCounter)
                 {
-                    out.Kind = InstructionKind::AndImmediate;
-                    out.Dest = destRegister;
-                    out.Base = baseRegister;
-                    out.Mask = imm12;
+                    // MOV 寄存器：LSR 形式直接对应块索引的移位语义
+                    if (type == ShiftKind::Lsr)
+                    {
+                        out.Kind = InstructionKind::LogicalShiftRight;
+                        out.Dest = dest;
+                        out.Base = source;
+                        out.Shift = static_cast<uint8_t>(amount == 0 ? 32 : amount);
+                        return true;
+                    }
+                    out.Kind = InstructionKind::MoveRegister;
+                    out.Dest = dest;
+                    out.Base = source;
+                    if (type == ShiftKind::Lsl)
+                    {
+                        out.Shift = static_cast<uint8_t>(amount);
+                        out.ShiftType = ShiftKind::Lsl;
+                    }
                     return true;
                 }
-                if (opcode == 0x8u) // ADD
+                if (opcode == 0x8u)
                 {
-                    out.Kind = InstructionKind::AddImmediate;
-                    out.Dest = destRegister;
-                    out.Base = baseRegister;
-                    out.Value = imm12;
-                    return true;
-                }
-                if (opcode == 0x2u) // LSR
-                {
-                    out.Kind = InstructionKind::LogicalShiftRight;
-                    out.Dest = destRegister;
-                    out.Base = baseRegister;
-                    out.Shift = static_cast<uint8_t>(imm12 == 0 ? 32 : (imm12 > 31 ? 31 : imm12));
-                    return true;
-                }
-                if (opcode == 0xDu) // MOV 立即数
-                {
-                    out.Kind = InstructionKind::MoveImmediate;
-                    out.Dest = destRegister;
-                    out.Value = imm12;
+                    out.Kind = InstructionKind::AddShiftedRegister;
+                    out.Dest = dest == kArm32ProgramCounter ? -1 : dest;
+                    out.Base = base;
+                    out.Source = source;
+                    out.ShiftType = type;
+                    out.Shift = static_cast<uint8_t>(amount);
+                    out.Value = 0;
                     return true;
                 }
                 out.Kind = InstructionKind::Other;
-                out.Dest = destRegister;
+                out.Dest = dest == kArm32ProgramCounter ? -1 : dest;
+                return true;
+            }
+
+            // 数据处理立即数：AND/ADD/SUB/MOV 共用 12 位展开立即数
+            static bool Decode32ImmediateGroup(uint16_t first, uint16_t second, Instruction &out)
+            {
+                const uint32_t opcode = (first >> 5) & 0xFu;
+                const int dest = static_cast<int>((second >> 8) & 0xFu);
+                const int base = static_cast<int>(first & 0xFu);
+                const uint32_t imm12 = (((first >> 10) & 0x1u) << 11) | (((second >> 12) & 0x7u) << 8) |
+                                       (second & 0xFFu);
+                const uint32_t value = ExpandThumbImmediate(imm12);
+                // Rd 为 PC 时这些编码是 CMP/CMN/TST/TEQ，只写标志位
+                if (dest == kArm32ProgramCounter)
+                {
+                    out.Kind = InstructionKind::Other;
+                    out.Dest = -1;
+                    return true;
+                }
+                switch (opcode)
+                {
+                case 0x0u:
+                    out.Kind = InstructionKind::AndImmediate;
+                    out.Dest = dest;
+                    out.Base = base;
+                    out.Mask = value;
+                    return true;
+                case 0x8u:
+                    out.Kind = InstructionKind::AddImmediate;
+                    out.Dest = dest;
+                    out.Base = base;
+                    out.Value = value;
+                    return true;
+                case 0x2u:
+                    if (base == kArm32ProgramCounter)
+                    {
+                        out.Kind = InstructionKind::MoveImmediate;
+                        out.Dest = dest;
+                        out.Value = value;
+                        return true;
+                    }
+                    break;
+                default:
+                    break;
+                }
+                // 其余运算写 Rd；Rd 为 PC 时不跟踪
+                out.Kind = InstructionKind::Other;
+                out.Dest = dest == kArm32ProgramCounter ? -1 : dest;
+                return true;
+            }
+
+            // 二进制立即数：MOVW/MOVT 与位域操作，操作码在 bit8..4
+            static bool Decode32PlainImmediateGroup(uint16_t first, uint16_t second, Instruction &out)
+            {
+                const uint32_t opcode = (first >> 4) & 0x1Fu;
+                const int dest = static_cast<int>((second >> 8) & 0xFu);
+                const int base = static_cast<int>(first & 0xFu);
+                switch (opcode)
+                {
+                case 0x04u: // MOVW
+                case 0x0Cu: // MOVT
+                {
+                    // imm16 = imm4:i:imm3:imm8
+                    const uint32_t immediate = (((first & 0xFu) << 12) | (((first >> 10) & 0x1u) << 11) |
+                                                (((second >> 12) & 0x7u) << 8) | (second & 0xFFu));
+                    out.Kind = InstructionKind::MoveImmediate;
+                    out.Dest = dest;
+                    out.Value = immediate;
+                    out.ValueMask = 0xFFFFu;
+                    out.bComposes = opcode == 0x0Cu;
+                    return true;
+                }
+                case 0x00u: // ADD 立即数
+                    out.Kind = InstructionKind::AddImmediate;
+                    out.Dest = dest;
+                    out.Base = base;
+                    out.Value = (((first >> 10) & 0x1u) << 11) | (((second >> 12) & 0x7u) << 8) |
+                                (second & 0xFFu);
+                    return true;
+                case 0x1Cu: // UBFX：取块索引的位域抽取
+                    out.Kind = InstructionKind::BitfieldExtract;
+                    out.Dest = dest;
+                    out.Base = base;
+                    out.Shift = static_cast<uint8_t>(ThumbShiftAmount(second));
+                    out.BitWidth = static_cast<uint8_t>((second & 0x1Fu) + 1u);
+                    return true;
+                default:
+                    break;
+                }
+                out.Kind = InstructionKind::Other;
+                out.Dest = dest == kArm32ProgramCounter ? -1 : dest;
+                return true;
+            }
+
+            // 单寄存器访存：bit6..5 为宽度，bit4 为加载位
+            static bool Decode32SingleTransfer(uint16_t first, uint16_t second, uintptr_t address,
+                                               Instruction &out)
+            {
+                if ((first & 0xFF00u) != 0xF800u)
+                {
+                    Unknown(out);
+                    return true;
+                }
+                const int base = static_cast<int>(first & 0xFu);
+                const int dest = static_cast<int>((second >> 12) & 0xFu);
+                const uint32_t size = (first >> 5) & 0x3u;
+                const bool load = (first & 0x0010u) != 0;
+                const uint32_t immediate = second & 0xFFFu;
+                if (load && base == kArm32ProgramCounter)
+                {
+                    out.Kind = InstructionKind::LoadLiteral;
+                    out.Dest = dest;
+                    out.Value = (ThumbPc(address) & ~uintptr_t{3}) + immediate;
+                    out.bExactAddress = true;
+                    out.AccessWidth = 4;
+                    return true;
+                }
+                if (load && dest == kArm32ProgramCounter)
+                {
+                    // 目标为 PC 的字节/半字加载属于预取提示，不写通用寄存器
+                    out.Kind = InstructionKind::Other;
+                    out.Dest = -1;
+                    return true;
+                }
+                out.Kind = load ? InstructionKind::Load : InstructionKind::Store;
+                out.Base = base;
+                out.Dest = load ? dest : -1;
+                out.Offset = static_cast<int64_t>(immediate);
+                out.AccessWidth = size == 0x0u ? 1 : (size == 0x1u ? 2 : 4);
                 return true;
             }
         };

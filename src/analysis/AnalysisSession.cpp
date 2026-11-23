@@ -372,6 +372,21 @@ namespace nextdumper::analysis
                 result.Diagnostics.push_back({DiagnosticSeverity::Warning, "ANALYSIS_CONTRACT_SCAN_FAILED",
                                               "reason=" + scan.Error});
             }
+            result.Diagnostics.push_back(
+                {result.NameStores.empty() || !result.Coverage.CodeScanComplete ? DiagnosticSeverity::Warning
+                                                                                : DiagnosticSeverity::Info,
+                 result.NameStores.empty() ? "ANALYSIS_CONTRACT_SCAN_EMPTY" : "ANALYSIS_CONTRACT_SCAN",
+                 "instructions=" + std::to_string(scan.Instructions) +
+                     " function_starts=" + std::to_string(scan.FunctionStarts) +
+                     " contracts=" + std::to_string(scan.Contracts.size()) +
+                     " skipped_prefix_bytes=" + std::to_string(scan.SkippedPrefixBytes) +
+                     " unreadable_segments=" + std::to_string(scan.UnreadableSegments) +
+                     " segments_without_function_start=" + std::to_string(scan.SegmentsWithoutFunctionStart) +
+                     " read_truncated_segments=" + std::to_string(scan.ReadTruncatedSegments) +
+                     " decode_truncated_segments=" + std::to_string(scan.DecodeTruncatedSegments) +
+                     " extent_truncated_segments=" + std::to_string(scan.ExtentTruncatedSegments) +
+                     " budget_exhausted=" + std::to_string(scan.BudgetExhausted) +
+                     " complete=" + std::to_string(result.Coverage.CodeScanComplete)});
             result.NameStores = scan.Contracts;
 
             NameValidationOptions validationOptions;
