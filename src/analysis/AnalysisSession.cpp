@@ -319,8 +319,8 @@ namespace nextdumper::analysis
         }
 
         bool objectContractsAmbiguous = false;
-        // 代码分析需要解码器与函数索引；缺失时只跳过代码证据，不影响数据阶段
-        if (decoder && functions.IsValid())
+        // 代码分析需要解码器与代码范围；函数索引只用于切分与角色重置
+        if (decoder && !codeRanges.Ranges.empty())
         {
             NameContractScanOptions options;
             const NameContractScanResult scan = ScanNameContracts(image, functions, codeRanges, options);
@@ -335,6 +335,7 @@ namespace nextdumper::analysis
                 {DiagnosticSeverity::Info, "ANALYSIS_CONTRACT_RECOGNITION",
                  "decoded_ranges=" + std::to_string(scan.DecodedRanges) +
                      " unknown_mode_ranges=" + std::to_string(scan.UnknownModeRanges) +
+                     " function_index_missing=" + std::to_string(scan.FunctionIndexMissing) +
                      " base_instructions=" + std::to_string(recognition.BaseInstructions) +
                      " block_slots=" + std::to_string(recognition.BlockSlots) +
                      " entry_addresses=" + std::to_string(recognition.EntryAddresses) +

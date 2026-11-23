@@ -66,6 +66,7 @@ namespace nextdumper::analysis
         uint64_t SkippedPrefixBytes = 0;
         size_t DecodedRanges = 0;
         size_t UnknownModeRanges = 0;
+        bool FunctionIndexMissing = false;
         size_t UnreadableSegments = 0;
         size_t SegmentsWithoutFunctionStart = 0;
         size_t ReadTruncatedSegments = 0;

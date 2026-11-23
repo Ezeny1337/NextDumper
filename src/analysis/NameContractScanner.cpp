@@ -81,6 +81,44 @@ namespace nextdumper::analysis
             return width >= 64 ? ~uint64_t{0} : (uint64_t{1} << width) - 1;
         }
 
+        // 无符号地址与有符号偏移相加，溢出即失败
+        bool AddOffsetU64(uint64_t base, int64_t offset, uint64_t &result)
+        {
+            if (offset >= 0)
+            {
+                const uint64_t value = static_cast<uint64_t>(offset);
+                if (base > UINTPTR_MAX - value)
+                    return false;
+                result = base + value;
+                return true;
+            }
+            const uint64_t value = static_cast<uint64_t>(-(offset + 1)) + 1;
+            if (base < value)
+                return false;
+            result = base - value;
+            return true;
+        }
+
+        // 按目标指针宽度读出一个指针值，避免在 64 位主机上把 4 字节槽读成 8 字节
+        bool ReadPointerSized(const MemoryView &memory, uintptr_t address, uint8_t width, uintptr_t &value)
+        {
+            if (width != 4 && width != 8)
+                return false;
+            if (width == 4)
+            {
+                uint32_t narrow = 0;
+                if (!memory.ReadBytes(address, &narrow, sizeof(narrow)).Ok())
+                    return false;
+                value = static_cast<uintptr_t>(narrow);
+                return true;
+            }
+            uint64_t wide = 0;
+            if (!memory.ReadBytes(address, &wide, sizeof(wide)).Ok())
+                return false;
+            value = static_cast<uintptr_t>(wide);
+            return true;
+        }
+
         bool SameChain(const NameStoreContract &left, const NameStoreContract &right)
         {
             if (left.Root != right.Root || left.Family != right.Family)
@@ -153,13 +191,14 @@ namespace nextdumper::analysis
 
                     auto startAt = std::lower_bound(starts.begin(), starts.end(), range.Start);
                     size_t startIndex = static_cast<size_t>(startAt - starts.begin());
-                    if (startIndex >= starts.size() || starts[startIndex] >= range.End)
-                    {
+                    const bool hasStart = startIndex < starts.size() && starts[startIndex] < range.End;
+                    if (!hasStart)
                         ++result.SegmentsWithoutFunctionStart;
-                        continue;
-                    }
 
-                    uintptr_t address = static_cast<uintptr_t>(std::max<uint64_t>(range.Start, starts[startIndex]));
+                    // 有函数入口时以它作为起点，否则从范围起点按当前模式解码
+                    uintptr_t address = hasStart
+                                            ? static_cast<uintptr_t>(std::max<uint64_t>(range.Start, starts[startIndex]))
+                                            : static_cast<uintptr_t>(range.Start);
                     if (stride > 1)
                         address &= ~static_cast<uintptr_t>(stride - 1);
                     const uintptr_t coveredStart = address;
@@ -631,6 +670,30 @@ namespace nextdumper::analysis
                         role.Kind = RoleKind::ArrayEntryPointer;
                         role.StringOffset = -1;
                         role.EntrySite = site;
+                        Assign(instruction.Dest, role);
+                        return;
+                    }
+                    if (base.Kind == RoleKind::Global && instruction.AccessWidth == pointerWidth_)
+                    {
+                        uint64_t slotAddress = 0;
+                        if (base.Global != 0 && AddOffsetU64(base.Global, instruction.Offset, slotAddress) &&
+                            slotAddress <= UINTPTR_MAX)
+                        {
+                            uintptr_t value = 0;
+                            if (ReadPointerSized(image_.Memory(), static_cast<uintptr_t>(slotAddress), pointerWidth_,
+                                                 value) &&
+                                value != 0 && image_.Module().IsReadable(value))
+                            {
+                                Role role;
+                                role.Kind = RoleKind::Global;
+                                role.Global = value;
+                                role.GlobalSite = site;
+                                role.TableLoadSite = site;
+                                Assign(instruction.Dest, role);
+                                return;
+                            }
+                        }
+                        Role role = base;
                         Assign(instruction.Dest, role);
                         return;
                     }
