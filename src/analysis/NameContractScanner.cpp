@@ -208,6 +208,8 @@ namespace nextdumper::analysis
                                             : static_cast<uintptr_t>(range.Start);
                     if (stride > 1)
                         address &= ~static_cast<uintptr_t>(stride - 1);
+                    if (address < range.Start)
+                        address = static_cast<uintptr_t>(range.Start);
                     const uintptr_t coveredStart = address;
                     result.SkippedPrefixBytes += address - range.Start;
                     ResetRoles();

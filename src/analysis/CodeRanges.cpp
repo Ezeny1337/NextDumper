@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <utility>
 
 namespace nextdumper::analysis
 {
@@ -282,7 +283,8 @@ namespace nextdumper::analysis
             // 索引表按函数地址升序排列，每一项的第一个字是函数起点的 PREL31
             // 第二个字是 unwind 描述符（compact 模型或 .ARM.extab 指针）
             // 因此终点只能取下一项的起点，最后一项取所在可执行段的末尾
-            std::vector<uint64_t> starts;
+            // 同时保留 Thumb 标记，供第二遍确定执行模式
+            std::vector<std::pair<uint64_t, bool>> starts;
             uint64_t previousStart = 0;
             for (uint64_t index = 0; index < entries; ++index)
             {
@@ -296,17 +298,21 @@ namespace nextdumper::analysis
                 uint64_t start = 0;
                 if (!Prel31Target(first, entryAddress, start))
                     continue;
+                // 最低位为 Thumb 标记：去掉后按 Thumb 解码，避免半字对齐错位
+                const bool thumbEntry = (start & 1u) != 0;
+                start &= ~uint64_t{1};
                 // 全零填充项经 PREL31 解析后落在索引表或段外地址上
                 if (!IsExecutableAddress(module, start) || start <= previousStart)
                     continue;
                 previousStart = start;
-                starts.push_back(start);
+                starts.push_back({start, thumbEntry});
             }
 
             for (size_t index = 0; index < starts.size(); ++index)
             {
-                const uint64_t start = starts[index];
-                uint64_t finish = index + 1 < starts.size() ? starts[index + 1] : ExecutableLimit(module, start);
+                const uint64_t start = starts[index].first;
+                const bool thumbEntry = starts[index].second;
+                uint64_t finish = index + 1 < starts.size() ? starts[index + 1].first : ExecutableLimit(module, start);
                 if (finish <= start)
                     continue;
 
@@ -315,9 +321,16 @@ namespace nextdumper::analysis
                 bool confident = true;
                 if (module.architecture == module::ModuleArchitecture::Arm32)
                 {
-                    const ModeProbe probe = ProbeMode(memory, start, finish);
-                    mode = probe.Mode;
-                    confident = probe.Confident;
+                    if (thumbEntry)
+                    {
+                        mode = CodeMode::Thumb;
+                    }
+                    else
+                    {
+                        const ModeProbe probe = ProbeMode(memory, start, finish);
+                        mode = probe.Mode;
+                        confident = probe.Confident;
+                    }
                 }
                 if (!confident)
                     ++set.UnknownModeRanges;
