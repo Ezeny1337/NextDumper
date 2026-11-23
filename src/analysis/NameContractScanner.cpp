@@ -145,16 +145,23 @@ namespace nextdumper::analysis
             NameContractScanResult Run()
             {
                 NameContractScanResult result;
-                if (!image_.IsValid() || !functions_.IsValid())
+                if (!image_.IsValid())
                 {
-                    result.Error = "image-or-function-index-invalid";
+                    result.Error = "image-invalid";
                     return result;
                 }
 
                 std::vector<uint64_t> starts;
-                if (!functions_.CopyStarts(starts, result.Error))
-                    return result;
-                std::sort(starts.begin(), starts.end());
+                if (functions_.IsValid())
+                {
+                    if (!functions_.CopyStarts(starts, result.Error))
+                        return result;
+                    std::sort(starts.begin(), starts.end());
+                }
+                else
+                {
+                    result.FunctionIndexMissing = true;
+                }
 
                 CodeWindow window(image_.Memory());
 
@@ -682,7 +689,7 @@ namespace nextdumper::analysis
                             uintptr_t value = 0;
                             if (ReadPointerSized(image_.Memory(), static_cast<uintptr_t>(slotAddress), pointerWidth_,
                                                  value) &&
-                                value != 0 && image_.Module().IsReadable(value))
+                                value != 0 && image_.Memory().IsReadable(value, pointerWidth_))
                             {
                                 Role role;
                                 role.Kind = RoleKind::Global;

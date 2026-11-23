@@ -418,6 +418,13 @@ namespace nextdumper::analysis
                 contractMessage += " complete=" + std::to_string(contract.Complete()) +
                                    " state=" + ContractStateName(contract.State) +
                                    " evidence_sites=" + std::to_string(contract.Evidence.size());
+                for (const EvidenceStep &step : contract.Evidence)
+                {
+                    if (step.Kind == EvidenceKind::GlobalBase)
+                        contractMessage += " global_site=" + common::Hex(step.Site);
+                    else if (step.Kind == EvidenceKind::UnresolvedRoot)
+                        contractMessage += " unresolved_at=" + common::Hex(step.Site);
+                }
                 result.Diagnostics.push_back({DiagnosticSeverity::Info, "ANALYSIS_CONTRACT", std::move(contractMessage)});
 
                 if (validation.Decoder)

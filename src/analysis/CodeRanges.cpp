@@ -313,11 +313,13 @@ namespace nextdumper::analysis
 
         if (set.Ranges.empty())
         {
+            const CodeMode fallbackMode =
+                module.architecture == module::ModuleArchitecture::Arm64 ? CodeMode::Arm64 : CodeMode::Unknown;
             for (const module::ModuleImage::Segment &segment : module.segments)
             {
                 if (!segment.executable || !segment.readable || segment.end <= segment.start)
                     continue;
-                AppendRange(set, segment.start, segment.end, CodeMode::Unknown, "executable-segment", false);
+                AppendRange(set, segment.start, segment.end, fallbackMode, "executable-segment", false);
             }
             if (set.Ranges.empty())
                 error = "no-executable-range";
