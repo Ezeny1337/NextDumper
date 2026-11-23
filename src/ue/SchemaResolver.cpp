@@ -20,10 +20,12 @@ namespace nextdumper::ue
                 return "super=" + std::to_string(s.ustruct.superStruct) + " size=" + std::to_string(s.ustruct.propertiesSizeOffset) +
                        " lwc=" + std::to_string(s.features.largeWorldCoordinates);
             case SchemaProbeStage::Field:
-                return "next=" + std::to_string(s.ufield.next) + " child_properties=" + std::to_string(s.ustruct.childProperties) +
+                return "next=" + std::to_string(s.ufield.next) + " children=" + std::to_string(s.ustruct.children) +
+                       " child_properties=" + std::to_string(s.ustruct.childProperties) +
                        " ffield_class=" + std::to_string(s.ffield.classPointer) + " ffield_owner=" + std::to_string(s.ffield.owner);
             case SchemaProbeStage::Property:
-                return "array_dim=" + std::to_string(s.property.arrayDim) + " element_size=" + std::to_string(s.property.elementSize) +
+                return "chain_offset=" + std::to_string(s.features.useFProperty ? s.ustruct.childProperties : s.ustruct.children) +
+                       " array_dim=" + std::to_string(s.property.arrayDim) + " element_size=" + std::to_string(s.property.elementSize) +
                        " flags=" + std::to_string(s.property.propertyFlags) + " offset=" + std::to_string(s.property.offsetInternal) +
                        " subtype_start=" + std::to_string(s.property.subtypeStart);
             case SchemaProbeStage::Function:

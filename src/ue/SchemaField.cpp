@@ -1,4 +1,5 @@
 #include "ProbeContext.hpp"
+#include "nextdumper/common/Hex.hpp"
 
 #include <array>
 
@@ -39,6 +40,10 @@ namespace nextdumper::ue::schema_probe
                                       *fieldName == "D" || *fieldName == "R"))
                     {
                         ++namedCandidates;
+                        report.evidence.push_back("UProperty Children bootstrap candidate owner=" +
+                                                  ::nextdumper::common::Hex(structure) +
+                                                  " offset=" + std::to_string(offset) +
+                                                  " head=" + ::nextdumper::common::Hex(field) + " name=" + *fieldName);
                         if (candidateNames.empty())
                             candidateNames = " offset=" + std::to_string(offset) + " name=" + *fieldName;
                         if (selectedOffset < 0)
