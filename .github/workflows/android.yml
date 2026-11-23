@@ -5,7 +5,7 @@ on:
     branches:
       - "**"
     tags:
-      - "**"
+      - "v*"
   pull_request:
   workflow_dispatch:
 
@@ -22,7 +22,6 @@ env:
   CMAKE_VERSION: 3.22.1
   CCACHE_COMPILERCHECK: content
   CCACHE_MAXSIZE: 512MiB
-  RELEASE_TAG: ${{ github.ref_type == 'branch' && format('ci-{0}', github.sha) || github.ref_name }}
 
 jobs:
   build:
@@ -166,9 +165,10 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.cache/ccache
-          key: ccache-v1-${{ runner.os }}-${{ runner.arch }}-ndk-${{ env.NDK_VERSION }}-cmake-${{ env.CMAKE_VERSION }}-${{ github.job }}-${{ matrix.abi }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: ccache-v1-${{ runner.os }}-${{ runner.arch }}-ndk-${{ env.NDK_VERSION }}-cmake-${{ env.CMAKE_VERSION }}-${{ github.job }}-${{ matrix.abi }}-${{ github.ref }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            ccache-v1-${{ runner.os }}-${{ runner.arch }}-ndk-${{ env.NDK_VERSION }}-cmake-${{ env.CMAKE_VERSION }}-${{ github.job }}-${{ matrix.abi }}-
+            ccache-v1-${{ runner.os }}-${{ runner.arch }}-ndk-${{ env.NDK_VERSION }}-cmake-${{ env.CMAKE_VERSION }}-${{ github.job }}-${{ matrix.abi }}-${{ github.ref }}-
+            ccache-v1-${{ runner.os }}-${{ runner.arch }}-ndk-${{ env.NDK_VERSION }}-cmake-${{ env.CMAKE_VERSION }}-${{ github.job }}-${{ matrix.abi }}-refs/heads/${{ github.event.repository.default_branch }}-
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
@@ -225,7 +225,11 @@ jobs:
           test -x "$RELEASE_BUILD_DIR/NextDumper"
           strip_tool="$(command -v llvm-strip)"
 
-          package_name="NextDumper-android-${ANDROID_ABI}-release-${RELEASE_TAG}"
+          version="$GITHUB_SHA"
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            version="$GITHUB_REF_NAME"
+          fi
+          package_name="NextDumper-android-${ANDROID_ABI}-release-${version}"
           archive_name="${package_name}.tar.gz"
           mkdir -p "dist/$package_name"
           install -m 0755 "$RELEASE_BUILD_DIR/NextDumper" "dist/$package_name/NextDumper"
@@ -246,7 +250,7 @@ jobs:
             sha256sum "$archive_name" > "${archive_name}.sha256"
           )
 
-      - name: Upload release
+      - name: Upload release artifact
         uses: actions/upload-artifact@v4
         with:
           name: android-release-${{ matrix.abi }}-${{ github.sha }}
@@ -258,9 +262,10 @@ jobs:
 
   release:
     name: Publish GitHub Release
+    if: github.event_name == 'push' && !github.event.deleted && startsWith(github.ref, 'refs/tags/v')
     needs: release-build
     concurrency:
-      group: android-publish-${{ github.ref_type == 'branch' && github.sha || github.ref }}
+      group: android-publish-${{ github.ref }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -281,22 +286,22 @@ jobs:
         run: |
           set -euo pipefail
 
-          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" dist/*.tar.gz dist/*.sha256 \
+          tag="$GITHUB_REF_NAME"
+          assets=()
+          for abi in arm64-v8a armeabi-v7a; do
+            archive="NextDumper-android-${abi}-release-${tag}.tar.gz"
+            (cd dist && sha256sum --check "$archive.sha256")
+            assets+=("dist/$archive" "dist/$archive.sha256")
+          done
+
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$tag" "${assets[@]}" \
               --repo "$GITHUB_REPOSITORY" \
               --clobber
-          elif [[ "$GITHUB_REF_TYPE" == branch ]]; then
-            gh release create "$RELEASE_TAG" dist/*.tar.gz dist/*.sha256 \
-              --repo "$GITHUB_REPOSITORY" \
-              --target "$GITHUB_SHA" \
-              --title "NextDumper CI ${GITHUB_SHA::12}" \
-              --notes "Automated Android build for commit $GITHUB_SHA." \
-              --prerelease \
-              --latest=false
           else
-            gh release create "$RELEASE_TAG" dist/*.tar.gz dist/*.sha256 \
+            gh release create "$tag" "${assets[@]}" \
               --repo "$GITHUB_REPOSITORY" \
-              --title "NextDumper $RELEASE_TAG" \
+              --title "NextDumper $tag" \
               --generate-notes \
               --verify-tag
           fi
