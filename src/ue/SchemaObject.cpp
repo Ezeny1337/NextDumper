@@ -723,12 +723,38 @@ namespace nextdumper::ue::schema_probe
             }
             const auto readObjectName = [&](uintptr_t object)
             { return ReadObjectName(memory_, binding_, schema, names, object); };
+            // 按对象自身记录的序号回读，地址一致才说明它确实是存储中的这个对象
+            const auto storedObject = [&](uintptr_t object) -> bool
+            {
+                const auto indexAddress = Add(object, schema.uobject.internalIndex);
+                if (!indexAddress)
+                    return false;
+                int32_t storedIndex = 0;
+                if (!memory_.Read(*indexAddress, storedIndex))
+                    return false;
+                if (storedIndex < 0 || storedIndex >= bootstrap_->objects->Count())
+                    return false;
+                return bootstrap_->objects->ReadObject(storedIndex).address == object;
+            };
+            const auto readClassPointer = [&](uintptr_t object) -> std::optional<uintptr_t>
+            {
+                const auto address = Add(object, schema.uobject.classPointer);
+                if (!address)
+                    return std::nullopt;
+                uintptr_t raw = 0;
+                if (!memory_.Read(*address, raw))
+                    return std::nullopt;
+                const uintptr_t value = binding_.decode.objectClass(raw, *address);
+                return value != 0 ? std::optional<uintptr_t>(value) : std::nullopt;
+            };
             struct OuterCandidateEvidence
             {
                 int32_t offset = -1;
                 size_t validObjects = 0;
                 size_t sampleHits = 0;
                 size_t nullHits = 0;
+                size_t storeHits = 0;
+                size_t classHits = 0;
             };
             std::vector<OuterCandidateEvidence> outerCandidates;
             const auto inspectOuterCandidate = [&](int32_t offset)
@@ -755,6 +781,13 @@ namespace nextdumper::ue::schema_probe
                     ++candidate.validObjects;
                     if (sampleObjects.contains(value))
                         ++candidate.sampleHits;
+                    if (storedObject(value))
+                    {
+                        ++candidate.storeHits;
+                        const auto targetClass = readClassPointer(value);
+                        if (targetClass && storedObject(*targetClass))
+                            ++candidate.classHits;
+                    }
                 }
                 return candidate;
             };
@@ -762,6 +795,10 @@ namespace nextdumper::ue::schema_probe
                 outerCandidates.push_back(inspectOuterCandidate(offset));
             const auto betterOuterEvidence = [](const OuterCandidateEvidence &left, const OuterCandidateEvidence &right)
             {
+                if (left.storeHits != right.storeHits)
+                    return left.storeHits > right.storeHits;
+                if (left.classHits != right.classHits)
+                    return left.classHits > right.classHits;
                 if (left.validObjects != right.validObjects)
                     return left.validObjects > right.validObjects;
                 return left.sampleHits > right.sampleHits;
@@ -773,7 +810,9 @@ namespace nextdumper::ue::schema_probe
                                           std::to_string(candidate.offset) + " valid_objects=" +
                                           std::to_string(candidate.validObjects) + " sampled_objects=" +
                                           std::to_string(candidate.sampleHits) + " null_objects=" +
-                                          std::to_string(candidate.nullHits));
+                                          std::to_string(candidate.nullHits) + " store_objects=" +
+                                          std::to_string(candidate.storeHits) + " class_objects=" +
+                                          std::to_string(candidate.classHits));
             }
             if (outerCandidates.empty() || outerCandidates.front().validObjects < 3)
             {
