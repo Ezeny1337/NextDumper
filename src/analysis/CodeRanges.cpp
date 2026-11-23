@@ -13,8 +13,6 @@ namespace nextdumper::analysis
         constexpr size_t kMaxProgramHeaders = 1024;
         constexpr uint64_t kMaxProgramHeaderOffset = 1024 * 1024;
         constexpr uint64_t kMaxExidxEntries = 4 * 1024 * 1024;
-        // ARM EHABI 的 EXIDX_CANTUNWIND 标志
-        constexpr uint32_t kExidxCantUnwind = 1;
 
         uint16_t ReadU16(const uint8_t *data)
         {
@@ -87,22 +85,6 @@ namespace nextdumper::analysis
             return true;
         }
 
-        // 读取下一条基址索引作为当前函数的终点；遇到不可读条目即停止
-        uint64_t NextEntryStart(const MemoryView &memory, uint64_t nextEntry, uintptr_t moduleEnd)
-        {
-            if (nextEntry > moduleEnd || moduleEnd - nextEntry < 4)
-                return 0;
-            uint32_t value = 0;
-            if (!memory.ReadBytes(static_cast<uintptr_t>(nextEntry), &value, sizeof(value)).Ok())
-                return 0;
-            if (value == kExidxCantUnwind)
-                return 0;
-            uint64_t target = 0;
-            if (!Prel31Target(value, nextEntry, target))
-                return 0;
-            return target;
-        }
-
         struct ModeProbe
         {
             CodeMode Mode = CodeMode::Unknown;
@@ -147,6 +129,32 @@ namespace nextdumper::analysis
             return probe;
         }
 
+        // 该地址是否落在可执行段内
+        // exidx 的填充项与损坏项会解析出段外地址
+        // 若直接当作函数起点会生成跨越整个模块的伪区间
+        bool IsExecutableAddress(const module::ModuleImage &module, uint64_t address)
+        {
+            for (const module::ModuleImage::Segment &segment : module.segments)
+            {
+                if (segment.executable && segment.end > segment.start && address >= segment.start &&
+                    address < segment.end)
+                    return true;
+            }
+            return false;
+        }
+
+        // 返回包含该地址的可执行段终点，用于约束区间上界
+        uint64_t ExecutableLimit(const module::ModuleImage &module, uint64_t address)
+        {
+            for (const module::ModuleImage::Segment &segment : module.segments)
+            {
+                if (segment.executable && segment.end > segment.start && address >= segment.start &&
+                    address < segment.end)
+                    return segment.end;
+            }
+            return 0;
+        }
+
         void AppendRange(CodeRangeSet &set, uint64_t start, uint64_t end, CodeMode mode, const char *source,
                          bool precise)
         {
@@ -173,10 +181,10 @@ namespace nextdumper::analysis
                 if (!merged.empty())
                 {
                     CodeRange &previous = merged.back();
-                    if (previous.End == range.Start && previous.Mode == range.Mode &&
-                        previous.Precise == range.Precise && previous.Source == range.Source)
+                    if (previous.Mode == range.Mode && previous.Precise == range.Precise &&
+                        previous.Source == range.Source && range.Start <= previous.End)
                     {
-                        previous.End = range.End;
+                        previous.End = std::max(previous.End, range.End);
                         continue;
                     }
                 }
@@ -271,30 +279,37 @@ namespace nextdumper::analysis
             }
             const uint64_t table = loadBias + exidxVaddr;
             const uint64_t entries = std::min<uint64_t>(exidxBytes / 8, kMaxExidxEntries);
+            // 索引表按函数地址升序排列，每一项的第一个字是函数起点的 PREL31
+            // 第二个字是 unwind 描述符（compact 模型或 .ARM.extab 指针）
+            // 因此终点只能取下一项的起点，最后一项取所在可执行段的末尾
+            std::vector<uint64_t> starts;
+            uint64_t previousStart = 0;
             for (uint64_t index = 0; index < entries; ++index)
             {
                 const uint64_t entryAddress = table + index * 8;
                 if (entryAddress > UINTPTR_MAX - 8)
                     break;
-                std::array<uint8_t, 8> raw{};
-                if (!memory.ReadBytes(static_cast<uintptr_t>(entryAddress), raw.data(), raw.size()).Ok())
+                uint32_t first = 0;
+                if (!memory.ReadBytes(static_cast<uintptr_t>(entryAddress), &first, sizeof(first)).Ok())
                     break;
-
-                const uint32_t first = ReadU32(raw.data());
-                const uint32_t second = ReadU32(raw.data() + 4);
-                if (first == kExidxCantUnwind)
-                    continue;
 
                 uint64_t start = 0;
                 if (!Prel31Target(first, entryAddress, start))
                     continue;
+                // 全零填充项经 PREL31 解析后落在索引表或段外地址上
+                if (!IsExecutableAddress(module, start) || start <= previousStart)
+                    continue;
+                previousStart = start;
+                starts.push_back(start);
+            }
 
-                // 每条索引都给出一个起始地址；没有可用 unwind 信息时以紧随其后的条目为终点
-                uint64_t finish = 0;
-                if (second != kExidxCantUnwind && (second & 0x1u) == 0)
-                    Prel31Target(second, entryAddress + 4, finish);
+            for (size_t index = 0; index < starts.size(); ++index)
+            {
+                const uint64_t start = starts[index];
+                uint64_t finish = index + 1 < starts.size() ? starts[index + 1] : ExecutableLimit(module, start);
                 if (finish <= start)
-                    finish = NextEntryStart(memory, entryAddress + 8, module.end);
+                    continue;
+
                 // 32 位 ARM 目标的执行模式需要单独判定；exidx 只提供边界
                 CodeMode mode = CodeMode::Arm64;
                 bool confident = true;

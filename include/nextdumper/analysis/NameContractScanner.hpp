@@ -22,6 +22,7 @@ namespace nextdumper::analysis
     struct NameContractRecognitionStats
     {
         uint64_t BaseInstructions = 0;
+        uint64_t LiteralSlots = 0;
         uint64_t BlockSlots = 0;
         uint64_t EntryAddresses = 0;
         uint64_t EntrySplitMismatches = 0;

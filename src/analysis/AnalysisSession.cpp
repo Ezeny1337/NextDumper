@@ -337,6 +337,7 @@ namespace nextdumper::analysis
                      " unknown_mode_ranges=" + std::to_string(scan.UnknownModeRanges) +
                      " function_index_missing=" + std::to_string(scan.FunctionIndexMissing) +
                      " base_instructions=" + std::to_string(recognition.BaseInstructions) +
+                     " literal_slots=" + std::to_string(recognition.LiteralSlots) +
                      " block_slots=" + std::to_string(recognition.BlockSlots) +
                      " entry_addresses=" + std::to_string(recognition.EntryAddresses) +
                      " entry_split_mismatches=" + std::to_string(recognition.EntrySplitMismatches) +

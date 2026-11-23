@@ -272,6 +272,7 @@ namespace nextdumper::analysis
             {
                 for (auto &role : roles_)
                     role = Role{};
+                pendingLowRegister_ = -1;
                 if (roles_.size() > 8)
                 {
                     for (size_t index = 0; index < 8; ++index)
@@ -289,7 +290,38 @@ namespace nextdumper::analysis
             void Assign(int reg, const Role &role)
             {
                 if (reg >= 0 && static_cast<size_t>(reg) < roles_.size())
+                {
+                    // 低半字在补齐前被其它写入覆盖时不再构成地址
+                    if (reg == pendingLowRegister_ && role.Kind == RoleKind::Input)
+                        pendingLowRegister_ = -1;
                     roles_[static_cast<size_t>(reg)] = role;
+                }
+            }
+
+            void ProcessMoveImmediate(const Instruction &instruction, uintptr_t site)
+            {
+                if (instruction.ValueMask == 0xFFFFu && instruction.Dest >= 0)
+                {
+                    if (!instruction.bComposes)
+                    {
+                        Assign(instruction.Dest, InputRole());
+                        pendingLowRegister_ = instruction.Dest;
+                        pendingLowHalf_ = static_cast<uint32_t>(instruction.Value);
+                        return;
+                    }
+                    if (instruction.Dest == pendingLowRegister_)
+                    {
+                        Role role;
+                        role.Kind = RoleKind::Global;
+                        role.Global = (static_cast<uintptr_t>(instruction.Value & 0xFFFFu) << 16) |
+                                      static_cast<uintptr_t>(pendingLowHalf_);
+                        role.GlobalSite = site;
+                        pendingLowRegister_ = -1;
+                        Assign(instruction.Dest, role);
+                        return;
+                    }
+                }
+                Assign(instruction.Dest, InputRole());
             }
 
             void UpdateArrayEntryAliases(const Role &entry)
@@ -301,10 +333,19 @@ namespace nextdumper::analysis
                 }
             }
 
+            // 槽中保存全局变量地址时返回该地址
+            bool ReadSlotPointer(uintptr_t slotAddress, uintptr_t &value) const
+            {
+                if (slotAddress == 0 || !ReadPointerSized(image_.Memory(), slotAddress, pointerWidth_, value))
+                    return false;
+                return value != 0 && image_.Memory().IsReadable(value, pointerWidth_);
+            }
+
             void ClearRoles()
             {
                 for (auto &role : roles_)
                     role = Role{};
+                pendingLowRegister_ = -1;
             }
 
             void ClearCallerSaved()
@@ -683,22 +724,17 @@ namespace nextdumper::analysis
                     if (base.Kind == RoleKind::Global && instruction.AccessWidth == pointerWidth_)
                     {
                         uint64_t slotAddress = 0;
+                        uintptr_t value = 0;
                         if (base.Global != 0 && AddOffsetU64(base.Global, instruction.Offset, slotAddress) &&
-                            slotAddress <= UINTPTR_MAX)
+                            slotAddress <= UINTPTR_MAX && ReadSlotPointer(static_cast<uintptr_t>(slotAddress), value))
                         {
-                            uintptr_t value = 0;
-                            if (ReadPointerSized(image_.Memory(), static_cast<uintptr_t>(slotAddress), pointerWidth_,
-                                                 value) &&
-                                value != 0 && image_.Memory().IsReadable(value, pointerWidth_))
-                            {
-                                Role role;
-                                role.Kind = RoleKind::Global;
-                                role.Global = value;
-                                role.GlobalSite = site;
-                                role.TableLoadSite = site;
-                                Assign(instruction.Dest, role);
-                                return;
-                            }
+                            Role role;
+                            role.Kind = RoleKind::Global;
+                            role.Global = value;
+                            role.GlobalSite = site;
+                            role.TableLoadSite = site;
+                            Assign(instruction.Dest, role);
+                            return;
                         }
                         Role role = base;
                         Assign(instruction.Dest, role);
@@ -720,8 +756,26 @@ namespace nextdumper::analysis
                     return;
                 }
                 case InstructionKind::LoadLiteral:
-                case InstructionKind::MoveImmediate:
+                {
+                    // 字面量槽的内容是全局变量或常量的地址。读出可读地址即可作为基址；
+                    // 常量槽读出的位型不是可读地址，按未知输入处理
+                    uintptr_t value = 0;
+                    if (instruction.Value != 0 && instruction.Value <= UINTPTR_MAX &&
+                        ReadSlotPointer(static_cast<uintptr_t>(instruction.Value), value))
+                    {
+                        ++recognition_.LiteralSlots;
+                        Role role;
+                        role.Kind = RoleKind::Global;
+                        role.Global = value;
+                        role.GlobalSite = site;
+                        Assign(instruction.Dest, role);
+                        return;
+                    }
                     Assign(instruction.Dest, InputRole());
+                    return;
+                }
+                case InstructionKind::MoveImmediate:
+                    ProcessMoveImmediate(instruction, site);
                     return;
                 case InstructionKind::MoveRegister:
                 case InstructionKind::SignExtend:
@@ -876,6 +930,9 @@ namespace nextdumper::analysis
             // 由模块指针宽度按范围设置，默认值只是 ARM64 的常见形态
             uint8_t pointerWidth_ = 8;
             uint8_t pointerShift_ = 3;
+            // MOVW 记录的待补齐低半字，MOVT 到达时合并为地址
+            int pendingLowRegister_ = -1;
+            uint32_t pendingLowHalf_ = 0;
             NameContractScanOptions options_;
             std::vector<Role> roles_;
             std::vector<NameStoreContract> contracts_;

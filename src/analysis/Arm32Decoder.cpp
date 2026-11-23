@@ -180,7 +180,7 @@ namespace nextdumper::analysis
                     return true;
                 }
                 if ((word & 0x0C000000u) == 0x04000000u)
-                    return DecodeSingleTransfer(word, out);
+                    return DecodeSingleTransfer(word, address, out);
                 if ((word & 0x0C000000u) == 0x00000000u)
                     return DecodeDataProcessingGroup(word, address, out);
                 Unknown(word, out);
@@ -189,7 +189,8 @@ namespace nextdumper::analysis
 
             // 单寄存器加载/存储（含 byte 变体）
             // 基址写回与后变址会影响后续链，因此只有静态立即数偏移的预变址形式才给出可用偏移
-            static bool DecodeSingleTransfer(uint32_t word, Instruction &out)
+            // PC 基址的加载读取指令流之外的字面量池，其槽地址可直接静态求出
+            static bool DecodeSingleTransfer(uint32_t word, uintptr_t address, Instruction &out)
             {
                 const bool registerOffset = (word & 0x02000000u) != 0;
                 const bool preIndexed = (word & 0x01000000u) != 0;
@@ -211,6 +212,17 @@ namespace nextdumper::analysis
                 int64_t offset = 0;
                 if (preIndexed)
                     offset = addOffset ? static_cast<int64_t>(magnitude) : -static_cast<int64_t>(magnitude);
+
+                if (load && base == kArm32ProgramCounter && preIndexed && !byteAccess)
+                {
+                    // PC 基址按指令地址 +8 取字面量槽，槽内容是全局变量或常量的地址
+                    out.Kind = InstructionKind::LoadLiteral;
+                    out.Dest = dest;
+                    out.Value = static_cast<uint64_t>(static_cast<int64_t>(address + 8) + offset);
+                    out.bExactAddress = true;
+                    out.AccessWidth = 4;
+                    return true;
+                }
 
                 out.Base = base;
                 out.Offset = offset;
@@ -351,16 +363,7 @@ namespace nextdumper::analysis
                     out.Shift = NormalizedArmShift((word >> 5) & 0x3u, (word >> 7) & 0x1Fu);
                     out.Value = 0;
                     return true;
-                case 0xCu: // ORR Rd, PC, Rm 读取字面量
-                    if (!immediate && base == kArm32ProgramCounter)
-                    {
-                        out.Kind = InstructionKind::LoadLiteral;
-                        out.Dest = dest;
-                        out.Value = address + 8;
-                        out.bExactAddress = true;
-                        out.AccessWidth = 4;
-                        return true;
-                    }
+                case 0xCu: // ORR 与 PC 组合不构成可静态求值的地址
                     break;
                 default:
                     break;
@@ -390,12 +393,11 @@ namespace nextdumper::analysis
                 const int source = static_cast<int>(word & 0xFu);
                 if (source == kArm32ProgramCounter)
                 {
-                    // MOV Rd, PC 读取字面量：PC 基准为指令地址 + 8
-                    out.Kind = InstructionKind::LoadLiteral;
+                    // MOV Rd, PC 把 PC 值写入寄存器，得到的是地址而不是内存加载
+                    out.Kind = InstructionKind::SetBase;
                     out.Dest = dest;
                     out.Value = address + 8;
                     out.bExactAddress = true;
-                    out.AccessWidth = 4;
                     return true;
                 }
 
