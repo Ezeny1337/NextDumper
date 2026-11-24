@@ -193,9 +193,7 @@ namespace nextdumper::generation
             !writeFile("sdk/Metadata.hpp", [&](std::ostream &stream)
                        { emitter.Metadata(stream, symbols); }) ||
             !writeFile("sdk/Functions.hpp", [&](std::ostream &stream)
-                       { emitter.FunctionsEntry(stream, functionNames); }) ||
-            !writeFile("reflection.json", [&](std::ostream &stream)
-                       { detail::ReflectionIndexJson(stream, context_, reflection_, partition, report); }))
+                       { emitter.FunctionsEntry(stream, functionNames); }))
             return result;
         for (const std::string_view path : detail::SdkEmitter::RemoteFiles())
         {
@@ -218,6 +216,9 @@ namespace nextdumper::generation
                            { emitter.FunctionShard(stream, symbols, shard, dependencies, report); }))
                 return result;
         }
+        if (!writeFile("reflection.json", [&](std::ostream &stream)
+                       { detail::ReflectionIndexJson(stream, context_, reflection_, partition, report); }))
+            return result;
         for (const ReflectionPartition::Shard &shard : partition.shards)
             if (!writeFile("reflection/" + shard.fileName, [&](std::ostream &stream)
                            { detail::ReflectionShardJson(stream, reflection_, shard, report, symbols); }))
