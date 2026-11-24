@@ -13,136 +13,6 @@ namespace nextdumper::ue::schema_probe
 {
     using ::nextdumper::common::Hex;
 
-    namespace
-    {
-        struct ChildrenChainEvidence
-        {
-            uintptr_t owner = 0;
-            std::vector<uintptr_t> nodes;
-            size_t nonFunctionNodes = 0;
-        };
-
-        struct ChildrenCandidate
-        {
-            int32_t offset = -1;
-            size_t nonFunctionNodes = 0;
-            size_t nodes = 0;
-            std::vector<ChildrenChainEvidence> chains;
-        };
-
-        std::string ChildrenNodeSamples(const std::vector<uintptr_t> &nodes)
-        {
-            constexpr size_t kEndSamples = 4;
-            std::string samples;
-            const size_t firstCount = std::min(kEndSamples, nodes.size());
-            const size_t lastStart = std::max(firstCount, nodes.size() - firstCount);
-            for (size_t index = 0; index < nodes.size(); ++index)
-            {
-                if (index >= firstCount && index < lastStart)
-                    continue;
-                if (!samples.empty())
-                    samples += ",";
-                samples += std::to_string(index) + ":" + Hex(nodes[index]);
-            }
-            return samples;
-        }
-
-        std::string ChildrenChainRelation(const ChildrenChainEvidence &left, const ChildrenChainEvidence &right)
-        {
-            if (left.nodes.empty() || right.nodes.empty())
-                return left.nodes.empty() ? (right.nodes.empty() ? "both-empty" : "left-empty") : "right-empty";
-            if (left.nodes.front() == right.nodes.front())
-                return left.nodes == right.nodes ? "same-chain" : "same-head-different-next";
-
-            const auto describeSuffix = [](const std::vector<uintptr_t> &chain,
-                                           const std::vector<uintptr_t> &suffix, const char *relation)
-            {
-                const auto at = std::find(chain.begin(), chain.end(), suffix.front());
-                if (at == chain.end())
-                    return std::string{};
-                if (!std::equal(at, chain.end(), suffix.begin(), suffix.end()))
-                    return std::string("head-present-different-next");
-                const size_t prefix = static_cast<size_t>(at - chain.begin());
-                return std::string(relation) + " prefix_nodes=" + std::to_string(prefix) +
-                       " predecessor=" + Hex(chain[prefix - 1]) + " successor=" + Hex(suffix.front());
-            };
-            const std::string leftSuffix = describeSuffix(right.nodes, left.nodes, "left-suffix");
-            if (!leftSuffix.empty())
-                return leftSuffix;
-            const std::string rightSuffix = describeSuffix(left.nodes, right.nodes, "right-suffix");
-            if (!rightSuffix.empty())
-                return rightSuffix;
-            const std::unordered_set<uintptr_t> leftNodes(left.nodes.begin(), left.nodes.end());
-            for (const uintptr_t node : right.nodes)
-            {
-                if (leftNodes.contains(node))
-                    return "shared-nodes common_node=" + Hex(node);
-            }
-            return "disjoint";
-        }
-
-        void ReportChildrenCandidates(const std::vector<ChildrenCandidate> &candidates, int32_t inputChildren,
-                                      SchemaResolutionReport &report)
-        {
-            constexpr size_t kMaxDetailedCandidates = 16;
-            constexpr size_t kMaxRelations = 64;
-            size_t detailedCandidates = 0;
-            for (size_t index = 0; index < candidates.size(); ++index)
-            {
-                const ChildrenCandidate &candidate = candidates[index];
-                report.evidence.push_back("UFunction children candidate offset=" + std::to_string(candidate.offset) +
-                                          " nodes=" + std::to_string(candidate.nodes) +
-                                          " non_function_nodes=" + std::to_string(candidate.nonFunctionNodes));
-                if (index >= kMaxDetailedCandidates && candidate.offset != inputChildren)
-                    continue;
-                ++detailedCandidates;
-                for (const ChildrenChainEvidence &chain : candidate.chains)
-                {
-                    const size_t sampled = std::min<size_t>(chain.nodes.size(), 8);
-                    report.evidence.push_back("UFunction children chain offset=" + std::to_string(candidate.offset) +
-                                              " owner=" + Hex(chain.owner) +
-                                              " head=" + Hex(chain.nodes.empty() ? 0 : chain.nodes.front()) +
-                                              " tail=" + Hex(chain.nodes.empty() ? 0 : chain.nodes.back()) +
-                                              " status=" + (chain.nodes.empty() ? "empty" : "complete") +
-                                              " nodes=" + std::to_string(chain.nodes.size()) +
-                                              " function_nodes=" + std::to_string(chain.nodes.size() - chain.nonFunctionNodes) +
-                                              " non_function_nodes=" + std::to_string(chain.nonFunctionNodes) +
-                                              " node_samples=[" + ChildrenNodeSamples(chain.nodes) + "]" +
-                                              " nodes_omitted=" + std::to_string(chain.nodes.size() - sampled));
-                }
-            }
-
-            size_t relations = 0;
-            size_t relationsOmitted = 0;
-            // 关系仅描述本次已遍历的地址序列，不用于选位，也不证明字段仍处于登记状态
-            for (size_t left = 0; left < candidates.size(); ++left)
-            {
-                for (size_t right = left + 1; right < candidates.size(); ++right)
-                {
-                    for (size_t owner = 0; owner < candidates[left].chains.size(); ++owner)
-                    {
-                        if (relations >= kMaxRelations)
-                        {
-                            ++relationsOmitted;
-                            continue;
-                        }
-                        const auto &leftChain = candidates[left].chains[owner];
-                        const auto &rightChain = candidates[right].chains[owner];
-                        report.evidence.push_back("UFunction children relation owner=" + Hex(leftChain.owner) +
-                                                  " left_offset=" + std::to_string(candidates[left].offset) +
-                                                  " right_offset=" + std::to_string(candidates[right].offset) +
-                                                  " relation=" + ChildrenChainRelation(leftChain, rightChain));
-                        ++relations;
-                    }
-                }
-            }
-            report.evidence.push_back("UFunction children diagnostics detailed_candidates=" + std::to_string(detailedCandidates) +
-                                      " candidate_details_omitted=" + std::to_string(candidates.size() - detailedCandidates) +
-                                      " relations=" + std::to_string(relations) +
-                                      " relations_omitted=" + std::to_string(relationsOmitted));
-        }
-    } // namespace
-
     bool SchemaProbeContext::ResolveFunctionSchema(EngineSchema &schema, SchemaResolutionReport &report) const
     {
         if (!bootstrap_ || !bootstrap_->IsValid())
@@ -314,14 +184,14 @@ namespace nextdumper::ue::schema_probe
                                   " parameter_source=" + (schema.features.useFProperty ? "child-properties" : "children") +
                                   " parameter_chain_offset=" + std::to_string(propertyChainOffset) +
                                   " next=" + std::to_string(schema.ufield.next));
-        for (FunctionSample &sample : functions)
+        const auto readParameterChain = [&](FunctionSample &sample)
         {
             const auto firstAddress = Add(sample.address, propertyChainOffset);
             uintptr_t current = 0;
             if (!firstAddress || !memory_.Read(*firstAddress, current))
             {
                 sample.parameterChainState = ProbeSampleState::Unreadable;
-                continue;
+                return;
             }
 
             if (current == 0)
@@ -329,16 +199,11 @@ namespace nextdumper::ue::schema_probe
                 sample.parameterChainValid = true;
                 sample.parameterChainState = ProbeSampleState::SemanticMatch;
                 sample.chainStatus = FieldChainStatus::Empty;
-                continue;
+                return;
             }
 
             const FieldChainResult chain = model.FieldsWithStatus(current, 256);
             sample.chainStatus = chain.status;
-            if (chain.status == FieldChainStatus::LimitExceeded)
-            {
-                report.sampleTruncated = true;
-                report.searchComplete = false;
-            }
             bool valid = chain.Complete();
             for (const FieldMetadata &field : chain.fields)
             {
@@ -373,6 +238,15 @@ namespace nextdumper::ue::schema_probe
                 sample.parameterChainState = ProbeSampleState::SemanticMatch;
             else if (sample.parameterChainState == ProbeSampleState::NotObserved)
                 sample.parameterChainState = ProbeSampleState::Unreadable;
+        };
+        for (FunctionSample &sample : functions)
+        {
+            readParameterChain(sample);
+            if (sample.chainStatus == FieldChainStatus::LimitExceeded)
+            {
+                report.sampleTruncated = true;
+                report.searchComplete = false;
+            }
         }
         size_t reportedInvalidChains = 0;
         for (const FunctionSample &sample : functions)
@@ -1551,6 +1425,11 @@ namespace nextdumper::ue::schema_probe
                 owners.push_back(*owner);
         }
         const uint64_t childrenReadFailuresBefore = memory_.Stats().failures;
+        struct ChildrenCandidate
+        {
+            int32_t offset = -1;
+            std::vector<uintptr_t> heads;
+        };
         std::vector<ChildrenCandidate> childrenCandidates;
         size_t rejectedPointers = 0;
         const size_t objectExtent = static_cast<size_t>(std::max({schema.uobject.classPointer + static_cast<int32_t>(sizeof(uintptr_t)),
@@ -1563,11 +1442,9 @@ namespace nextdumper::ue::schema_probe
             bool mismatch = false;
             ChildrenCandidate candidate;
             candidate.offset = offset;
-            candidate.chains.reserve(owners.size());
+            candidate.heads.reserve(owners.size());
             for (const uintptr_t owner : owners)
             {
-                ChildrenChainEvidence chain;
-                chain.owner = owner;
                 uintptr_t child = 0;
                 const auto address = Add(owner, offset);
                 if (!address || !memory_.IsReadable(*address, sizeof(child)))
@@ -1581,11 +1458,9 @@ namespace nextdumper::ue::schema_probe
                     mismatch = true;
                     break;
                 }
+                candidate.heads.push_back(child);
                 if (child == 0)
-                {
-                    candidate.chains.push_back(std::move(chain));
                     continue;
-                }
                 if (!session_.FindObject(schema, child) || !memory_.IsReadable(child, objectExtent))
                 {
                     ++rejectedPointers;
@@ -1639,9 +1514,6 @@ namespace nextdumper::ue::schema_probe
                         break;
                     }
                     sawFunction = sawFunction || IsFunctionFieldKind(field->kind);
-                    if (!IsFunctionFieldKind(field->kind))
-                        ++chain.nonFunctionNodes;
-                    chain.nodes.push_back(node);
                     node = field->nextAddress;
                 }
                 if (mismatch || !sawFunction)
@@ -1649,9 +1521,6 @@ namespace nextdumper::ue::schema_probe
                     mismatch = true;
                     break;
                 }
-                candidate.nonFunctionNodes += chain.nonFunctionNodes;
-                candidate.nodes += chain.nodes.size();
-                candidate.chains.push_back(std::move(chain));
                 ++matches;
             }
             if (!mismatch && matches >= 2)
@@ -1662,24 +1531,134 @@ namespace nextdumper::ue::schema_probe
                                   " rejected_pointers=" + std::to_string(rejectedPointers) +
                                   " index_limited=" + std::to_string(session_.indexLimited) +
                                   " read_failures=" + std::to_string(memory_.Stats().failures - childrenReadFailuresBefore));
-        ReportChildrenCandidates(childrenCandidates, inputChildrenOffset, report);
         report.rejectedCandidates += rejectedPointers;
 
-        const int32_t selectedChildren = childrenCandidates.size() == 1 ? childrenCandidates.front().offset : -1;
+        int32_t selectedChildren = childrenCandidates.size() == 1 ? childrenCandidates.front().offset : -1;
+        const char *selectionReason = childrenCandidates.size() == 1 ? "unique-chain-candidate" : "unresolved";
+
+        if (childrenCandidates.size() > 1 && !session_.indexLimited && !session_.indexReadFailed)
+        {
+            const auto hasStoredIdentity = [&](const SchemaProbeSession::ObjectSample &object)
+            {
+                const auto index = model.InternalIndex(object.address);
+                const auto cls = model.Class(object.address);
+                if (!index || *index != object.index || *index < 0 || *index >= bootstrap_->objects->Count() ||
+                    !cls || *cls != object.classAddress)
+                    return false;
+                const auto stored = bootstrap_->objects->ReadObject(*index);
+                return stored.IsValid() && stored.address == object.address;
+            };
+            std::vector<bool> usableOwners(owners.size(), false);
+            for (size_t ownerIndex = 0; ownerIndex < owners.size(); ++ownerIndex)
+            {
+                if (std::none_of(childrenCandidates.begin(), childrenCandidates.end(), [&](const auto &candidate)
+                                 { return candidate.heads[ownerIndex] == 0; }))
+                    continue;
+                const auto *owner = session_.FindObject(schema, owners[ownerIndex]);
+                if (!owner || (owner->flags & (kRFClassDefaultObject | kRFUnavailableDefinition)) != 0 ||
+                    !hasStoredIdentity(*owner))
+                    continue;
+                const auto kind = model.DefinitionKindForClass(owner->classAddress);
+                usableOwners[ownerIndex] = kind && *kind == DefinitionKind::Class;
+            }
+
+            const auto isUsableFunction = [&](const SchemaProbeSession::ObjectSample &object)
+            {
+                if (!hasStoredIdentity(object))
+                    return false;
+                const auto read = [&](int32_t offset, auto &value)
+                {
+                    const auto address = Add(object.address, offset);
+                    return address && memory_.Read(*address, value);
+                };
+                uint32_t flags = 0;
+                uint8_t numParams = 0;
+                uint16_t paramSize = 0;
+                uint16_t returnOffset = 0;
+                uintptr_t native = 0;
+                if (!read(schema.ufunction.functionFlags, flags) || !isPlausibleFunctionFlags(flags) ||
+                    (flags & kFUNCNative) == 0 || !read(schema.ufunction.nativeFunction, native) ||
+                    !isModuleAddress(native) || !memory_.IsExecutable(native, sizeof(uintptr_t)) ||
+                    !read(schema.ufunction.numParams, numParams) || !read(schema.ufunction.paramSize, paramSize) ||
+                    !read(schema.ufunction.returnValueOffset, returnOffset))
+                    return false;
+
+                FunctionSample sample;
+                sample.address = object.address;
+                readParameterChain(sample);
+                if (!sample.parameterChainValid)
+                    return false;
+                const auto summary = AnalyzeFunctionParameters(sample.properties, flags,
+                                                               schema.features.functionDefaultsContinueAfterInitializer);
+                const int32_t expectedReturn = summary.returnOffset < 0 ? kReturnFlagDefault : summary.returnOffset;
+                return summary.valid && numParams == summary.count && paramSize == summary.paramEnd &&
+                       returnOffset == expectedReturn;
+            };
+
+            // 已完成加载的引擎类存在有效原生函数定义时，其 Children 不能为空
+            std::vector<uintptr_t> functionWitnesses(owners.size(), 0);
+            size_t witnessesNeeded = static_cast<size_t>(std::count(usableOwners.begin(), usableOwners.end(), true));
+            for (const auto &object : session_.Objects(schema))
+            {
+                if (witnessesNeeded == 0)
+                    break;
+                if (!IsFunctionFieldKind(FieldKindFromRuntimeName(object.className, false)) ||
+                    (object.flags & (kRFClassDefaultObject | kRFUnavailableDefinition)) != 0)
+                    continue;
+                const auto outer = model.Outer(object.address);
+                if (!outer)
+                    continue;
+                const auto owner = std::find(owners.begin(), owners.end(), *outer);
+                if (owner == owners.end())
+                    continue;
+                const size_t ownerIndex = static_cast<size_t>(owner - owners.begin());
+                if (usableOwners[ownerIndex] && functionWitnesses[ownerIndex] == 0 && isUsableFunction(object))
+                {
+                    functionWitnesses[ownerIndex] = object.address;
+                    --witnessesNeeded;
+                    report.evidence.push_back("UFunction children nonempty owner=" + Hex(*owner) +
+                                              " function=" + Hex(object.address) + " name=" + object.name);
+                }
+            }
+
+            std::vector<int32_t> remaining;
+            for (const ChildrenCandidate &candidate : childrenCandidates)
+            {
+                bool contradicted = false;
+                for (size_t ownerIndex = 0; ownerIndex < owners.size(); ++ownerIndex)
+                {
+                    if (candidate.heads[ownerIndex] == 0 && functionWitnesses[ownerIndex] != 0)
+                    {
+                        report.evidence.push_back("UFunction children rejected offset=" + std::to_string(candidate.offset) +
+                                                  " owner=" + Hex(owners[ownerIndex]) + " reason=empty-with-function");
+                        contradicted = true;
+                        break;
+                    }
+                }
+                if (!contradicted)
+                    remaining.push_back(candidate.offset);
+            }
+            if (remaining.size() == 1)
+            {
+                selectedChildren = remaining.front();
+                selectionReason = "unique-nonempty-owner-chain";
+            }
+        }
+
         const bool consistent = schema.features.useFProperty || selectedChildren == propertyChainOffset;
         const char *consistencyStatus = "unresolved";
-        if (childrenCandidates.size() == 1)
+        if (selectedChildren >= 0)
             consistencyStatus = consistent ? "consistent" : "dependency-conflict";
         report.evidence.push_back("UFunction children consistency parameter_source=" +
                                   std::string(schema.features.useFProperty ? "child-properties" : "children") +
                                   " input_children=" + std::to_string(inputChildrenOffset) +
                                   " parameter_chain_offset=" + std::to_string(propertyChainOffset) +
                                   " selected_children=" + std::to_string(selectedChildren) +
-                                  " status=" + consistencyStatus);
-        if (childrenCandidates.size() != 1)
+                                  " selection=" + selectionReason + " status=" + consistencyStatus);
+        if (selectedChildren < 0)
         {
             report.ambiguous = childrenCandidates.size() > 1;
-            report.failures.push_back("UStruct::Children requires one candidate validated by multiple class-owned function chains");
+            report.failures.push_back("UStruct::Children requires one uncontradicted candidate validated by multiple class-owned function chains");
             return false;
         }
         // UProperty 的属性及参数证据依赖同一个 Children 偏移，不能在确认后替换该输入
