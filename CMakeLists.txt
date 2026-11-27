@@ -1,5 +1,18 @@
 cmake_minimum_required(VERSION 3.22)
 
+get_property(is_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+if(is_multi_config)
+    set(CMAKE_CONFIGURATION_TYPES "Debug;Release" CACHE STRING "Build configurations" FORCE)
+else()
+    if(NOT CMAKE_BUILD_TYPE)
+        set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
+    endif()
+    set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS Debug Release)
+    if(NOT CMAKE_BUILD_TYPE MATCHES "^(Debug|Release)$")
+        message(FATAL_ERROR "CMAKE_BUILD_TYPE must be Debug or Release")
+    endif()
+endif()
+
 project(NextDumper VERSION 0.1.0 LANGUAGES CXX)
 
 if(NOT ANDROID)
@@ -96,8 +109,7 @@ file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/generation/templates/Remote/detail/Ru
 configure_file(cmake/RemoteSdkTemplates.hpp.in
     generated/nextdumper/RemoteSdkTemplates.hpp @ONLY)
 
-option(NEXTDUMPER_ENABLE_THINLTO "Enable ThinLTO for native targets" ON)
-option(NEXTDUMPER_OPTIMIZE_FOR_SIZE "Use Clang size optimization for native targets" OFF)
+option(NEXTDUMPER_STRIP_RELEASE "Strip symbols from Release executables" ON)
 
 file(GLOB UE_ANALYSIS_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/analysis/*.cpp"
@@ -187,21 +199,20 @@ target_compile_options(NextDumper PRIVATE -Wall -Wextra -Wpedantic -Werror)
 set(NEXTDUMPER_NATIVE_TARGETS ue_analysis nextdumper_core NextDumper)
 foreach(target IN LISTS NEXTDUMPER_NATIVE_TARGETS)
     target_compile_options(${target} PRIVATE
-        -ffunction-sections
-        -fdata-sections
         -UNDEBUG
+        "$<$<CONFIG:Debug>:-O0>"
+        "$<$<CONFIG:Release>:-O2>"
+        "$<$<CONFIG:Release>:-flto=thin>"
+        "$<$<CONFIG:Release>:-ffunction-sections>"
+        "$<$<CONFIG:Release>:-fdata-sections>"
     )
-    if(NEXTDUMPER_ENABLE_THINLTO)
-        target_compile_options(${target} PRIVATE -flto=thin)
-    endif()
-    if(NEXTDUMPER_OPTIMIZE_FOR_SIZE)
-        target_compile_options(${target} PRIVATE -Oz)
-    endif()
 endforeach()
 
-if(NEXTDUMPER_ENABLE_THINLTO)
-    target_link_options(NextDumper PRIVATE -flto=thin)
+target_link_options(NextDumper PRIVATE
+    "$<$<CONFIG:Release>:-O2>"
+    "$<$<CONFIG:Release>:-flto=thin>"
+    "$<$<CONFIG:Release>:-Wl,--gc-sections>"
+)
+if(NEXTDUMPER_STRIP_RELEASE)
+    target_link_options(NextDumper PRIVATE "$<$<CONFIG:Release>:-Wl,--strip-all>")
 endif()
-
-# Android's lld removes unused function/data sections from the final executable.
-target_link_options(NextDumper PRIVATE -Wl,--gc-sections)

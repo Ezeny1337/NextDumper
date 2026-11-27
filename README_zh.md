@@ -83,25 +83,25 @@ flowchart TD
 
 ### 构建脚本
 
-`build.sh` 会配置 Android 工具链，并默认启用 ThinLTO。
+`build.sh` 可快速配置 Android 工具链。
 
 | 模式 | 配置 | 用途 |
 | --- | --- | --- |
-| `verify`（默认） | Release、ThinLTO、不优化体积、启用断言 | 快速检查编译 |
-| `release` | Release、`-Oz`、ThinLTO、启用断言、构建后 strip | 体积较小的发布版本 |
+| `debug`（默认） | Debug、`-O0`、默认调试信息、启用断言、不剥离符号 | 开发和调试 |
+| `release` | Release、`-O2`、ThinLTO、启用断言、剥离符号 | 性能优先的发布版本 |
 
 运行前将 `ANDROID_NDK_HOME`（或 `ANDROID_NDK_ROOT`）指向 NDK r26 或更高版本。如果只设置了 `ANDROID_SDK_ROOT`，脚本会自动选择已安装的最新 NDK。
 
 ```bash
 chmod +x build.sh
 
-# 快速检查编译，默认 arm64-v8a
+# debug 版本，默认 arm64-v8a
 ./build.sh
 
-# 体积优化的 release 版本
+# 性能优化的 release 版本
 ./build.sh --mode release --abi arm64-v8a
 
-# armeabi-v7a 体积优化的 release 版本
+# armeabi-v7a 性能优化的 release 版本
 ./build.sh --mode release --abi armeabi-v7a --jobs 4
 ```
 
@@ -112,17 +112,16 @@ chmod +x build.sh
 下面的配置与 GitHub Actions 工作流一致：
 
 ```bash
-cmake -S . -B build/android-arm64-release -G Ninja \
+cmake -S . -B build/android-arm64-v8a-release -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
   -DANDROID_ABI=arm64-v8a \
   -DANDROID_PLATFORM=android-29 \
-  -DNEXTDUMPER_ENABLE_THINLTO=ON \
   -DCMAKE_BUILD_TYPE=Release
 
-cmake --build build/android-arm64-release --parallel
+cmake --build build/android-arm64-v8a-release --parallel
 ```
 
-可执行文件位于 `build/android-arm64-release/NextDumper`。
+可执行文件位于 `build/android-arm64-v8a-release/NextDumper`。CMake 默认使用 `Debug`，仅支持 `Debug` 和 `Release`。Release 自动启用 `-O2`、ThinLTO 和链接时符号剥离；设置 `-DNEXTDUMPER_STRIP_RELEASE=OFF` 可保留符号，但不会额外生成 Release 调试信息。
 
 ### 运行
 

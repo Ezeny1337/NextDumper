@@ -22,12 +22,107 @@ env:
   CMAKE_VERSION: 3.22.1
   CCACHE_COMPILERCHECK: content
   CCACHE_MAXSIZE: 512MiB
+  NEXTDUMPER_USE_CCACHE: "1"
 
 jobs:
-  build:
-    name: Build Android ${{ matrix.abi }}
+  build-debug:
+    name: Build debug (${{ matrix.abi }})
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        abi:
+          - arm64-v8a
+          - armeabi-v7a
+    env:
+      ANDROID_ABI: ${{ matrix.abi }}
+      BUILD_DIR: build/android-${{ matrix.abi }}-debug
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install ccache
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v ccache >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install --yes ccache
+          fi
+          mkdir -p "$HOME/.cache/ccache"
+          echo "CCACHE_DIR=$HOME/.cache/ccache" >> "$GITHUB_ENV"
+          ccache --version
+
+      - name: Restore ccache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ccache
+          key: ccache-v1-${{ runner.os }}-${{ runner.arch }}-ndk-${{ env.NDK_VERSION }}-cmake-${{ env.CMAKE_VERSION }}-${{ github.job }}-${{ matrix.abi }}-${{ github.ref }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            ccache-v1-${{ runner.os }}-${{ runner.arch }}-ndk-${{ env.NDK_VERSION }}-cmake-${{ env.CMAKE_VERSION }}-${{ github.job }}-${{ matrix.abi }}-${{ github.ref }}-
+            ccache-v1-${{ runner.os }}-${{ runner.arch }}-ndk-${{ env.NDK_VERSION }}-cmake-${{ env.CMAKE_VERSION }}-${{ github.job }}-${{ matrix.abi }}-refs/heads/${{ github.event.repository.default_branch }}-
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: ''
+
+      - name: Install Android platform, NDK and CMake
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          test -n "$sdk_root"
+          sdkmanager --sdk_root="$sdk_root" --install \
+            "platforms;${ANDROID_PLATFORM}" \
+            "ndk;${NDK_VERSION}" \
+            "cmake;${CMAKE_VERSION}"
+
+          ndk_home="$sdk_root/ndk/${NDK_VERSION}"
+          cmake_bin="$sdk_root/cmake/${CMAKE_VERSION}/bin"
+          test -f "$ndk_home/build/cmake/android.toolchain.cmake"
+          test -x "$cmake_bin/cmake"
+          test "$(sed -n 's/^[[:space:]]*Pkg\.Revision[[:space:]]*=[[:space:]]*//p' "$ndk_home/source.properties" | head -n 1)" = "$NDK_VERSION"
+          echo "ANDROID_NDK_HOME=$ndk_home" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$ndk_home" >> "$GITHUB_ENV"
+          echo "$cmake_bin" >> "$GITHUB_PATH"
+
+      - name: Verify build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --version
+          ninja --version
+          test -f "$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake"
+
+      - name: Build debug
+        shell: bash
+        run: |
+          set -euo pipefail
+          ccache --zero-stats
+          bash ./build.sh --mode debug --abi "$ANDROID_ABI" --build-dir "$BUILD_DIR"
+
+      - name: Show ccache statistics
+        shell: bash
+        run: ccache --show-stats
+
+      - name: Upload debug artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-debug-${{ matrix.abi }}-${{ github.sha }}
+          path: ${{ env.BUILD_DIR }}/NextDumper
+          if-no-files-found: error
+          retention-days: 14
+
+  build-release:
+    name: Build release (${{ matrix.abi }})
+    if: >-
+      github.event_name == 'push' && !github.event.deleted &&
+      (github.ref_type == 'branch' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -50,114 +145,7 @@ jobs:
             sudo apt-get update
             sudo apt-get install --yes ccache
           fi
-          echo "CCACHE_DIR=$HOME/.cache/ccache" >> "$GITHUB_ENV"
-          ccache --version
-
-      - name: Restore ccache
-        uses: actions/cache@v6
-        with:
-          path: ~/.cache/ccache
-          key: ccache-v1-${{ runner.os }}-${{ runner.arch }}-ndk-${{ env.NDK_VERSION }}-cmake-${{ env.CMAKE_VERSION }}-${{ github.job }}-${{ matrix.abi }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: |
-            ccache-v1-${{ runner.os }}-${{ runner.arch }}-ndk-${{ env.NDK_VERSION }}-cmake-${{ env.CMAKE_VERSION }}-${{ github.job }}-${{ matrix.abi }}-
-
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v4
-        with:
-          packages: ''
-
-      - name: Install Android platform, NDK and CMake
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
-          if [[ -z "$sdk_root" ]]; then
-            echo "Android SDK path is not available" >&2
-            exit 1
-          fi
-
-          sdkmanager --sdk_root="$sdk_root" --install \
-            "platforms;${ANDROID_PLATFORM}" \
-            "ndk;${NDK_VERSION}" \
-            "cmake;${CMAKE_VERSION}"
-
-          ndk_home="$sdk_root/ndk/${NDK_VERSION}"
-          cmake_bin="$sdk_root/cmake/${CMAKE_VERSION}/bin"
-          test -d "$ndk_home"
-          test -x "$cmake_bin/cmake"
-          test "$(sed -n 's/^[[:space:]]*Pkg\.Revision[[:space:]]*=[[:space:]]*//p' "$ndk_home/source.properties" | head -n 1)" = "$NDK_VERSION"
-
-          echo "ANDROID_NDK_HOME=$ndk_home" >> "$GITHUB_ENV"
-          echo "ANDROID_NDK_ROOT=$ndk_home" >> "$GITHUB_ENV"
-          echo "$cmake_bin" >> "$GITHUB_PATH"
-
-      - name: Verify build tools
-        shell: bash
-        run: |
-          set -euo pipefail
-          cmake --version
-          ninja --version
-          test -f "$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake"
-
-      - name: Configure CMake
-        shell: bash
-        run: |
-          set -euo pipefail
-          cmake -S . -B "$BUILD_DIR" -G Ninja \
-            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-            -DANDROID_ABI="$ANDROID_ABI" \
-            -DANDROID_PLATFORM="$ANDROID_PLATFORM" \
-            -DNEXTDUMPER_ENABLE_THINLTO=ON \
-            -DNEXTDUMPER_OPTIMIZE_FOR_SIZE=OFF \
-            -DCMAKE_BUILD_TYPE=Release
-
-      - name: Build
-        shell: bash
-        run: |
-          set -euo pipefail
-          ccache --zero-stats
-          cmake --build "$BUILD_DIR" --parallel "$(nproc)"
-          ccache --show-stats
-
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-build-${{ matrix.abi }}-${{ github.sha }}
-          path: ${{ env.BUILD_DIR }}/NextDumper
-          if-no-files-found: error
-          retention-days: 14
-
-  release-build:
-    name: Build release ${{ matrix.abi }}
-    if: >-
-      github.event_name == 'push' && !github.event.deleted &&
-      (github.ref_type == 'branch' || startsWith(github.ref, 'refs/tags/v'))
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        abi:
-          - arm64-v8a
-          - armeabi-v7a
-    env:
-      ANDROID_ABI: ${{ matrix.abi }}
-      RELEASE_BUILD_DIR: build/android-${{ matrix.abi }}-release-artifact
-
-    steps:
-      - name: Check out source
-        uses: actions/checkout@v4
-
-      - name: Install ccache
-        shell: bash
-        run: |
-          set -euo pipefail
-          if ! command -v ccache >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install --yes ccache
-          fi
+          mkdir -p "$HOME/.cache/ccache"
           echo "CCACHE_DIR=$HOME/.cache/ccache" >> "$GITHUB_ENV"
           ccache --version
 
@@ -179,7 +167,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
           test -n "$sdk_root"
           sdkmanager --sdk_root="$sdk_root" --install \
@@ -189,65 +176,61 @@ jobs:
 
           ndk_home="$sdk_root/ndk/${NDK_VERSION}"
           cmake_bin="$sdk_root/cmake/${CMAKE_VERSION}/bin"
-          test -d "$ndk_home"
+          test -f "$ndk_home/build/cmake/android.toolchain.cmake"
           test -x "$cmake_bin/cmake"
           test "$(sed -n 's/^[[:space:]]*Pkg\.Revision[[:space:]]*=[[:space:]]*//p' "$ndk_home/source.properties" | head -n 1)" = "$NDK_VERSION"
           echo "ANDROID_NDK_HOME=$ndk_home" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_ROOT=$ndk_home" >> "$GITHUB_ENV"
           echo "$cmake_bin" >> "$GITHUB_PATH"
-          echo "$ndk_home/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_PATH"
 
-      - name: Configure release without NDEBUG
+      - name: Verify build tools
         shell: bash
         run: |
           set -euo pipefail
-          cmake -S . -B "$RELEASE_BUILD_DIR" -G Ninja \
-            -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-            -DANDROID_ABI="$ANDROID_ABI" \
-            -DANDROID_PLATFORM="$ANDROID_PLATFORM" \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DNEXTDUMPER_ENABLE_THINLTO=ON \
-            -DNEXTDUMPER_OPTIMIZE_FOR_SIZE=ON
+          cmake --version
+          ninja --version
+          test -f "$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake"
 
       - name: Build release
         shell: bash
         run: |
           set -euo pipefail
           ccache --zero-stats
-          cmake --build "$RELEASE_BUILD_DIR" --parallel "$(nproc)"
-          ccache --show-stats
+          bash ./build.sh --mode release --abi "$ANDROID_ABI" --build-dir "$BUILD_DIR"
 
-      - name: Package release
+      - name: Show ccache statistics
+        shell: bash
+        run: ccache --show-stats
+
+      - name: Package release files
         shell: bash
         run: |
           set -euo pipefail
-          test -x "$RELEASE_BUILD_DIR/NextDumper"
-          strip_tool="$(command -v llvm-strip)"
-
+          test -x "$BUILD_DIR/NextDumper"
           version="$GITHUB_SHA"
           if [[ "$GITHUB_REF_TYPE" == tag ]]; then
             version="$GITHUB_REF_NAME"
           fi
           package_name="NextDumper-android-${ANDROID_ABI}-release-${version}"
-          archive_name="${package_name}.tar.gz"
           mkdir -p "dist/$package_name"
-          install -m 0755 "$RELEASE_BUILD_DIR/NextDumper" "dist/$package_name/NextDumper"
-          "$strip_tool" --strip-unneeded "dist/$package_name/NextDumper"
+          install -m 0755 "$BUILD_DIR/NextDumper" "dist/$package_name/NextDumper"
           printf '%s\n' \
             'Project: NextDumper' \
             "Commit: $GITHUB_SHA" \
             "Ref: $GITHUB_REF" \
             "Target: Android $ANDROID_PLATFORM / $ANDROID_ABI" \
             'Variant: release' \
-            'NDEBUG: disabled' \
+            'Optimization: -O2' \
+            'ThinLTO: enabled' \
+            'Symbols: stripped' \
+            'NDEBUG: disabled for project sources' \
             "NDK: $NDK_VERSION" \
             "CMake: $CMAKE_VERSION" \
             > "dist/$package_name/BUILD-METADATA.txt"
           (
             cd dist
-            tar -czf "$archive_name" "$package_name"
-            sha256sum "$archive_name" > "${archive_name}.sha256"
+            tar -czf "${package_name}.tar.gz" "$package_name"
+            sha256sum "${package_name}.tar.gz" > "${package_name}.tar.gz.sha256"
           )
 
       - name: Upload release artifact
@@ -260,10 +243,10 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  release:
+  publish-release:
     name: Publish GitHub Release
     if: github.event_name == 'push' && !github.event.deleted && startsWith(github.ref, 'refs/tags/v')
-    needs: release-build
+    needs: build-release
     concurrency:
       group: android-publish-${{ github.ref }}
     runs-on: ubuntu-24.04
@@ -272,7 +255,7 @@ jobs:
       contents: write
 
     steps:
-      - name: Download build artifact
+      - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: android-release-*-${{ github.sha }}
@@ -285,15 +268,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-
           tag="$GITHUB_REF_NAME"
           assets=()
           for abi in arm64-v8a armeabi-v7a; do
-            archive="NextDumper-android-${abi}-release-${tag}.tar.gz"
-            (cd dist && sha256sum --check "$archive.sha256")
-            assets+=("dist/$archive" "dist/$archive.sha256")
+            package="NextDumper-android-${abi}-release-${tag}.tar.gz"
+            test -f "dist/$package"
+            test -f "dist/$package.sha256"
+            (cd dist && sha256sum --check "$package.sha256")
+            assets+=("dist/$package" "dist/$package.sha256")
           done
-
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$tag" "${assets[@]}" \
               --repo "$GITHUB_REPOSITORY" \

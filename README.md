@@ -83,25 +83,25 @@ The reflection layout is detected at runtime, not selected by version number. Th
 
 ### Build script
 
-`build.sh` configures the Android toolchain and enables ThinLTO by default.
+`build.sh` can quickly configure the Android toolchain.
 
 | Mode | Configuration | Use |
 | --- | --- | --- |
-| `verify` (default) | Release, ThinLTO, no size optimization, assertions enabled | Quick compile check |
-| `release` | Release, `-Oz`, ThinLTO, assertions enabled, stripped | Small distributable binary |
+| `debug` (default) | Debug, `-O0`, default debug information, assertions enabled, unstripped | Development and debugging |
+| `release` | Release, `-O2`, ThinLTO, assertions enabled, stripped | Performance-oriented distributable binary |
 
 Set `ANDROID_NDK_HOME` (or `ANDROID_NDK_ROOT`) to NDK r26 or newer. If only `ANDROID_SDK_ROOT` is set, the script selects the newest installed NDK.
 
 ```bash
 chmod +x build.sh
 
-# Quick compile check (arm64-v8a by default).
+# Debug build (arm64-v8a by default).
 ./build.sh
 
-# Size-optimized release build.
+# Performance-optimized release build.
 ./build.sh --mode release --abi arm64-v8a
 
-# Size-optimized release build for armeabi-v7a.
+# Performance-optimized release build for armeabi-v7a.
 ./build.sh --mode release --abi armeabi-v7a --jobs 4
 ```
 
@@ -112,17 +112,16 @@ The binary is written to `build/android-<abi>-<mode>/NextDumper`. Use `--build-d
 This matches the configuration used by the GitHub Actions workflow:
 
 ```bash
-cmake -S . -B build/android-arm64-release -G Ninja \
+cmake -S . -B build/android-arm64-v8a-release -G Ninja \
   -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
   -DANDROID_ABI=arm64-v8a \
   -DANDROID_PLATFORM=android-29 \
-  -DNEXTDUMPER_ENABLE_THINLTO=ON \
   -DCMAKE_BUILD_TYPE=Release
 
-cmake --build build/android-arm64-release --parallel
+cmake --build build/android-arm64-v8a-release --parallel
 ```
 
-The executable is written to `build/android-arm64-release/NextDumper`.
+The executable is written to `build/android-arm64-v8a-release/NextDumper`. CMake defaults to `Debug` and supports only `Debug` and `Release`. Release enables `-O2`, ThinLTO and linker symbol stripping automatically; set `-DNEXTDUMPER_STRIP_RELEASE=OFF` to retain symbols. This retains existing symbols but does not add Release debug information.
 
 ### Run
 
